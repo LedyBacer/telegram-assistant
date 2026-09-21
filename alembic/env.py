@@ -12,10 +12,10 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from assistant.config import get_settings
-from assistant.db.base import Base
 # Import all models so Base.metadata is fully populated for autogenerate.
 from assistant import models  # noqa: F401
+from assistant.config import get_settings
+from assistant.db.base import Base
 
 config = context.config
 
