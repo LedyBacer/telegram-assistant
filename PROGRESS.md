@@ -1,6 +1,6 @@
 # Progress
 
-Status: Milestone 3 (durable job queue) complete.
+Status: Milestone 4 (aiogram 3 bot foundation) complete.
 
 ## Completed
 
@@ -26,14 +26,24 @@ Status: Milestone 3 (durable job queue) complete.
   (30 s base), abandoned-lock TTL recovery, idempotency keys) + worker entrypoint
   `python -m assistant.worker.main`; 11 real-PostgreSQL tests in `tests/test_jobs.py`
   (including concurrent-claimer no-double-claim) passing; Ruff clean.
+- Milestone 4: aiogram 3 bot foundation under `src/assistant/bot/` —
+  `callbacks.py` (pydantic `CallbackData`: Menu/Settings/Item/Draft),
+  `keyboards.py` (main menu incl. conditional Mini App WebApp button, settings,
+  draft confirm/cancel), `states.py` (`TaskDraftStates` FSM), `middlewares.py`
+  (DB session + user upsert), `handlers.py` (`/start`, `/help`, `/cancel`, main
+  menu, settings, draft confirm/cancel, structured task-draft text parsing with
+  validation, chat-message persistence), `main.py` (bot polling entrypoint).
+  25 credential-free tests in `tests/test_bot_foundation.py` (callbacks,
+  keyboards, draft parser, and 3 real-PostgreSQL handler flows) passing;
+  full suite 36 passing; Ruff clean.
 
 ## Current milestone
 
-- Milestone 3 verified and committed.
+- Milestone 4 verified and committed.
 
 ## Next
 
-1. Milestone 4: aiogram 3 bot skeleton (`/start`, main menu, FSM, CallbackData,
-   `src/assistant/bot/main.py`).
-2. Calendar/reminders services + handlers.
-3. Workouts services + handlers.
+1. Milestone 5: Calendar/reminders services + bot handlers (item complete/cancel
+   callbacks, reminder scheduling via durable jobs).
+2. Milestone 6: Workouts services + handlers.
+3. Milestone 7: AI provider abstraction + structured task draft.
