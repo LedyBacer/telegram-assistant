@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -14,6 +14,8 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.ai import AIProviderError, AITaskDraft, get_ai_provider
+from assistant.ai.prompts import DRAFT_SYSTEM
 from assistant.bot.callbacks import (
     DraftCallback,
     ItemCallback,
@@ -41,7 +43,9 @@ from assistant.services.users import upsert_user
 router = Router(name="bot")
 
 DRAFT_HELP = (
-    "Send the task as lines, e.g.:\n"
+    "Just describe the task in natural language, e.g.\n"
+    "\"Tomorrow at 18:30 remind me to call Alex\".\n\n"
+    "You can also send the structured line format:\n"
     "title: Buy groceries\n"
     "date: 2026-09-21\n"
     "time: 18:30\n"
@@ -66,6 +70,7 @@ class TaskDraft:
     priority: ItemPriority
     description: str | None
     remind_offsets: list[int]
+    ambiguities: list[str] = field(default_factory=list)
 
 
 def _user_tz(user: User) -> ZoneInfo:
@@ -160,6 +165,29 @@ def _parse_draft(text: str, tz: ZoneInfo) -> TaskDraft:
     )
 
 
+def _ai_draft_to_task_draft(ai: AITaskDraft, tz: ZoneInfo) -> TaskDraft:
+    """Convert a model-produced draft into the internal TaskDraft (UTC)."""
+    starts_at: datetime | None = None
+    if ai.start is not None:
+        starts_at = ai.start
+        if starts_at.tzinfo is None:
+            starts_at = starts_at.replace(tzinfo=tz)
+        starts_at = starts_at.astimezone(UTC)
+    due_at: datetime | None = None
+    if starts_at is not None and ai.duration_minutes:
+        due_at = starts_at + timedelta(minutes=ai.duration_minutes)
+    return TaskDraft(
+        title=ai.title,
+        kind=ItemKind(ai.kind),
+        starts_at=starts_at,
+        due_at=due_at,
+        priority=ItemPriority(ai.priority),
+        description=ai.notes,
+        remind_offsets=list(ai.reminder_offsets),
+        ambiguities=list(ai.ambiguities),
+    )
+
+
 def _draft_preview(draft: TaskDraft, tz: ZoneInfo) -> str:
     icon = "📆" if draft.kind is ItemKind.event else "✅"
     lines = [f"{icon} {draft.title}", f"kind: {draft.kind.value}", f"priority: {draft.priority.value}"]
@@ -171,6 +199,8 @@ def _draft_preview(draft: TaskDraft, tz: ZoneInfo) -> str:
         lines.append(f"remind: {', '.join(str(o) for o in draft.remind_offsets)} min before start")
     if draft.description:
         lines.append(f"notes: {draft.description}")
+    if draft.ambiguities:
+        lines.append("assumed: " + "; ".join(draft.ambiguities))
     return "\n".join(lines)
 
 
@@ -394,8 +424,14 @@ async def on_draft(
             "Draft cancelled.", reply_markup=main_menu_kb()
         )
     else:
-        raw = (await state.get_data()).get("draft_text", "")
-        draft = _parse_draft(raw, _user_tz(user))
+        data = await state.get_data()
+        tz = _user_tz(user)
+        # AI-produced drafts are stored typed in FSM state; manual drafts
+        # are re-parsed from the raw text.
+        if ai_dump := data.get("draft_ai"):
+            draft = _ai_draft_to_task_draft(AITaskDraft.model_validate(ai_dump), tz)
+        else:
+            draft = _parse_draft(data.get("draft_text", ""), tz)
         item = await calendar_service.create_item(
             session,
             user,
@@ -466,16 +502,31 @@ async def on_text(
     current = await state.get_state()
 
     if current == TaskDraftStates.waiting_for_text:
+        tz = _user_tz(user)
+        draft: TaskDraft | None = None
+        ai_dump: dict[str, Any] | None = None
         try:
-            draft = _parse_draft(text, _user_tz(user))
-        except ValueError as exc:
-            await message.answer(f"I couldn't read that: {exc}\n\n{DRAFT_HELP}")
-            return
-        await state.update_data(draft_text=text)
+            draft = _parse_draft(text, tz)
+        except ValueError:
+            # Natural language: let the model produce a typed draft. The
+            # manual format stays available as a deterministic fallback.
+            try:
+                ai = await get_ai_provider().chat_structured(
+                    system=DRAFT_SYSTEM.format(tz=tz, now=datetime.now(tz).isoformat()),
+                    messages=[{"role": "user", "content": text}],
+                    schema=AITaskDraft,
+                )
+            except AIProviderError:
+                await message.answer(
+                    "I couldn't interpret that. Try rephrasing, or use the\n"
+                    f"structured format.\n\n{DRAFT_HELP}"
+                )
+                return
+            draft = _ai_draft_to_task_draft(ai, tz)
+            ai_dump = ai.model_dump(mode="json")
+        await state.update_data(draft_text=text, draft_ai=ai_dump)
         await state.set_state(TaskDraftStates.confirm)
-        await message.answer(
-            _draft_preview(draft, _user_tz(user)), reply_markup=draft_kb()
-        )
+        await message.answer(_draft_preview(draft, tz), reply_markup=draft_kb())
     elif current == TaskDraftStates.confirm:
         await message.answer("Please use the ✅ / ❌ buttons above.")
     elif current == SettingsStates.timezone:

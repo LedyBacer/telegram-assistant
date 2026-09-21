@@ -1,7 +1,8 @@
 # Progress
 
-Status: Milestone 6 (workouts) complete and green — services, bot handlers,
-and 7 real-PostgreSQL tests done; commit pending.
+Status: Milestone 7 (AI provider + structured task draft) complete and green
+— provider package, bot NL flow, and 9 credential-free tests done; commit
+pending.
 
 ## Completed
 
@@ -58,13 +59,23 @@ and 7 real-PostgreSQL tests done; commit pending.
   with `name, minutes, effort` and `name, YYYY-MM-DD HH:MM` parsing.
   `tests/test_workouts.py` (7) against real PostgreSQL including ownership
   isolation; full suite 66 passing; Ruff clean.
+- Milestone 7: AI layer `src/assistant/ai/` — `AIProvider` protocol +
+  `OpenAICompatibleProvider` (AsyncOpenAI, narrow `AIProviderError` /
+  `AIOutputValidationError`, bounded retries, json_schema response_format),
+  `AITaskDraft` Pydantic schema, `DRAFT_SYSTEM` prompt. Bot flow: manual line
+  format first, AI fallback for natural language (ASSUMPTIONS #12-13); AI
+  draft stored typed in FSM state, previewed with ambiguities, confirmed
+  before persisting (SPEC §6). Lazy `get_ai_provider()` keeps tests
+  credential-free. `tests/test_ai.py` (9) incl. full NL->preview->confirm
+  flow with a fake provider; openai 3.16.2 API specifics in RESEARCH.md.
+  Full suite 75 passing; Ruff clean.
 
 ## Current milestone
 
-- Milestone 6 verified; commit in progress.
+- Milestone 7 verified; commit in progress.
 
 ## Next
 
-1. Milestone 6: commit.
-2. Milestone 7: AI provider abstraction (OpenAI SDK) + structured task draft.
-3. Milestone 8: File uploads + ingestion + pgvector storage/retrieval.
+1. Milestone 7: commit.
+2. Milestone 8: File uploads + ingestion + pgvector storage/retrieval.
+3. Milestone 9: User facts lifecycle + contextual chat.

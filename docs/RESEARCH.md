@@ -45,6 +45,18 @@ Per QWEN.md, only the successful lookups above are claimed as Context7-assisted.
 - Embeddings: `resp = await client.embeddings.create(model=..., input=...)`;
   vector is `resp.data[0].embedding` (list[float]).
 
+### openai 3.x specifics (verified against the installed 3.16.2)
+
+- `APIError.__init__(message, request, *, body)` — the 2.x
+  `(message, response, body)` signature is gone; construct with an
+  `httpx.Request`, not an `httpx.Response`.
+- `client.base_url` is normalized with a trailing slash
+  (`"https://ex/v1"` → `URL("https://ex/v1/")`).
+- Plain `chat.completions.create` accepts
+  `response_format={"type": "json_schema", "json_schema": {...}}` directly,
+  so the provider avoids the `.parse()` helper and validates the JSON content
+  client-side (see ASSUMPTIONS #13).
+
 ## Alembic async (1.13+)
 
 - `alembic init -t async`.
