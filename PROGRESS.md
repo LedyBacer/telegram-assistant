@@ -1,6 +1,7 @@
 # Progress
 
-Status: Milestone 4 (aiogram 3 bot foundation) complete.
+Status: Milestone 5 (calendar/tasks/reminders) in progress — services + bot
+handlers + tests done and green; commit pending.
 
 ## Completed
 
@@ -37,13 +38,25 @@ Status: Milestone 4 (aiogram 3 bot foundation) complete.
   keyboards, draft parser, and 3 real-PostgreSQL handler flows) passing;
   full suite 36 passing; Ruff clean.
 
+- Milestone 5: calendar service (`src/assistant/services/calendar.py` — create/
+  get/update/complete/cancel/delete/list_today/list_upcoming/list_range with
+  user-TZ normalization and user scoping) + reminder service
+  (`src/assistant/services/reminders.py` — durable `reminder_send` jobs with
+  idempotency keys, offset resolution for item-linked reminders, idempotent
+  delivery handler registered via `assistant.worker.handlers`). Bot wiring:
+  `items_kb` per-item complete/cancel buttons, `ItemCallback` handler,
+  today/upcoming routed through the service, draft confirm creates the item
+  plus optional `remind:` offsets (ASSUMPTIONS #11). `tests/test_calendar.py`
+  (9) + `tests/test_reminders.py` (13) against real PostgreSQL; conftest
+  autouse TRUNCATE of all tables in the fixture session's transaction.
+  Full suite 59 passing; Ruff clean.
+
 ## Current milestone
 
-- Milestone 4 verified and committed.
+- Milestone 5 verified; commit in progress.
 
 ## Next
 
-1. Milestone 5: Calendar/reminders services + bot handlers (item complete/cancel
-   callbacks, reminder scheduling via durable jobs).
+1. Milestone 5: commit.
 2. Milestone 6: Workouts services + handlers.
 3. Milestone 7: AI provider abstraction + structured task draft.

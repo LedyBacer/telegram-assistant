@@ -25,6 +25,7 @@ from assistant.db import dispose_engine, get_session_factory
 from assistant.logging import setup_logging
 from assistant.models.jobs import BackgroundJob
 from assistant.services import jobs as jobs_service
+from assistant.worker import handlers  # noqa: F401  (registers job handlers)
 
 logger = logging.getLogger("assistant.worker")
 

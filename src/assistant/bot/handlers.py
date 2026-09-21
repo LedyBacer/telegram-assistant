@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,23 +11,30 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.state import State
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.bot.callbacks import DraftCallback, MenuCallback, SettingsCallback
-from assistant.bot.keyboards import draft_kb, main_menu_kb, settings_kb
+from assistant.bot.callbacks import (
+    DraftCallback,
+    ItemCallback,
+    MenuCallback,
+    SettingsCallback,
+)
+from assistant.bot.keyboards import (
+    draft_kb,
+    items_kb,
+    main_menu_kb,
+    settings_kb,
+)
 from assistant.bot.states import SettingsStates, TaskDraftStates
 from assistant.config import get_settings
-from assistant.models.calendar_items import (
-    CalendarItem,
-    ItemKind,
-    ItemPriority,
-    ItemStatus,
-)
+from assistant.models.calendar_items import CalendarItem, ItemKind, ItemPriority
 from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.files import UserFile
 from assistant.models.users import User
 from assistant.models.workout_logs import WorkoutLog
+from assistant.services import calendar as calendar_service
+from assistant.services import reminders as reminders_service
 from assistant.services.users import upsert_user
 
 router = Router(name="bot")
@@ -40,8 +47,10 @@ DRAFT_HELP = (
     "due: 2026-09-21 19:00\n"
     "priority: high\n"
     "kind: event\n"
+    "remind: -30, 0\n"
     "description: milk, bread\n"
-    "Only `title` is required. /cancel aborts."
+    "`remind:` is optional — minutes before the start time (0 = at the\n"
+    "start, negative = after). Only `title` is required. /cancel aborts."
 )
 
 
@@ -55,6 +64,7 @@ class TaskDraft:
     due_at: datetime | None
     priority: ItemPriority
     description: str | None
+    remind_offsets: list[int]
 
 
 def _user_tz(user: User) -> ZoneInfo:
@@ -125,6 +135,19 @@ def _parse_draft(text: str, tz: ZoneInfo) -> TaskDraft:
     if len(fields.get("description", "")) > 4000:
         raise ValueError("Description is too long (max 4000 characters).")
 
+    remind_offsets: list[int] = []
+    if raw_remind := fields.get("remind"):
+        for part in raw_remind.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                remind_offsets.append(int(part))
+            except ValueError:
+                raise ValueError("remind: must be comma-separated integers.") from None
+        if not remind_offsets:
+            raise ValueError("remind: must list at least one offset.")
+
     return TaskDraft(
         title=title,
         kind=kind,
@@ -132,6 +155,7 @@ def _parse_draft(text: str, tz: ZoneInfo) -> TaskDraft:
         due_at=due_at,
         priority=priority,
         description=fields.get("description") or None,
+        remind_offsets=remind_offsets,
     )
 
 
@@ -142,6 +166,8 @@ def _draft_preview(draft: TaskDraft, tz: ZoneInfo) -> str:
         lines.append(f"start: {draft.starts_at.astimezone(tz):%Y-%m-%d %H:%M} ({tz})")
     if draft.due_at:
         lines.append(f"due: {draft.due_at.astimezone(tz):%Y-%m-%d %H:%M} ({tz})")
+    if draft.remind_offsets:
+        lines.append(f"remind: {', '.join(str(o) for o in draft.remind_offsets)} min before start")
     if draft.description:
         lines.append(f"notes: {draft.description}")
     return "\n".join(lines)
@@ -215,7 +241,6 @@ async def on_menu(
     user = await _ensure_user(session, callback.from_user)
     tz = _user_tz(user)
     section = callback_data.section
-    now = datetime.now(UTC)
 
     if section == "main":
         await callback.message.edit_text(
@@ -226,48 +251,16 @@ async def on_menu(
         await callback.message.edit_text(DRAFT_HELP)
     elif section == "today":
         day = datetime.now(tz=tz).date()
-        start = datetime.combine(day, time.min, tzinfo=tz).astimezone(UTC)
-        end = start + timedelta(days=1)
-        items = (
-            (
-                await session.execute(
-                    select(CalendarItem)
-                    .where(
-                        CalendarItem.user_id == user.id,
-                        CalendarItem.status == ItemStatus.scheduled.value,
-                        CalendarItem.starts_at >= start,
-                        CalendarItem.starts_at < end,
-                    )
-                    .order_by(CalendarItem.starts_at)
-                )
-            )
-            .scalars()
-            .all()
-        )
+        items = await calendar_service.list_today(session, user)
         await callback.message.edit_text(
-            f"📅 Today ({day.isoformat()}):\n{_fmt_items(list(items), tz)}",
-            reply_markup=main_menu_kb(),
+            f"📅 Today ({day.isoformat()}):\n{_fmt_items(items, tz)}",
+            reply_markup=items_kb(items) if items else main_menu_kb(),
         )
     elif section == "upcoming":
-        end = now + timedelta(days=7)
-        items = (
-            (
-                await session.execute(
-                    select(CalendarItem)
-                    .where(
-                        CalendarItem.user_id == user.id,
-                        CalendarItem.status == ItemStatus.scheduled.value,
-                        and_(CalendarItem.starts_at >= now, CalendarItem.starts_at < end),
-                    )
-                    .order_by(CalendarItem.starts_at)
-                )
-            )
-            .scalars()
-            .all()
-        )
+        items = await calendar_service.list_upcoming(session, user)
         await callback.message.edit_text(
-            f"📆 Next 7 days:\n{_fmt_items(list(items), tz)}",
-            reply_markup=main_menu_kb(),
+            f"📆 Next 7 days:\n{_fmt_items(items, tz)}",
+            reply_markup=items_kb(items) if items else main_menu_kb(),
         )
     elif section == "workouts":
         logs = (
@@ -360,23 +353,64 @@ async def on_draft(
     else:
         raw = (await state.get_data()).get("draft_text", "")
         draft = _parse_draft(raw, _user_tz(user))
-        item = CalendarItem(
-            user_id=user.id,
-            kind=draft.kind.value,
+        item = await calendar_service.create_item(
+            session,
+            user,
             title=draft.title,
+            kind=draft.kind,
             description=draft.description,
             starts_at=draft.starts_at,
             due_at=draft.due_at,
-            priority=draft.priority.value,
-            status=ItemStatus.scheduled.value,
-            source="bot",
+            priority=draft.priority,
         )
-        session.add(item)
-        await session.flush()
+        reminders = await reminders_service.create_item_reminders(
+            session, user, item, offsets_minutes=draft.remind_offsets
+        )
         await state.clear()
-        await callback.message.edit_text(
-            f"✅ Saved: {draft.title}", reply_markup=main_menu_kb()
+        text = f"✅ Saved: {draft.title}"
+        if reminders:
+            text += f"\n⏰ {len(reminders)} reminder(s) scheduled."
+        await callback.message.edit_text(text, reply_markup=main_menu_kb())
+    await callback.answer()
+
+
+@router.callback_query(ItemCallback.filter())
+async def on_item(
+    callback: CallbackQuery,
+    callback_data: ItemCallback,
+    session: AsyncSession,
+) -> None:
+    user = await _ensure_user(session, callback.from_user)
+    tz = _user_tz(user)
+    if callback_data.action == "complete":
+        item = await calendar_service.complete_item(
+            session, user, callback_data.item_id
         )
+        if item is None:
+            text = "That item is no longer available."
+        else:
+            # A completed item's pending reminders are no longer useful.
+            await reminders_service.cancel_item_reminders(
+                session, user, item.id
+            )
+            when = (
+                f" (was {item.starts_at.astimezone(tz):%Y-%m-%d %H:%M})"
+                if item.starts_at
+                else ""
+            )
+            text = f"✅ Done: {item.title}{when}"
+    elif callback_data.action == "cancel":
+        item = await calendar_service.cancel_item(
+            session, user, callback_data.item_id
+        )
+        text = (
+            f"🚫 Cancelled: {item.title}"
+            if item is not None
+            else "That item is no longer available."
+        )
+    else:
+        text = "Main menu:"
+    await callback.message.edit_text(text, reply_markup=main_menu_kb())
     await callback.answer()
 
 

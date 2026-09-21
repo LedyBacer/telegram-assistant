@@ -1,8 +1,16 @@
 """Inline keyboards for the persistent main menu (SPEC §5)."""
 
+from collections.abc import Sequence
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
-from assistant.bot.callbacks import DraftCallback, MenuCallback, SettingsCallback
+from assistant.bot.callbacks import (
+    DraftCallback,
+    ItemCallback,
+    MenuCallback,
+    SettingsCallback,
+)
+from assistant.models.calendar_items import CalendarItem
 
 # (section, label) — one flat level, no nested sub-menus (SPEC §5).
 SECTIONS: tuple[tuple[str, str], ...] = (
@@ -78,3 +86,29 @@ def draft_kb() -> InlineKeyboardMarkup:
             ]
         ]
     )
+
+
+def items_kb(items: Sequence[CalendarItem]) -> InlineKeyboardMarkup:
+    """Per-item complete/cancel buttons for a calendar item list."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"✅ {item.title[:40]}",
+                callback_data=ItemCallback(action="complete", item_id=item.id).pack(),
+            ),
+            InlineKeyboardButton(
+                text="🚫",
+                callback_data=ItemCallback(action="cancel", item_id=item.id).pack(),
+            ),
+        ]
+        for item in items
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🏠 Main menu",
+                callback_data=MenuCallback(section="main").pack(),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)

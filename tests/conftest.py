@@ -38,3 +38,33 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     # Clean up jobs between tests so each test starts from an empty queue.
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE background_jobs RESTART IDENTITY CASCADE"))
+
+
+_ALL_TABLES = (
+    "digests",
+    "file_chunks",
+    "user_files",
+    "chat_messages",
+    "user_facts",
+    "workout_logs",
+    "reminders",
+    "calendar_items",
+    "background_jobs",
+    "user_settings",
+    "users",
+)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_tables(session: AsyncSession) -> AsyncIterator[None]:
+    """Start every test from an empty database.
+
+    TRUNCATE runs in the fixture session's own transaction (a separate
+    connection would deadlock on AccessExclusiveLock while the fixture
+    session holds an open transaction).
+    """
+    await session.execute(
+        text(f"TRUNCATE {', '.join(_ALL_TABLES)} RESTART IDENTITY CASCADE")
+    )
+    await session.commit()
+    yield
