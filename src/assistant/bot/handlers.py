@@ -18,12 +18,14 @@ from assistant.ai import AIProviderError, AITaskDraft, get_ai_provider
 from assistant.ai.prompts import DRAFT_SYSTEM
 from assistant.bot.callbacks import (
     DraftCallback,
+    FactCallback,
     ItemCallback,
     MenuCallback,
     SettingsCallback,
 )
 from assistant.bot.keyboards import (
     draft_kb,
+    fact_kb,
     items_kb,
     main_menu_kb,
     settings_kb,
@@ -33,9 +35,12 @@ from assistant.bot.states import SettingsStates, TaskDraftStates, WorkoutStates
 from assistant.config import get_settings
 from assistant.models.calendar_items import CalendarItem, ItemKind, ItemPriority
 from assistant.models.chat_messages import ChatMessage, ChatRole
+from assistant.models.facts import FactStatus
 from assistant.models.files import FileState, UserFile
 from assistant.models.users import User
 from assistant.services import calendar as calendar_service
+from assistant.services import chat as chat_service
+from assistant.services import facts as facts_service
 from assistant.services import files as files_service
 from assistant.services import reminders as reminders_service
 from assistant.services import workouts as workouts_service
@@ -294,9 +299,89 @@ async def cmd_cancel(message: Message, state: State) -> None:
 async def cmd_help(message: Message) -> None:
     await message.answer(
         "Use the menu below. ➕ creates tasks/events, ⚙️ adjusts settings, "
+        "/remember <text> stores a fact, /facts lists them, "
         "/cancel aborts an in-progress step.",
         reply_markup=main_menu_kb(),
     )
+
+
+@router.message(Command("remember"))
+async def cmd_remember(
+    message: Message, session: AsyncSession
+) -> None:
+    user = await _ensure_user(session, message.from_user)
+    text = (message.text or "").partition(" ")[2].strip()
+    if not text:
+        await message.answer(
+            'Usage: /remember <what to remember>, e.g.\n/remember I prefer morning workouts\n\n'
+            "I will ask you to confirm before storing it as a fact.",
+            reply_markup=main_menu_kb(),
+        )
+        return
+    try:
+        fact = await facts_service.propose_fact(
+            session, user, value=text, provenance="telegram:/remember"
+        )
+    except ValueError as exc:
+        await message.answer(f"I couldn't store that: {exc}")
+        return
+    await message.answer(
+        f"📝 Proposed fact: {fact.value}\nConfirm it to remember long-term:",
+        reply_markup=fact_kb(fact.id, confirmable=True),
+    )
+
+
+@router.message(Command("facts"))
+async def cmd_facts(message: Message, session: AsyncSession) -> None:
+    user = await _ensure_user(session, message.from_user)
+    facts = await facts_service.list_facts(session, user, limit=20)
+    if not facts:
+        await message.answer(
+            "You have no stored facts. Use /remember to add one.",
+            reply_markup=main_menu_kb(),
+        )
+        return
+    lines = ["Your stored facts:"]
+    for fact in facts:
+        lines.append(f"• [{fact.status}] {fact.value}")
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=fact_kb(facts[0].id, confirmable=facts[0].status == FactStatus.proposed.value),
+    )
+
+
+@router.callback_query(FactCallback.filter())
+async def on_fact(
+    callback: CallbackQuery,
+    callback_data: FactCallback,
+    session: AsyncSession,
+) -> None:
+    user = await _ensure_user(session, callback.from_user)
+    if callback_data.action == "confirm":
+        fact = await facts_service.confirm_fact(
+            session, user, callback_data.fact_id
+        )
+        text = (
+            f"✅ Remembered: {fact.value}\nI'll use confirmed facts in chat."
+            if fact is not None
+            else "That fact is no longer available."
+        )
+    elif callback_data.action == "reject":
+        fact = await facts_service.reject_fact(
+            session, user, callback_data.fact_id
+        )
+        text = (
+            f"❌ Rejected: {fact.value}" if fact is not None else "That fact is no longer available."
+        )
+    elif callback_data.action == "delete":
+        deleted = await facts_service.delete_fact(
+            session, user, callback_data.fact_id
+        )
+        text = "🗑 Deleted." if deleted else "That fact is no longer available."
+    else:
+        text = "Main menu:"
+    await callback.message.edit_text(text, reply_markup=main_menu_kb())
+    await callback.answer()
 
 
 @router.callback_query(MenuCallback.filter())
@@ -627,16 +712,21 @@ async def on_text(
             reply_markup=main_menu_kb(),
         )
     else:
-        session.add(
-            ChatMessage(
-                user_id=user.id,
-                role=ChatRole.user.value,
-                content=text,
-                source="telegram",
+        try:
+            reply = await chat_service.chat(session, user, text)
+        except AIProviderError:
+            session.add(
+                ChatMessage(
+                    user_id=user.id,
+                    role=ChatRole.user.value,
+                    content=text,
+                    source="telegram",
+                )
             )
-        )
-        await message.answer(
-            "Got it — saved. You can ask me anything about your tasks, "
-            "workouts, or files.",
-            reply_markup=main_menu_kb(),
-        )
+            await message.answer(
+                "Sorry, I can't reach my language model right now. "
+                "Please try again in a bit.",
+                reply_markup=main_menu_kb(),
+            )
+            return
+        await message.answer(reply, reply_markup=main_menu_kb())

@@ -6,6 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from assistant.bot.callbacks import (
     DraftCallback,
+    FactCallback,
     ItemCallback,
     MenuCallback,
     SettingsCallback,
@@ -112,6 +113,38 @@ def workouts_kb() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def fact_kb(fact_id: int, *, confirmable: bool) -> InlineKeyboardMarkup:
+    """Fact actions: confirm/reject for proposed facts, delete for all
+    (SPEC §14)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if confirmable:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="✅ Confirm",
+                    callback_data=FactCallback(action="confirm", fact_id=fact_id).pack(),
+                ),
+                InlineKeyboardButton(
+                    text="❌ Reject",
+                    callback_data=FactCallback(action="reject", fact_id=fact_id).pack(),
+                ),
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🗑 Delete",
+                callback_data=FactCallback(action="delete", fact_id=fact_id).pack(),
+            ),
+            InlineKeyboardButton(
+                text="🏠 Main menu",
+                callback_data=MenuCallback(section="main").pack(),
+            ),
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def items_kb(items: Sequence[CalendarItem]) -> InlineKeyboardMarkup:

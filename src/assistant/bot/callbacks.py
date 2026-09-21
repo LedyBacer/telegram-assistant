@@ -22,3 +22,10 @@ class DraftCallback(CallbackData, prefix="draft"):
     """Confirm/cancel a structured draft before it is persisted (SPEC §6)."""
 
     action: str
+
+
+class FactCallback(CallbackData, prefix="fact"):
+    """Confirm/reject/delete a user fact (SPEC §14)."""
+
+    action: str
+    fact_id: int

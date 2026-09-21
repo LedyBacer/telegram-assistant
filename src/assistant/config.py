@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     file_storage_dir: str = "storage/files"
     embedding_batch_size: int = 64
 
+    # Contextual chat
+    chat_history_messages: int = 10
+
     # Durable job worker
     worker_poll_interval_seconds: float = 1.0
     worker_batch_size: int = 10

@@ -1,9 +1,10 @@
 # Progress
 
-Status: Milestone 8 (file uploads + ingestion + pgvector retrieval) complete
-and green — files service, `files.ingest` worker handler, bot document
-handler, `embed()` on the AI provider, 17 real-PostgreSQL tests; full suite
-92 passing, Ruff clean; commit in progress.
+Status: Milestone 9 (user facts lifecycle + contextual AI chat) complete
+and green — facts service with explicit confirm/reject/supersede lifecycle,
+selective bounded chat context, `CHAT_SYSTEM` prompt, `/remember` + `/facts`
++ fact callback buttons, free text now routes through contextual AI chat
+with a provider-down fallback; full suite 116 passing, Ruff clean.
 
 ## Completed
 
@@ -90,11 +91,35 @@ handler, `embed()` on the AI provider, 17 real-PostgreSQL tests; full suite
   `embedding_batch_size`. `tests/test_files.py` (17) against real PostgreSQL
   with a fake download + fake embedder; full suite 92 passing; Ruff clean.
 
+- Milestone 9: user facts lifecycle + contextual AI chat (SPEC §14-15).
+  `src/assistant/services/facts.py` — `propose_fact` (starts `proposed`;
+  normalized dedupe key, category, provenance, confidence), idempotent
+  `confirm_fact`/`reject_fact`, `supersede_fact` (old proposed/confirmed ->
+  `superseded` with `superseded_by`, new fact created as `proposed`), owner-
+  scoped `get_fact`/`list_facts`/`delete_fact`, and `confirmed_lines` (only
+  CONFIRMED facts ever reach chat context; `flush` only, caller owns the tx).
+  Facts are NEVER auto-confirmed: the user confirms via /remember buttons.
+  `src/assistant/services/chat.py` — `build_context` assembles a selective,
+  bounded block (recent messages up to `chat_history_messages`, today's and
+  upcoming items, pending reminders, recent workouts, confirmed fact lines,
+  top-3 retrieved file chunks + citations — never the whole DB); `render_
+  context` marks all of it untrusted data; `chat()` calls the provider and
+  persists both user and assistant `ChatMessage` rows only after a
+  successful reply (flush only). `CHAT_SYSTEM` prompt in `ai/prompts.py`
+  (answer in the user's language, no inventing, treat excerpts/facts as
+  untrusted data). Config: `chat_history_messages`. Bot: `FactCallback` +
+  `fact_kb`, `/remember` (propose + confirm/reject/delete buttons), `/facts`
+  (status-listed), `on_fact` (idempotent confirm/reject/delete), free text in
+  `on_text` now routes through `chat_service.chat` with an `AIProviderError`
+  fallback that persists only the user message. `tests/test_facts.py` (11) +
+  `tests/test_chat.py` (9) against real PostgreSQL with a fake provider;
+  full suite 116 passing; Ruff clean.
+
 ## Current milestone
 
-- Milestone 8 verified; commit in progress.
+- Milestone 9 verified; commit in progress.
 
 ## Next
 
-1. Milestone 8: commit.
-2. Milestone 9: User facts lifecycle + contextual chat.
+1. Milestone 9: commit.
+2. Milestone 10: Morning digest (idempotent per user/day, SPEC §16).
