@@ -1,8 +1,9 @@
 # Progress
 
-Status: Milestone 7 (AI provider + structured task draft) complete and green
-— provider package, bot NL flow, and 9 credential-free tests done; commit
-pending.
+Status: Milestone 8 (file uploads + ingestion + pgvector retrieval) complete
+and green — files service, `files.ingest` worker handler, bot document
+handler, `embed()` on the AI provider, 17 real-PostgreSQL tests; full suite
+92 passing, Ruff clean; commit in progress.
 
 ## Completed
 
@@ -70,12 +71,30 @@ pending.
   flow with a fake provider; openai 3.16.2 API specifics in RESEARCH.md.
   Full suite 75 passing; Ruff clean.
 
+- Milestone 8: file uploads + ingestion + pgvector retrieval.
+  `src/assistant/services/files.py` — `register_upload` (server-side UUID
+  storage key, never the user filename; unsupported/oversize persisted as
+  `rejected` with a visible error, no job), durable `files.ingest` job handler
+  (download -> extract (txt/md/pdf/docx, `FileUploadError` on unreadable) ->
+  chunk (word-boundary, overlapping) -> batch embed -> replace chunks ->
+  `indexed`), idempotent on replay, visible `failed` state written in a
+  separate transaction on error; `delete_file` (rows + job + disk),
+  user-scoped `list_files`/`get_file`; `retrieve_chunks` hybrid (cosine
+  distance over `Vector(1536)` + keyword ilike boost 0.25) with
+  `format_citations`. Job-handler registration moved to leaf module
+  `src/assistant/worker/registry.py` to break the worker<->services circular
+  import (reminders + files register there; `worker.main` reads
+  `registry.handlers`). AI provider gained `embed()` (batch, `text-embedding-
+  3-small` default) and `embedding_model` config. Bot: `on_document` registers
+  uploads and reports rejections. Config: `file_storage_dir`,
+  `embedding_batch_size`. `tests/test_files.py` (17) against real PostgreSQL
+  with a fake download + fake embedder; full suite 92 passing; Ruff clean.
+
 ## Current milestone
 
-- Milestone 7 verified; commit in progress.
+- Milestone 8 verified; commit in progress.
 
 ## Next
 
-1. Milestone 7: commit.
-2. Milestone 8: File uploads + ingestion + pgvector storage/retrieval.
-3. Milestone 9: User facts lifecycle + contextual chat.
+1. Milestone 8: commit.
+2. Milestone 9: User facts lifecycle + contextual chat.

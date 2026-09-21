@@ -152,9 +152,9 @@ async def test_cancel_item_reminders_only_pending(session: AsyncSession) -> None
 
 
 async def _run_handler(session: AsyncSession, job: BackgroundJob) -> None:
-    from assistant.worker.main import _handlers
+    from assistant.worker import registry
 
-    handler = _handlers["reminder_send"]
+    handler = registry.handlers["reminder_send"]
     job.status = JobStatus.running.value
     job.locked_by = "test-worker"
     await session.flush()
@@ -225,9 +225,9 @@ async def test_handler_missing_payload_raises(session: AsyncSession) -> None:
 
 async def test_reminder_send_handler_registered() -> None:
     import assistant.worker.handlers  # noqa: F401
-    from assistant.worker.main import _handlers
+    from assistant.worker import registry
 
-    assert "reminder_send" in _handlers
+    assert "reminder_send" in registry.handlers
 
 
 async def test_list_reminders_orders_by_fire_at(session: AsyncSession) -> None:

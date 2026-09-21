@@ -41,6 +41,10 @@ class AIProvider(Protocol):
         """Completion whose content is validated against a Pydantic schema."""
         ...
 
+    async def embed(self, *, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of texts into vectors (one per input, same order)."""
+        ...
+
 
 class OpenAICompatibleProvider:
     """`AsyncOpenAI`-backed provider; any OpenAI-compatible endpoint works."""
@@ -51,10 +55,12 @@ class OpenAICompatibleProvider:
         api_key: str,
         base_url: str | None = None,
         chat_model: str = "gpt-4o-mini",
+        embedding_model: str = "text-embedding-3-small",
         max_attempts: int = 2,
         timeout: float = 60.0,
     ) -> None:
         self._model = chat_model
+        self._embedding_model = embedding_model
         self._max_attempts = max_attempts
         self._client = AsyncOpenAI(
             api_key=api_key,
@@ -107,3 +113,15 @@ class OpenAICompatibleProvider:
             f"model output failed schema validation after "
             f"{self._max_attempts} attempts"
         ) from last_error
+
+    async def embed(self, *, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        try:
+            response = await self._client.embeddings.create(
+                model=self._embedding_model,
+                input=texts,
+            )
+        except APIError as exc:
+            raise AIProviderError(f"embedding failed: {exc}") from exc
+        return [list(item.embedding) for item in response.data]

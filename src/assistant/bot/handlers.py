@@ -33,9 +33,10 @@ from assistant.bot.states import SettingsStates, TaskDraftStates, WorkoutStates
 from assistant.config import get_settings
 from assistant.models.calendar_items import CalendarItem, ItemKind, ItemPriority
 from assistant.models.chat_messages import ChatMessage, ChatRole
-from assistant.models.files import UserFile
+from assistant.models.files import FileState, UserFile
 from assistant.models.users import User
 from assistant.services import calendar as calendar_service
+from assistant.services import files as files_service
 from assistant.services import reminders as reminders_service
 from assistant.services import workouts as workouts_service
 from assistant.services.users import upsert_user
@@ -491,6 +492,30 @@ async def on_item(
         text = "Main menu:"
     await callback.message.edit_text(text, reply_markup=main_menu_kb())
     await callback.answer()
+
+
+@router.message(F.document)
+async def on_document(message: Message, session: AsyncSession) -> None:
+    user = await _ensure_user(session, message.from_user)
+    doc = message.document
+    if doc is None:
+        return
+    file = await files_service.register_upload(
+        session,
+        user,
+        original_filename=doc.file_name,
+        mime_type=doc.mime_type or "",
+        size_bytes=doc.file_size,
+        telegram_file_id=doc.file_id,
+        telegram_file_unique_id=doc.file_unique_id,
+    )
+    if file.state == FileState.rejected.value:
+        await message.answer(f"🚫 Couldn't store that file: {file.error}")
+    else:
+        await message.answer(
+            f"📄 Saved {file.original_filename}. I'm indexing it in the "
+            "background — check 📁 My files for the status."
+        )
 
 
 @router.message(F.text)

@@ -209,7 +209,7 @@ async def _handle_reminder_send(
 
 def _register_handler() -> None:
     """Register the delivery handler with the worker's handler registry."""
-    from assistant.worker.main import register_job_handler
+    from assistant.worker.registry import register_job_handler
 
     register_job_handler(REMINDER_SEND_JOB_TYPE)(_handle_reminder_send)
 

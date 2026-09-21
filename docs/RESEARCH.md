@@ -92,3 +92,14 @@ Per QWEN.md, only the successful lookups above are claimed as Context7-assisted.
   3. Constant-time compare against `hash`; reject if missing.
   4. Reject if `auth_date` is older than `MINIAPP_AUTH_MAX_AGE_SECONDS`.
   5. Parse `user` JSON from the payload; never trust client-declared user IDs.
+
+## Hybrid retrieval (M8)
+
+- Semantic arm: `FileChunk.embedding.cosine_distance($query_vec)` over the HNSW
+  cosine index, joined to `user_files` for the source filename, always filtered
+  by `user_id` (ownership isolation) and `embedding IS NOT NULL`.
+- Keyword arm: `text ILIKE '%term%'` (term escaped for `\`, `%`, `_`) over the
+  same user scope; a fixed +0.25 boost is added to chunks present in both arms,
+  then the combined score is re-sorted descending.
+- Document text is treated as untrusted data: it is chunked/embedded and
+  retrieved, never interpreted as instructions.

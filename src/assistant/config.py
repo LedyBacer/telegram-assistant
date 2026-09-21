@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     max_upload_size_bytes: int = 20 * 1024 * 1024
     chunk_size: int = 1000
     chunk_overlap: int = 150
+    file_storage_dir: str = "storage/files"
+    embedding_batch_size: int = 64
 
     # Durable job worker
     worker_poll_interval_seconds: float = 1.0

@@ -16,35 +16,21 @@ import os
 import platform
 import signal
 import uuid
-from collections.abc import Awaitable, Callable
-
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.config import get_settings
 from assistant.db import dispose_engine, get_session_factory
 from assistant.logging import setup_logging
 from assistant.models.jobs import BackgroundJob
 from assistant.services import jobs as jobs_service
-from assistant.worker import handlers  # noqa: F401  (registers job handlers)
+from assistant.worker import (
+    handlers,  # noqa: F401  (registers job handlers)
+    registry,
+)
 
 logger = logging.getLogger("assistant.worker")
 
-JobHandler = Callable[[AsyncSession, BackgroundJob], Awaitable[None]]
-
-_handlers: dict[str, JobHandler] = {}
-
 # A running job whose lock is older than this is treated as abandoned.
 LOCK_TTL_SECONDS = 600.0
-
-
-def register_job_handler(job_type: str) -> Callable[[JobHandler], JobHandler]:
-    """Decorator registering an async handler for a background job type."""
-
-    def decorator(func: JobHandler) -> JobHandler:
-        _handlers[job_type] = func
-        return func
-
-    return decorator
 
 
 def _new_worker_id() -> str:
@@ -77,7 +63,7 @@ class JobWorker:
         return len(task_args)
 
     async def _run_job(self, job_id: int, job_type: str) -> None:
-        handler = _handlers.get(job_type)
+        handler = registry.handlers.get(job_type)
         if handler is None:
             await self._fail(job_id, f"no handler registered for job type {job_type!r}")
             return

@@ -36,6 +36,7 @@ def build_ai_provider(settings: Settings) -> AIProvider:
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
         chat_model=settings.chat_model,
+        embedding_model=settings.embedding_model,
     )
 
 
