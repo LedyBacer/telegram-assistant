@@ -72,9 +72,13 @@ class CalendarItem(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="calendar_items")
+    reminders: Mapped[list["Reminder"]] = relationship(
+        back_populates="calendar_item", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<CalendarItem id={self.id} kind={self.kind} title={self.title!r}>"
 
 
+from assistant.models.reminders import Reminder  # noqa: E402  (avoid circular import)
 from assistant.models.users import User  # noqa: E402  (avoid circular import)

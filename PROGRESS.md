@@ -1,6 +1,6 @@
 # Progress
 
-Status: Milestone 2 (schema + models) complete.
+Status: Milestone 3 (durable job queue) complete.
 
 ## Completed
 
@@ -21,15 +21,19 @@ Status: Milestone 2 (schema + models) complete.
   `c390315de59f_initial_schema` applied to real PostgreSQL 17 (pgvector extension and
   HNSW index verified in catalog). Ruff clean.
 
+- Milestone 3: durable PG job queue service (`src/assistant/services/jobs.py` —
+  `FOR UPDATE SKIP LOCKED` claim, status transitions, exponential-backoff retries
+  (30 s base), abandoned-lock TTL recovery, idempotency keys) + worker entrypoint
+  `python -m assistant.worker.main`; 11 real-PostgreSQL tests in `tests/test_jobs.py`
+  (including concurrent-claimer no-double-claim) passing; Ruff clean.
+
 ## Current milestone
 
-- Milestone 2 verified and committed.
+- Milestone 3 verified and committed.
 
 ## Next
 
-1. Milestone 3: durable PG job queue service (`src/assistant/services/jobs.py` —
-   SKIP LOCKED claim, status transitions, exponential-backoff retries, abandoned-lock
-   TTL recovery, idempotency) + `src/assistant/worker/main.py` + real-PG concurrency
-   tests (multiple claimers, no double-claim).
-2. Telegram bot command/handler skeleton.
-3. Calendar/reminders services + handlers.
+1. Milestone 4: aiogram 3 bot skeleton (`/start`, main menu, FSM, CallbackData,
+   `src/assistant/bot/main.py`).
+2. Calendar/reminders services + handlers.
+3. Workouts services + handlers.
