@@ -15,3 +15,10 @@ class SettingsStates(StatesGroup):
 
     digest_time = State()
     timezone = State()
+
+
+class WorkoutStates(StatesGroup):
+    """Workout logging and scheduling (SPEC §10)."""
+
+    waiting_log = State()
+    waiting_schedule = State()

@@ -88,6 +88,32 @@ def draft_kb() -> InlineKeyboardMarkup:
     )
 
 
+def workouts_kb() -> InlineKeyboardMarkup:
+    """Workout section actions (SPEC §10)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="➕ Log workout",
+                    callback_data=MenuCallback(section="log_workout").pack(),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📅 Schedule workout",
+                    callback_data=MenuCallback(section="schedule_workout").pack(),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏠 Main menu",
+                    callback_data=MenuCallback(section="main").pack(),
+                )
+            ],
+        ]
+    )
+
+
 def items_kb(items: Sequence[CalendarItem]) -> InlineKeyboardMarkup:
     """Per-item complete/cancel buttons for a calendar item list."""
     rows = [

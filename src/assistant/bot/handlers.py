@@ -25,16 +25,17 @@ from assistant.bot.keyboards import (
     items_kb,
     main_menu_kb,
     settings_kb,
+    workouts_kb,
 )
-from assistant.bot.states import SettingsStates, TaskDraftStates
+from assistant.bot.states import SettingsStates, TaskDraftStates, WorkoutStates
 from assistant.config import get_settings
 from assistant.models.calendar_items import CalendarItem, ItemKind, ItemPriority
 from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.files import UserFile
 from assistant.models.users import User
-from assistant.models.workout_logs import WorkoutLog
 from assistant.services import calendar as calendar_service
 from assistant.services import reminders as reminders_service
+from assistant.services import workouts as workouts_service
 from assistant.services.users import upsert_user
 
 router = Router(name="bot")
@@ -173,6 +174,42 @@ def _draft_preview(draft: TaskDraft, tz: ZoneInfo) -> str:
     return "\n".join(lines)
 
 
+def _parse_workout_log(text: str) -> tuple[str, int | None, int | None]:
+    """Parse ``name, minutes, effort`` (last two optional) for logging."""
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if not parts:
+        raise ValueError("Workout name is required.")
+    name = parts[0]
+    duration: int | None = None
+    effort: int | None = None
+    if len(parts) > 1:
+        try:
+            duration = int(parts[1])
+        except ValueError:
+            raise ValueError("Minutes must be a whole number.") from None
+    if len(parts) > 2:
+        try:
+            effort = int(parts[2])
+        except ValueError:
+            raise ValueError("Effort must be a whole number 1-10.") from None
+    return name, duration, effort
+
+
+def _parse_workout_schedule(text: str, tz: ZoneInfo) -> tuple[str, datetime]:
+    """Parse ``name, YYYY-MM-DD HH:MM`` for scheduling."""
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    if len(parts) < 2:
+        raise ValueError("Send: name, YYYY-MM-DD HH:MM")
+    name = parts[0]
+    try:
+        when = datetime.fromisoformat(" ".join(parts[1:]))
+    except ValueError:
+        raise ValueError("Time must look like 2026-09-23 18:00.") from None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=tz)
+    return name, when
+
+
 def _fmt_items(items: list[CalendarItem], tz: ZoneInfo) -> str:
     if not items:
         return "Nothing here."
@@ -263,28 +300,34 @@ async def on_menu(
             reply_markup=items_kb(items) if items else main_menu_kb(),
         )
     elif section == "workouts":
-        logs = (
-            (
-                await session.execute(
-                    select(WorkoutLog)
-                    .where(WorkoutLog.user_id == user.id)
-                    .order_by(WorkoutLog.started_at.desc())
-                    .limit(10)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not logs:
-            body = "No workouts logged yet."
-        else:
-            body = "\n".join(
-                f"🏋️ {log.started_at.astimezone(tz):%Y-%m-%d %H:%M}  "
-                f"{log.name} [{log.status.value}]"
+        stats = await workouts_service.workout_stats(session, user)
+        logs = await workouts_service.list_workouts(session, user, limit=5)
+        lines = [
+            f"💪 Total: {stats['total']} · this week: {stats['this_week']} · "
+            f"streak: {stats['current_streak']}d (best {stats['longest_streak']}d)"
+        ]
+        if logs:
+            lines.append("Recent:")
+            lines.extend(
+                f"🏋️ {log.started_at.astimezone(tz):%Y-%m-%d %H:%M}  {log.name}"
                 + (f" ({log.duration_minutes} min)" if log.duration_minutes else "")
                 for log in logs
             )
-        await callback.message.edit_text(body, reply_markup=main_menu_kb())
+        else:
+            lines.append("No workouts logged yet.")
+        await callback.message.edit_text("\n".join(lines), reply_markup=workouts_kb())
+    elif section == "log_workout":
+        await state.set_state(WorkoutStates.waiting_log)
+        await callback.message.edit_text(
+            "Send: name, minutes, effort (1-10) — the last two are optional.\n"
+            "Example: Running, 30, 7\n/cancel aborts."
+        )
+    elif section == "schedule_workout":
+        await state.set_state(WorkoutStates.waiting_schedule)
+        await callback.message.edit_text(
+            "Send: name, YYYY-MM-DD HH:MM\n"
+            "Example: Running, 2026-09-23 18:00\n/cancel aborts."
+        )
     elif section == "files":
         files = (
             (
@@ -456,6 +499,56 @@ async def on_text(
         await state.clear()
         await message.answer(
             f"Digest time set to {clock:%H:%M}.", reply_markup=settings_kb()
+        )
+    elif current == WorkoutStates.waiting_log:
+        try:
+            name, duration, effort = _parse_workout_log(text)
+        except ValueError as exc:
+            await message.answer(
+                f"I couldn't read that: {exc}\n\n"
+                "Send: name, minutes, effort (1-10). /cancel aborts."
+            )
+            return
+        try:
+            log = await workouts_service.log_workout(
+                session,
+                user,
+                name=name,
+                duration_minutes=duration,
+                perceived_effort=effort,
+            )
+        except ValueError as exc:
+            await message.answer(f"I couldn't read that: {exc}")
+            return
+        await state.clear()
+        await message.answer(
+            f"🏋️ Logged: {log.name}"
+            + (f" ({log.duration_minutes} min)" if log.duration_minutes else ""),
+            reply_markup=workouts_kb(),
+        )
+    elif current == WorkoutStates.waiting_schedule:
+        tz = _user_tz(user)
+        try:
+            name, when = _parse_workout_schedule(text, tz)
+        except ValueError as exc:
+            await message.answer(
+                f"I couldn't read that: {exc}\n\n"
+                "Send: name, YYYY-MM-DD HH:MM. /cancel aborts."
+            )
+            return
+        try:
+            item = await workouts_service.schedule_workout(
+                session, user, name=name, starts_at=when
+            )
+        except ValueError as exc:
+            await message.answer(f"I couldn't schedule that: {exc}")
+            return
+        await state.clear()
+        await message.answer(
+            f"📅 Scheduled: {item.title} at "
+            f"{item.starts_at.astimezone(tz):%Y-%m-%d %H:%M} ({tz}).\n"
+            "You'll get a reminder at the start time.",
+            reply_markup=main_menu_kb(),
         )
     else:
         session.add(

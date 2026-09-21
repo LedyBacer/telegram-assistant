@@ -1,7 +1,7 @@
 # Progress
 
-Status: Milestone 5 (calendar/tasks/reminders) in progress — services + bot
-handlers + tests done and green; commit pending.
+Status: Milestone 6 (workouts) complete and green — services, bot handlers,
+and 7 real-PostgreSQL tests done; commit pending.
 
 ## Completed
 
@@ -50,13 +50,21 @@ handlers + tests done and green; commit pending.
   (9) + `tests/test_reminders.py` (13) against real PostgreSQL; conftest
   autouse TRUNCATE of all tables in the fixture session's transaction.
   Full suite 59 passing; Ruff clean.
+- Milestone 6: workout service (`src/assistant/services/workouts.py` — log/get/
+  list/stats with timezone-aware streaks, schedule_workout creating a calendar
+  item + start-time reminder). `calendar.create_item` gained an `extra` kwarg.
+  Bot wiring: `WorkoutStates` FSM, `workouts_kb`, workouts menu section shows
+  stats + recent logs, `log_workout` / `schedule_workout` flows in `on_text`
+  with `name, minutes, effort` and `name, YYYY-MM-DD HH:MM` parsing.
+  `tests/test_workouts.py` (7) against real PostgreSQL including ownership
+  isolation; full suite 66 passing; Ruff clean.
 
 ## Current milestone
 
-- Milestone 5 verified; commit in progress.
+- Milestone 6 verified; commit in progress.
 
 ## Next
 
-1. Milestone 5: commit.
-2. Milestone 6: Workouts services + handlers.
-3. Milestone 7: AI provider abstraction + structured task draft.
+1. Milestone 6: commit.
+2. Milestone 7: AI provider abstraction (OpenAI SDK) + structured task draft.
+3. Milestone 8: File uploads + ingestion + pgvector storage/retrieval.

@@ -45,6 +45,7 @@ async def create_item(
     due_at: datetime | None = None,
     priority: ItemPriority = ItemPriority.normal,
     source: str = "bot",
+    extra: dict | None = None,
 ) -> CalendarItem:
     """Create a calendar item with timestamps normalized to UTC."""
     if not title.strip():
@@ -66,6 +67,7 @@ async def create_item(
         priority=priority.value,
         status=ItemStatus.scheduled.value,
         source=source,
+        extra=extra or {},
     )
     session.add(item)
     await session.flush()
