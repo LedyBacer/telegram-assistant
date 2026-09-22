@@ -1,11 +1,10 @@
 # Progress
 
-Status: Milestone 10 (durable morning digest + motivation + real reminder
-delivery) complete and green — `digests` service with per-(user, day)
-idempotency, worker-side `notifications` Telegram sender, state-derived
-motivation lines, periodic digest scheduling in the worker loop, reminders
-now actually delivered through the Bot API; full suite 127 passing, Ruff
-clean.
+Status: Milestone 11 (Mini App initData HMAC auth + /api/v1 endpoints)
+complete and green — `verify_init_data` (Telegram HMAC, freshness, user
+validation), authed `/api/v1` calendar/items/workouts/files(+search)/
+facts/reminders/settings routes, vanilla-JS Mini App SPA; full suite 164
+passing, Ruff clean.
 
 ## Completed
 
@@ -138,11 +137,48 @@ clean.
   real PostgreSQL with a fake sender; `tests/test_reminders.py` gained an
   autouse sender stub. Full suite 127 passing; Ruff clean.
 
+- Milestone 11: Mini App (initData HMAC) + /api/v1 authed endpoints
+  (SPEC §18-20). `src/assistant/api/auth.py` — `verify_init_data`:
+  Telegram's exact initData HMAC (secret = HMAC-SHA256(b"WebAppData",
+  token), over the sorted data-check-string; constant-time
+  `hmac.compare_digest`), duplicate-parameter rejection, hash
+  well-formedness, `auth_date` freshness (max age + future-skew
+  tolerance), strict user validation (positive int id, bots rejected,
+  JSON shape); `get_current_user` FastAPI dependency (initData header ->
+  verified user -> upsert + commit -> 401 on any `InitDataError`).
+  `src/assistant/api/schemas.py` — pydantic v2 request/response models
+  (`ORMModel` with `from_attributes`). `src/assistant/api/routes.py` —
+  `APIRouter(prefix="/api/v1")`: `GET /me`; calendar `today` /
+  `upcoming?days`; items CRUD (`POST` 201 with source=miniapp + optional
+  `remind_offsets_minutes`, `PATCH`, `complete` / `cancel`, `DELETE` 204);
+  workouts (`POST` 201, `GET` list, `GET /stats`); files (`GET` list,
+  `DELETE` 204, `GET /search?q&top_k` -> 502 when the embedding provider
+  is unavailable); reminders (`GET`, `POST` 201, `POST {id}/cancel`);
+  facts (`GET`, `POST` 201 provenance=miniapp, `confirm` / `reject`,
+  `DELETE` 204); settings (`GET`, `PATCH` with IANA timezone validation
+  -> 422). Naive datetimes are interpreted in the user's timezone;
+  every route is user-scoped (404 across users); service `ValueError` ->
+  400; pydantic errors -> 422. `src/assistant/api/main.py` — FastAPI
+  lifespan (dispose engine) + `/health`/`/healthz` + static `/miniapp`
+  mount. `miniapp/` — vanilla-JS SPA (tabs: today / upcoming / new /
+  workouts / files / facts / settings) sending the raw
+  `Telegram.WebApp.initData` as `X-Telegram-Init-Data`; all user input
+  rendered via `textContent`; 401 -> "reopen the app" message.
+  `tests/test_init_data.py` (17, pure unit, signed payloads with the real
+  algorithm) + `tests/test_api.py` (21, real PostgreSQL via
+  `httpx.ASGITransport` + `dependency_overrides`, signed initData, fake
+  embedder). Ruff config: `extend-immutable-calls` for FastAPI
+  `Depends`/`Query` (B008). `ruff format` is NOT a project gate —
+  pre-existing files are unformatted; `ruff check` is the standard.
+  Full suite 164 passing; Ruff clean.
+
 ## Current milestone
 
-- Milestone 10 verified; commit in progress.
+- Milestone 12: full test suite coverage check against SPEC §26.
 
 ## Next
 
-1. Milestone 10: commit.
-2. Milestone 11: Mini App (initData HMAC) + /api/v1 authed endpoints (SPEC §18).
+1. Milestone 12: verify every SPEC §26 test-coverage bullet is covered by
+   the suite; add any missing tests.
+2. Milestone 13: final verification (fresh DB, migrations, full suite,
+   Ruff, imports, Docker Compose build, real-Postgres flows) + REPORT.md.

@@ -1,0 +1,164 @@
+"""Pydantic request/response schemas for the Mini App API (SPEC §20)."""
+
+from __future__ import annotations
+
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from assistant.models.calendar_items import ItemKind, ItemPriority
+
+
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserOut(ORMModel):
+    id: int
+    first_name: str
+    last_name: str | None
+    username: str | None
+
+
+class SettingsOut(ORMModel):
+    timezone: str
+    digest_time: time
+    motivation_enabled: bool
+
+
+class SettingsUpdate(BaseModel):
+    timezone: str | None = None
+    digest_time: time | None = None
+    motivation_enabled: bool | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _valid_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            ZoneInfo(value)
+        except (ValueError, KeyError) as exc:
+            raise ValueError(f"unknown timezone {value!r}") from exc
+        return value
+
+
+class MeOut(BaseModel):
+    user: UserOut
+    settings: SettingsOut
+
+
+class ItemCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    kind: ItemKind = ItemKind.task
+    description: str | None = Field(default=None, max_length=4000)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    due_at: datetime | None = None
+    priority: ItemPriority = ItemPriority.normal
+    remind_offsets_minutes: list[int] = Field(default_factory=list)
+
+
+class ItemUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    description: str | None = Field(default=None, max_length=4000)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    due_at: datetime | None = None
+    priority: ItemPriority | None = None
+
+
+class ItemOut(ORMModel):
+    id: int
+    kind: str
+    title: str
+    description: str | None
+    starts_at: datetime | None
+    ends_at: datetime | None
+    due_at: datetime | None
+    status: str
+    priority: str
+    source: str
+    extra: dict
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+
+
+class WorkoutCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    started_at: datetime | None = None
+    duration_minutes: int | None = Field(default=None, gt=0)
+    notes: str | None = Field(default=None, max_length=4000)
+    perceived_effort: int | None = Field(default=None, ge=1, le=10)
+
+
+class WorkoutOut(ORMModel):
+    id: int
+    name: str
+    started_at: datetime
+    duration_minutes: int | None
+    notes: str | None
+    perceived_effort: int | None
+    status: str
+    created_at: datetime
+
+
+class WorkoutStatsOut(BaseModel):
+    total: int
+    total_minutes: int
+    this_week: int
+    current_streak: int
+    longest_streak: int
+    last_date: date | None
+
+
+class FileOut(ORMModel):
+    id: int
+    original_filename: str
+    mime_type: str
+    size_bytes: int | None
+    state: str
+    error: str | None
+    created_at: datetime
+    indexed_at: datetime | None
+
+
+class SearchResultOut(ORMModel):
+    file_id: int
+    file_name: str
+    position: int
+    text: str
+    score: float
+
+
+class ReminderCreate(BaseModel):
+    fire_at: datetime
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class ReminderOut(ORMModel):
+    id: int
+    fire_at: datetime
+    message: str
+    status: str
+    created_at: datetime
+
+
+class FactCreate(BaseModel):
+    value: str = Field(min_length=1, max_length=2000)
+    category: str | None = Field(default=None, max_length=64)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class FactOut(ORMModel):
+    id: int
+    category: str
+    value: str
+    provenance: str | None
+    confidence: float | None
+    status: str
+    created_at: datetime
+
+
