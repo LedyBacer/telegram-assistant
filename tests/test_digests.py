@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import MissingGreenlet
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.models.calendar_items import ItemKind
@@ -141,6 +142,56 @@ async def test_ensure_digest_jobs_schedules_all_then_is_noop(
     await session.commit()
     assert created == 0
     assert len((await session.scalars(select(DigestDelivery))).all()) == 2
+
+
+async def test_ensure_digest_jobs_works_with_and_without_settings_row(
+    session: AsyncSession,
+) -> None:
+    """Regression for the production ``MissingGreenlet`` traceback: the
+    worker's periodic digest pass read ``user.settings`` (a lazy
+    relationship) inside ``schedule_todays_digest``. ``ensure_digest_jobs``
+    must eager-load settings and succeed for users WITH and WITHOUT a
+    ``UserSettings`` row, repeated passes included (worker stays alive).
+    """
+    await _user(session, user_id=91)  # has a UserSettings row
+    session.add(User(id=92, first_name="G"))  # raw user, NO settings row
+    await session.commit()
+
+    created = await digests.ensure_digest_jobs(session)
+    await session.commit()
+    assert created == 2
+
+    rows = (await session.scalars(select(DigestDelivery))).all()
+    assert {r.user_id for r in rows} == {91, 92}
+    jobs = (
+        await session.scalars(
+            select(BackgroundJob).where(BackgroundJob.type == digests.DIGEST_JOB_TYPE)
+        )
+    ).all()
+    assert {j.user_id for j in jobs} == {91, 92}
+
+    # Subsequent worker passes stay alive and are idempotent no-ops.
+    assert await digests.ensure_digest_jobs(session) == 0
+    assert await digests.ensure_digest_jobs(session) == 0
+
+
+async def test_lazy_settings_access_without_eager_load_raises_missing_greenlet(
+    session: AsyncSession,
+) -> None:
+    """Documents the hazard the digest pass must avoid: a plain
+    ``select(User)`` leaves ``settings`` unloaded, and a synchronous
+    attribute read in async context raises ``MissingGreenlet`` — so any
+    code path that reads ``user.settings`` synchronously must
+    eager-load it (``selectinload``), never lazy-load it.
+    """
+    await _user(session, user_id=93)
+    await session.commit()
+    session.expire_all()
+    plain = (
+        await session.scalars(select(User).where(User.id == 93))
+    ).one()
+    with pytest.raises(MissingGreenlet):
+        _ = plain.settings
 
 
 async def test_digest_job_is_due_immediately_for_past_time(

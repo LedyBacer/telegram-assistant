@@ -178,8 +178,16 @@ async def ensure_digest_jobs(session: AsyncSession) -> int:
 
     Called periodically by the worker. Returns the number of deliveries
     created by this pass.
+
+    ``User.settings`` is eager-loaded: ``schedule_todays_digest`` reads the
+    settings synchronously (timezone, digest time) and a lazy load from an
+    async session outside greenlet context raises ``MissingGreenlet``.
     """
-    users = (await session.scalars(select(User).order_by(User.id))).all()
+    users = (
+        await session.scalars(
+            select(User).options(selectinload(User.settings)).order_by(User.id)
+        )
+    ).all()
     created = 0
     for user in users:
         _, is_new = await schedule_todays_digest(session, user)
