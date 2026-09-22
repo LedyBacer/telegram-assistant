@@ -65,7 +65,8 @@ pass, no TODO/stub/placeholder, docs + REPORT.md written, git tree clean.
   isolation; full suite 66 passing; Ruff clean.
 - Milestone 7: AI layer `src/assistant/ai/` — `AIProvider` protocol +
   `OpenAICompatibleProvider` (AsyncOpenAI, narrow `AIProviderError` /
-  `AIOutputValidationError`, bounded retries, json_schema response_format),
+  `AIOutputValidationError`, bounded retries, json_schema response_format,
+  `store=False` on completions to avoid provider-side storage — SPEC §15),
   `AITaskDraft` Pydantic schema, `DRAFT_SYSTEM` prompt. Bot flow: manual line
   format first, AI fallback for natural language (ASSUMPTIONS #12-13); AI
   draft stored typed in FSM state, previewed with ambiguities, confirmed

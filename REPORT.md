@@ -42,7 +42,9 @@ Features implemented (SPEC §1–§30):
   rejected); 26 authed `/api/v1` endpoints, all user-scoped.
 - **AI layer** — `AIProvider` abstraction with an OpenAI-compatible
   implementation (structured JSON drafts, batch embeddings, bounded
-  retries); lazy provider construction keeps tests credential-free.
+  retries, `store=False` on chat completions to avoid provider-side
+  conversation persistence — SPEC §15); lazy provider construction keeps
+  tests credential-free.
 
 ## 2. Code layout
 

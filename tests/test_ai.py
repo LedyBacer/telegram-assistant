@@ -69,6 +69,8 @@ def test_provider_chat_prefends_system_and_returns_content() -> None:
     assert kwargs["model"] == "fake-model"
     assert kwargs["messages"][0] == {"role": "system", "content": "SYS"}
     assert kwargs["messages"][1] == {"role": "user", "content": "hi"}
+    # SPEC §15: avoid provider-side storage of conversations.
+    assert kwargs["store"] is False
 
 
 def test_provider_chat_wraps_api_errors() -> None:
@@ -104,6 +106,8 @@ def test_chat_structured_success() -> None:
         kwargs["response_format"]["json_schema"]["schema"]["properties"]["title"]
         is not None
     )
+    # SPEC §15: avoid provider-side storage of conversations.
+    assert kwargs["store"] is False
 
 
 def test_chat_structured_retries_on_invalid_then_succeeds() -> None:

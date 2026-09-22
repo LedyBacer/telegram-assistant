@@ -75,6 +75,7 @@ class OpenAICompatibleProvider:
                 model=self._model,
                 messages=[{"role": "system", "content": system}, *messages],
                 temperature=0.7,
+                store=False,
             )
         except APIError as exc:
             raise AIProviderError(f"chat completion failed: {exc}") from exc
@@ -98,6 +99,7 @@ class OpenAICompatibleProvider:
                     messages=[{"role": "system", "content": system}, *messages],
                     temperature=0,
                     response_format=response_format,
+                    store=False,
                 )
             except APIError as exc:
                 raise AIProviderError(
