@@ -96,9 +96,11 @@ async def test_me_upserts_and_returns_user(
 # Calendar
 # ---------------------------------------------------------------------------
 
-TODAY_NOON = datetime.now(tz=UTC).replace(
-    hour=12, minute=0, second=0, microsecond=0
-).isoformat()
+_NOW = datetime.now(tz=UTC)
+TODAY_NOON = _NOW.replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
+TOMORROW_NOON = (
+    _NOW + timedelta(days=1)
+).replace(hour=12, minute=0, second=0, microsecond=0).isoformat()
 
 
 async def test_item_crud_flow(client: httpx.AsyncClient) -> None:
@@ -116,8 +118,20 @@ async def test_item_crud_flow(client: httpx.AsyncClient) -> None:
     today = await client.get("/api/v1/calendar/today", headers=HEADERS)
     assert [i["title"] for i in today.json()] == ["Ship the report"]
 
-    upcoming = await client.get("/api/v1/calendar/upcoming", headers=HEADERS)
-    assert any(i["id"] == item_id for i in upcoming.json())
+    # Upcoming is time-of-day dependent (a noon item is past by 12:00 UTC),
+    # so verify it with a deterministic tomorrow item.
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={"title": "Tomorrow thing", "starts_at": TOMORROW_NOON},
+    )
+    assert res.status_code == 201
+    tomorrow_id = res.json()["id"]
+    try:
+        upcoming = await client.get("/api/v1/calendar/upcoming", headers=HEADERS)
+        assert any(i["id"] == tomorrow_id for i in upcoming.json())
+    finally:
+        await client.delete(f"/api/v1/items/{tomorrow_id}", headers=HEADERS)
 
     res = await client.patch(
         f"/api/v1/items/{item_id}", headers=HEADERS, json={"title": "Shipped"}
