@@ -1,10 +1,9 @@
 # Progress
 
-Status: Milestone 11 (Mini App initData HMAC auth + /api/v1 endpoints)
-complete and green — `verify_init_data` (Telegram HMAC, freshness, user
-validation), authed `/api/v1` calendar/items/workouts/files(+search)/
-facts/reminders/settings routes, vanilla-JS Mini App SPA; full suite 164
-passing, Ruff clean.
+Status: Milestone 12 (full test-suite coverage check against SPEC §26)
+complete and green — every §26 bullet verified; the one gap (migrations)
+closed with `tests/test_migrations.py` (real `alembic upgrade head` on a
+fresh throwaway database); full suite 166 passing, Ruff clean.
 
 ## Completed
 
@@ -172,13 +171,33 @@ passing, Ruff clean.
   pre-existing files are unformatted; `ruff check` is the standard.
   Full suite 164 passing; Ruff clean.
 
+- Milestone 12: full test-suite coverage check against SPEC §26. Every
+  §26 bullet verified against the suite: health (test_api), user
+  isolation (test_api/test_facts/test_workouts/test_files), calendar CRUD
+  (test_calendar), structured task-draft validation (test_bot_foundation),
+  confirm-before-write (test_bot_foundation + test_ai), reminder
+  persistence/idempotency (test_reminders), background job claiming +
+  concurrent SKIP LOCKED + worker completion/failure + abandoned-job
+  recovery (test_jobs), workouts (test_workouts), file metadata lifecycle
+  + chunk ownership isolation + semantic retrieval filtering
+  (test_files), user fact states (test_facts), Mini App initData valid /
+  invalid signature + expired auth_date (test_init_data), major API
+  validation errors (test_api). External AI/Telegram HTTP calls mocked
+  everywhere (fake providers / sender stubs). One gap found and closed:
+  migrations were never exercised by tests — added
+  `tests/test_migrations.py`: (1) creates a throwaway database
+  (`ta_migration_test`), runs the real `alembic upgrade head` chain
+  against it, asserts the stamped head revision, exact table set vs
+  `Base.metadata`, pgvector extension, and the HNSW embedding index, then
+  drops the database; (2) ORM-metadata table-set drift guard. The main
+  test database is never touched. Full suite 166 passing; Ruff clean.
+
 ## Current milestone
 
-- Milestone 12: full test suite coverage check against SPEC §26.
+- Milestone 13: final verification + REPORT.md.
 
 ## Next
 
-1. Milestone 12: verify every SPEC §26 test-coverage bullet is covered by
-   the suite; add any missing tests.
-2. Milestone 13: final verification (fresh DB, migrations, full suite,
-   Ruff, imports, Docker Compose build, real-Postgres flows) + REPORT.md.
+1. Milestone 13: final verification per QWEN.md/§31 — fresh database,
+   migrations, full suite, Ruff, imports, Docker Compose configuration/
+   build, git status, real-Postgres flows — then write REPORT.md.
