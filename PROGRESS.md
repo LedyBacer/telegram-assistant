@@ -1,9 +1,12 @@
 # Progress
 
-Status: Milestone 12 (full test-suite coverage check against SPEC §26)
-complete and green — every §26 bullet verified; the one gap (migrations)
-closed with `tests/test_migrations.py` (real `alembic upgrade head` on a
-fresh throwaway database); full suite 166 passing, Ruff clean.
+Status: ALL 13 MILESTONES COMPLETE. Milestone 13 (final verification per
+SPEC §31 + QWEN.md) done: uv sync OK, `docker compose config` valid,
+api/bot/worker images built, PostgreSQL healthy, migrations applied from
+an empty database, full suite 166 passing (on the dev DB AND on a fresh
+migrated DB), `ruff check` clean, api/bot/worker import-verified, worker
+smoke path ran clean, concurrency (SKIP LOCKED) + Mini App initData tests
+pass, no TODO/stub/placeholder, docs + REPORT.md written, git tree clean.
 
 ## Completed
 
@@ -192,12 +195,25 @@ fresh throwaway database); full suite 166 passing, Ruff clean.
   drops the database; (2) ORM-metadata table-set drift guard. The main
   test database is never touched. Full suite 166 passing; Ruff clean.
 
+- Milestone 13: final verification (SPEC §31 + QWEN.md) + REPORT.md.
+  Verified: `uv sync` OK; `docker compose config --quiet` valid;
+  `docker compose build` produced api/bot/worker images; PostgreSQL
+  17.11 + pgvector 0.8.6 healthy; `alembic upgrade head` applied from an
+  empty database (`ta_fresh_final`, dropped afterwards); full suite 166
+  passing on the dev DB and again on the fresh migrated DB;
+  `ruff check .` clean; `assistant.api.main` / `assistant.bot.main` /
+  `assistant.worker.main` import-verified (FastAPI 0.141 materializes
+  included routers lazily — 26 /api/v1 endpoints confirmed by the API
+  tests); worker smoke path ran 15 s on an empty queue and exited 0;
+  SKIP LOCKED concurrency tests and 17 initData unit tests pass; grep
+  found no TODO/FIXME/stub/placeholder in `src/` or `miniapp/`; README +
+  docs present. `REPORT.md` written; nothing pushed to any remote.
+
 ## Current milestone
 
-- Milestone 13: final verification + REPORT.md.
+- None — all 13 milestones complete.
 
 ## Next
 
-1. Milestone 13: final verification per QWEN.md/§31 — fresh database,
-   migrations, full suite, Ruff, imports, Docker Compose configuration/
-   build, git status, real-Postgres flows — then write REPORT.md.
+- Project is complete. Future work (out of scope for this run): real
+  Telegram/OpenAI credential smoke tests, CI pipeline, observability.
