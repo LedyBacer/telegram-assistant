@@ -94,7 +94,7 @@ FastAPI 0.141.1, SQLAlchemy 2.0.54, asyncpg, Alembic 1.20.0, Pydantic
 | 11 | `5f52c77` | Mini App initData auth + /api/v1 |
 | 12 | `47a7b99` | Migration-chain test (SPEC §26 gap closed) |
 | 13 | — | This report + final verification |
-| 14 | `f54deb1` | Independent chat/embedding providers + `vector(384)` migration |
+| 14 | `17d2683` | Independent chat/embedding providers + `vector(384)` migration |
 
 ## 4. Verification (SPEC §31 + QWEN.md)
 
