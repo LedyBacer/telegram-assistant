@@ -1,6 +1,36 @@
 # Progress
 
-Status: MILESTONE 16 COMPLETE (production runtime-hardening pass). Milestone 16
+Status: MILESTONE 17 COMPLETE (configurable chat timeout + explicit Qwen
+thinking mode with Telegram UX). Milestone 17 done: (1) `CHAT_TIMEOUT_SECONDS`
+(default 180, `1 <= x <= 3600`) drives the chat OpenAI client `Timeout`
+(`read=chat timeout`, `connect=10`, `write=30`, `pool=10`, `max_retries=0`)
+for normal chat AND structured generation; the embedding provider keeps its own
+short (60 s) float timeout; `APITimeoutError` is mapped to the narrow
+`AITimeoutError` (subclass of `AIProviderError`) with the configured value
+logged and no raw provider text reaching users. (2) `CHAT_THINKING_ENABLED`
+(default `true`) is sent EXPLICITLY on every chat/structured completion as
+`extra_body → chat_template_kwargs.enable_thinking` (the llama.cpp
+OpenAI-compatible mechanism), built centrally in `OpenAIChatProvider._chat_options()`;
+it never touches embeddings. (3) Timeout vs malformed response: a full
+inference timeout fails cleanly after exactly ONE provider call (no second
+equally-long inference); a malformed structured response may be retried once
+with corrective feedback (Pydantic validation unchanged, `extra="forbid"`).
+(4) Telegram UX: when thinking is enabled, a short localized temporary status
+message ("Думаю…" / "Thinking…", key `ai.thinking`) in the user's persisted
+language is sent before a slow AI op (draft + chat) and deleted on success,
+provider error, and timeout; send/delete failures are logged and swallowed so
+they never break the flow; no status when thinking is disabled; existing
+typing actions preserved. (5) `.env.example` + README document both settings.
+Tests: 22 new in `tests/test_thinking_ux.py` (settings defaults/validation,
+timeout reaching client / embeddings unaffected, explicit llama.cpp option on
+chat + structured, clean no-retry timeout, RU/EN status lifecycle incl.
+provider error + timeout + delete-failure, disabled → no status); 4 existing
+single-message bot tests pin `chat_thinking_enabled=False` (their assertions
+are about persistence/fallback, not UX). Verified: full suite 257 passing,
+Ruff clean, imports OK, `.env.example` loads into `Settings`, `docker compose
+config` valid, ru/en locale parity.
+
+Milestone 16 COMPLETE (production runtime-hardening pass). Milestone 16
 done: (1) worker `MissingGreenlet` fix — `digests.ensure_digest_jobs` eager-
 loads `User.settings` via `selectinload` (also `digest_send` handler);
 regression tests in `tests/test_digests.py` (users WITH and WITHOUT a
@@ -333,6 +363,21 @@ confirmed in the catalog.
   execution-time wrapper semantics. README + docs updated. Verified:
   fresh-DB migration, 206 passing, Ruff clean, imports OK.
 
+- Milestone 17: configurable chat timeout + explicit Qwen thinking mode
+  (see status block at top): `CHAT_TIMEOUT_SECONDS` (default 180) drives the
+  chat `Timeout` for chat + structured generation (embeddings keep their own
+  60 s timeout), `APITimeoutError` → narrow `AITimeoutError` logged with the
+  configured value; `CHAT_THINKING_ENABLED` (default true) sent explicitly via
+  `extra_body → chat_template_kwargs.enable_thinking` on every chat/structured
+  call (central `_chat_options()`, never embeddings); a full inference timeout
+  fails cleanly after one provider call while a malformed structured response
+  may be retried once; a temporary localized "Думаю…" / "Thinking…" status
+  message (key `ai.thinking`) in the user's language is sent before and removed
+  after slow AI ops (success / provider error / timeout), with send/delete
+  failures swallowed; `.env.example` + README updated; 22 new tests in
+  `tests/test_thinking_ux.py` + 4 existing single-message bot tests pin
+  thinking off. Full suite 257 passing; Ruff clean.
+
 - Milestone 16: production runtime-hardening pass (see status block at top):
   worker `MissingGreenlet` fix (eager `selectinload(User.settings)` in
   `ensure_digest_jobs` + `digest_send` handler) with regression tests;
@@ -347,7 +392,7 @@ confirmed in the catalog.
 
 ## Current milestone
 
-- None — all 16 milestones complete.
+- None — all 17 milestones complete.
 
 ## Next
 
