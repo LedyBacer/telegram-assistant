@@ -40,6 +40,7 @@ from assistant.bot import handlers
 from assistant.bot.handlers import on_draft, on_text
 from assistant.bot.states import TaskDraftStates
 from assistant.config import Settings
+from assistant.services.users import upsert_user
 
 # ---------------------------------------------------------------------------
 # Provider unit tests (mocked AsyncOpenAI clients)
@@ -466,6 +467,10 @@ async def test_on_text_natural_language_uses_ai_draft(session, monkeypatch) -> N
 async def test_on_text_ai_failure_shows_help_and_stays_in_flow(
     session, monkeypatch
 ) -> None:
+    user, _ = await upsert_user(session, user_id=31, first_name="Nat")
+    user.settings.language = "en"
+    await session.commit()
+
     message = _fake_message("make it happen sometime")
     monkeypatch.setattr(
         handlers,

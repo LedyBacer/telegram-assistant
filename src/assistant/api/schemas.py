@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from assistant.i18n import is_supported
 from assistant.models.calendar_items import ItemKind, ItemPriority
 
 
@@ -25,12 +26,14 @@ class SettingsOut(ORMModel):
     timezone: str
     digest_time: time
     motivation_enabled: bool
+    language: str
 
 
 class SettingsUpdate(BaseModel):
     timezone: str | None = None
     digest_time: time | None = None
     motivation_enabled: bool | None = None
+    language: str | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -41,6 +44,15 @@ class SettingsUpdate(BaseModel):
             ZoneInfo(value)
         except (ValueError, KeyError) as exc:
             raise ValueError(f"unknown timezone {value!r}") from exc
+        return value
+
+    @field_validator("language")
+    @classmethod
+    def _valid_language(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not is_supported(value):
+            raise ValueError(f"unsupported language {value!r}")
         return value
 
 

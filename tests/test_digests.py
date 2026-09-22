@@ -30,6 +30,8 @@ async def _user(session: AsyncSession, user_id: int = 81) -> User:
     # 00:00 UTC is always in the past today, so scheduled digest jobs are
     # claimable in tests.
     user.settings.digest_time = time(0, 0)
+    # English so the English content assertions below stay meaningful.
+    user.settings.language = "en"
     await session.commit()
     return user
 
@@ -269,7 +271,9 @@ async def test_reminder_handler_delivers(session: AsyncSession, monkeypatch) -> 
     await registry.handlers[reminders_service.REMINDER_SEND_JOB_TYPE](session, job)
     await session.commit()
 
-    assert calls == [(user.id, "Standup soon")]
+    # The stored user text is sent unchanged, wrapped in the localized
+    # "Reminder:" prefix in the user's current language (English here).
+    assert calls == [(user.id, "Reminder: Standup soon")]
     assert (await session.get(Reminder, reminder.id)).status == ReminderStatus.sent.value
 
 

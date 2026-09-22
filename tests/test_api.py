@@ -187,7 +187,9 @@ async def test_item_create_with_remind_offsets(
     reminders = await client.get("/api/v1/reminders", headers=HEADERS)
     data = reminders.json()
     assert len(data) == 1
-    assert data[0]["message"] == "Reminder: Call"
+    # Stored text is the item title only; the localized "Reminder:" prefix is
+    # applied at delivery time in the user's current language.
+    assert data[0]["message"] == "Call"
     # FastAPI serializes UTC datetimes with a Z suffix — parse, don't compare raw.
     fire_at = datetime.fromisoformat(data[0]["fire_at"].replace("Z", "+00:00"))
     expected_fire = (

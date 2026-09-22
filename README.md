@@ -85,6 +85,35 @@ shape, so llama.cpp's `/v1/embeddings` is fully supported.
 Legacy fallback: when the `CHAT_*` / `EMBEDDING_*` base-URL/key variables are
 absent, `OPENAI_BASE_URL` / `OPENAI_API_KEY` are used for both providers.
 
+## Languages (i18n)
+
+The assistant is per-user internationalized. Supported languages:
+**Russian (`ru`, default)** and **English (`en`)**. There is no global
+language setting — each user's choice is stored in
+`user_settings.language` and applies to that user only, in every surface:
+
+- **Bot** — change via ⚙️ Settings → 🗣 Язык / Language or the `/language`
+  command; the UI re-renders immediately in the new language.
+- **Mini App** — all UI strings are loaded from the backend locale dictionary
+  (`GET /api/v1/i18n/{locale}`); Settings → Language persists the change and
+  reloads the dictionary in place (no local copy, no localStorage).
+- **API** — `GET /settings` returns `language`; `PATCH /settings`
+  `{"language": "en"}` updates it (unsupported codes → 422).
+
+Background jobs (reminders, morning digest, motivation) use the recipient's
+language **at execution time**, so a later switch takes effect immediately;
+user-authored content (task titles, reminder text, facts, filenames) is never
+translated. The AI chat is instructed explicitly to answer in the user's
+language, while the structured task-draft schema stays language-neutral and
+understands both Russian and English input.
+
+**Adding a language:** register the code in `SupportedLanguage` and add its
+display name in `LANGUAGE_NAMES`
+(`src/assistant/i18n/service.py`), then drop
+`src/assistant/i18n/locales/<code>.json` with the same key set as `ru.json`.
+Russian is the fallback for any unknown language or missing key. No handler,
+service, API, or Mini App code changes are needed.
+
 ## Migrations
 
 The schema is deployed exclusively through Alembic (never `create_all`):

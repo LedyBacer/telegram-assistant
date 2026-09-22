@@ -1,7 +1,9 @@
 /* Smart Assistant Mini App: vanilla JS + Tailwind (SPEC §18).
  * Every request sends the raw Telegram.WebApp.initData; the backend verifies
  * its HMAC signature before trusting the identity. All user-supplied strings
- * are rendered through textContent, never innerHTML. */
+ * are rendered through textContent, never innerHTML.
+ * All UI strings come from the backend locale dictionary (single source of
+ * truth: /api/v1/i18n/{locale}); nothing is hard-coded here. */
 (() => {
   "use strict";
 
@@ -17,14 +19,22 @@
   const tabsEl = document.getElementById("tabs");
   const whoEl = document.getElementById("who");
 
-  const TABS = [
-    ["today", "📅 Today"],
-    ["upcoming", "🗓️ Upcoming"],
-    ["new", "➕ New"],
-    ["workouts", "💪 Workouts"],
-    ["files", "📁 Files"],
-    ["facts", "🧠 Facts"],
-    ["settings", "⚙️ Settings"],
+  /* Locale dictionary, loaded from the API for the user's language. */
+  let STR = {};
+  const S = (key, params) =>
+    String(STR[key] !== undefined ? STR[key] : key).replace(
+      /\{(\w+)\}/g,
+      (m, k) => (params && params[k] !== undefined ? String(params[k]) : m)
+    );
+
+  const TAB_KEYS = [
+    ["today", "miniapp.tab_today"],
+    ["upcoming", "miniapp.tab_upcoming"],
+    ["new", "miniapp.tab_new"],
+    ["workouts", "miniapp.tab_workouts"],
+    ["files", "miniapp.tab_files"],
+    ["facts", "miniapp.tab_facts"],
+    ["settings", "miniapp.tab_settings"],
   ];
   let tab = "today";
   let me = null;
@@ -43,7 +53,7 @@
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (res.status === 401) {
-      throw new Error("Authentication failed — reopen the app from the bot.");
+      throw new Error(S("miniapp.status_auth"));
     }
     if (!res.ok) {
       let detail = `HTTP ${res.status}`;
@@ -134,7 +144,7 @@
     const actions = [];
     if (item.status === "scheduled") {
       actions.push(
-        btn("✓ Done", async () => {
+        btn(S("miniapp.btn_done"), async () => {
           try {
             await api(`/api/v1/items/${item.id}/complete`, "POST");
             await render();
@@ -142,7 +152,7 @@
             setStatus(e.message, true);
           }
         }, "bg-emerald-600 hover:bg-emerald-500"),
-        btn("Cancel", async () => {
+        btn(S("miniapp.btn_cancel"), async () => {
           try {
             await api(`/api/v1/items/${item.id}/cancel`, "POST");
             await render();
@@ -150,7 +160,7 @@
             setStatus(e.message, true);
           }
         }),
-        btn("Delete", async () => {
+        btn(S("miniapp.btn_delete"), async () => {
           try {
             await api(`/api/v1/items/${item.id}`, "DELETE");
             await render();
@@ -171,8 +181,8 @@
         badge(item.priority, PRIORITY_COLORS[item.priority] || PRIORITY_COLORS.normal)
       ),
       el("div", { class: "text-xs text-slate-400 space-x-2" },
-        item.starts_at ? el("span", {}, `Starts ${fmtDT(item.starts_at)}`) : null,
-        item.due_at ? el("span", {}, `Due ${fmtDT(item.due_at)}`) : null,
+        item.starts_at ? el("span", {}, S("miniapp.item_starts", { when: fmtDT(item.starts_at) })) : null,
+        item.due_at ? el("span", {}, S("miniapp.item_due", { when: fmtDT(item.due_at) })) : null,
         item.status !== "scheduled" ? badge(item.status, "bg-slate-700 text-slate-300") : null
       ),
       actions.length ? el("div", { class: "flex gap-2" }, actions) : null
@@ -187,36 +197,39 @@
 
   async function viewToday() {
     const items = await api("/api/v1/calendar/today");
-    viewEl.append(items.length ? items.map(itemCard) : empty("Nothing scheduled for today."));
+    viewEl.append(items.length ? items.map(itemCard) : empty(S("miniapp.empty_today")));
   }
 
   async function viewUpcoming() {
     const items = await api("/api/v1/calendar/upcoming?days=7");
-    viewEl.append(items.length ? items.map(itemCard) : empty("Nothing in the next 7 days."));
+    viewEl.append(items.length ? items.map(itemCard) : empty(S("miniapp.empty_upcoming")));
   }
 
   function viewNew() {
-    const title = input({ type: "text", placeholder: "Title" });
-    const kind = select([["task", "Task"], ["event", "Event"]], "task");
+    const title = input({ type: "text", placeholder: S("miniapp.new_title_ph") });
+    const kind = select([["task", S("miniapp.new_task")], ["event", S("miniapp.new_event")]], "task");
     const starts = input({ type: "datetime-local" });
     const due = input({ type: "datetime-local" });
-    const priority = select([["low", "Low"], ["normal", "Normal"], ["high", "High"]], "normal");
+    const priority = select(
+      [["low", S("miniapp.new_low")], ["normal", S("miniapp.new_normal")], ["high", S("miniapp.new_high")]],
+      "normal"
+    );
     const remind = input({
       type: "text",
-      placeholder: "Remind (minutes before, e.g. 30,0 — optional)"
+      placeholder: S("miniapp.new_reminders_ph")
     });
 
     viewEl.append(
       card([
-        el("h2", { class: "font-semibold" }, "New task / event"),
+        el("h2", { class: "font-semibold" }, S("miniapp.new_title")),
         title,
         el("div", { class: "grid grid-cols-2 gap-2" }, kind, priority),
         el("div", { class: "grid grid-cols-1 gap-2" },
-          el("label", { class: "text-xs text-slate-400 space-y-1" }, "Starts", starts),
-          el("label", { class: "text-xs text-slate-400 space-y-1" }, "Due", due)
+          el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.new_starts"), starts),
+          el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.new_due"), due)
         ),
-        el("label", { class: "text-xs text-slate-400 space-y-1" }, "Reminders", remind),
-        btn("Save", async () => {
+        el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.new_reminders"), remind),
+        btn(S("miniapp.save"), async () => {
           const offsets = remind.value
             .split(",")
             .map((s) => s.trim())
@@ -232,7 +245,7 @@
               priority: priority.value,
               remind_offsets_minutes: offsets,
             });
-            setStatus("Saved.");
+            setStatus(S("miniapp.saved"));
             tab = "today";
             await render();
           } catch (e) {
@@ -250,35 +263,36 @@
     ]);
     viewEl.append(
       card([
-        el("h2", { class: "font-semibold" }, "Stats"),
+        el("h2", { class: "font-semibold" }, S("miniapp.workouts_stats")),
         el("div", { class: "grid grid-cols-2 gap-2 text-sm" },
-          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.total)), el("div", { class: "text-xs text-slate-400" }, "total workouts")),
-          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.total_minutes)), el("div", { class: "text-xs text-slate-400" }, "total minutes")),
-          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.this_week)), el("div", { class: "text-xs text-slate-400" }, "this week")),
-          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.current_streak)), el("div", { class: "text-xs text-slate-400" }, "day streak"))
+          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.total)), el("div", { class: "text-xs text-slate-400" }, S("miniapp.stats_total"))),
+          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.total_minutes)), el("div", { class: "text-xs text-slate-400" }, S("miniapp.stats_minutes"))),
+          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.this_week)), el("div", { class: "text-xs text-slate-400" }, S("miniapp.stats_week"))),
+          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.current_streak)), el("div", { class: "text-xs text-slate-400" }, S("miniapp.stats_streak")))
         )
       ])
     );
 
-    const name = input({ type: "text", placeholder: "Workout name (e.g. Push day)" });
+    const name = input({ type: "text", placeholder: S("miniapp.workout_name_ph") });
     const when = input({ type: "datetime-local" });
-    const minutes = input({ type: "number", placeholder: "Minutes", min: "1" });
+    const minutes = input({ type: "number", placeholder: S("miniapp.minutes_ph"), min: "1" });
     const effort = select(
-      [["", "Effort (optional)"].concat(
-        Array.from({ length: 10 }, (_, i) => [String(i + 1), `${i + 1} / 10`])
-      )),
+      [
+        ["", S("miniapp.effort")],
+        ...Array.from({ length: 10 }, (_, i) => [String(i + 1), `${i + 1} / 10`]),
+      ],
       ""
     );
     viewEl.append(
       card([
-        el("h2", { class: "font-semibold" }, "Log a workout"),
+        el("h2", { class: "font-semibold" }, S("miniapp.workout_log")),
         name,
         el("div", { class: "grid grid-cols-2 gap-2" },
-          el("label", { class: "text-xs text-slate-400 space-y-1" }, "When", when),
-          el("label", { class: "text-xs text-slate-400 space-y-1" }, "Minutes", minutes)
+          el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.when"), when),
+          el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.minutes"), minutes)
         ),
         effort,
-        btn("Log", async () => {
+        btn(S("miniapp.log"), async () => {
           try {
             await api("/api/v1/workouts", "POST", {
               name: name.value,
@@ -286,7 +300,7 @@
               duration_minutes: minutes.value ? Number(minutes.value) : null,
               perceived_effort: effort.value ? Number(effort.value) : null,
             });
-            setStatus("Workout logged.");
+            setStatus(S("miniapp.workout_logged"));
             await render();
           } catch (e) {
             setStatus(e.message, true);
@@ -295,7 +309,7 @@
       ])
     );
 
-    viewEl.append(el("h2", { class: "font-semibold" }, "Recent"));
+    viewEl.append(el("h2", { class: "font-semibold" }, S("miniapp.recent")));
     viewEl.append(
       logs.length
         ? logs.map((w) =>
@@ -305,34 +319,34 @@
                 el("span", { class: "text-xs text-slate-400" }, fmtDT(w.started_at))
               ),
               el("div", { class: "text-xs text-slate-400" },
-                [w.duration_minutes ? `${w.duration_minutes} min` : null,
-                 w.perceived_effort ? `effort ${w.perceived_effort}/10` : null]
+                [w.duration_minutes ? S("miniapp.minutes_value", { minutes: w.duration_minutes }) : null,
+                 w.perceived_effort ? S("miniapp.effort_value", { value: w.perceived_effort }) : null]
                   .filter(Boolean).join(" · ") || w.status
               )
             ])
           )
-        : empty("No workouts logged yet.")
+        : empty(S("miniapp.workouts_empty"))
     );
   }
 
   async function viewFiles() {
-    const query = input({ type: "text", placeholder: "Search your files…" });
+    const query = input({ type: "text", placeholder: S("miniapp.search_ph") });
     const results = el("div", { class: "space-y-2" });
     const doSearch = async () => {
       const q = query.value.trim();
       if (!q) return;
-      results.replaceChildren(empty("Searching…"));
+      results.replaceChildren(empty(S("miniapp.searching")));
       try {
         const hits = await api(`/api/v1/files/search?q=${encodeURIComponent(q)}&top_k=5`);
         results.replaceChildren(
           hits.length
             ? hits.map((c) =>
                 card([
-                  el("div", { class: "text-xs text-indigo-300" }, `${c.file_name} · chunk ${c.position + 1}`),
+                  el("div", { class: "text-xs text-indigo-300" }, S("miniapp.search_chunk", { file: c.file_name, position: c.position + 1 })),
                   el("p", { class: "text-sm text-slate-300" }, c.text.length > 300 ? c.text.slice(0, 300) + "…" : c.text)
                 ])
               )
-            : empty("No matches.")
+            : empty(S("miniapp.search_empty"))
         );
       } catch (e) {
         results.replaceChildren(empty(e.message));
@@ -340,14 +354,14 @@
     };
     viewEl.append(
       card([
-        el("h2", { class: "font-semibold" }, "Search"),
-        el("div", { class: "flex gap-2" }, query, btn("Search", doSearch, "bg-indigo-600 hover:bg-indigo-500"))
+        el("h2", { class: "font-semibold" }, S("miniapp.search")),
+        el("div", { class: "flex gap-2" }, query, btn(S("miniapp.search"), doSearch, "bg-indigo-600 hover:bg-indigo-500"))
       ]),
       results
     );
 
     const files = await api("/api/v1/files?limit=20");
-    viewEl.append(el("h2", { class: "font-semibold" }, "My files"));
+    viewEl.append(el("h2", { class: "font-semibold" }, S("miniapp.my_files")));
     viewEl.append(
       files.length
         ? files.map((f) =>
@@ -358,7 +372,7 @@
               ),
               el("div", { class: "text-xs text-slate-400" },
                 fmtDT(f.created_at) + (f.error ? ` — ${f.error}` : "")),
-              el("div", {}, btn("Delete", async () => {
+              el("div", {}, btn(S("miniapp.btn_delete"), async () => {
                 try {
                   await api(`/api/v1/files/${f.id}`, "DELETE");
                   await render();
@@ -368,25 +382,25 @@
               }, "bg-red-900/60 hover:bg-red-800"))
             ])
           )
-        : empty("No files uploaded yet — send a document to the bot.")
+        : empty(S("miniapp.files_empty"))
     );
   }
 
   async function viewFacts() {
-    const value = input({ type: "text", placeholder: "Tell the assistant something to remember" });
-    const category = input({ type: "text", placeholder: "Category (optional)" });
+    const value = input({ type: "text", placeholder: S("miniapp.facts_value_ph") });
+    const category = input({ type: "text", placeholder: S("miniapp.facts_category_ph") });
     viewEl.append(
       card([
-        el("h2", { class: "font-semibold" }, "Add a fact (stays proposed until confirmed)"),
+        el("h2", { class: "font-semibold" }, S("miniapp.facts_add")),
         value,
         category,
-        btn("Propose", async () => {
+        btn(S("miniapp.propose"), async () => {
           try {
             await api("/api/v1/facts", "POST", {
               value: value.value,
               category: category.value || null,
             });
-            setStatus("Proposed.");
+            setStatus(S("miniapp.proposed"));
             await render();
           } catch (e) {
             setStatus(e.message, true);
@@ -396,7 +410,7 @@
     );
 
     const facts = await api("/api/v1/facts?limit=50");
-    viewEl.append(el("h2", { class: "font-semibold" }, "My facts"));
+    viewEl.append(el("h2", { class: "font-semibold" }, S("miniapp.my_facts")));
     viewEl.append(
       facts.length
         ? facts.map((f) =>
@@ -407,7 +421,7 @@
               ),
               el("p", { class: "text-sm" }, f.value),
               el("div", { class: "flex gap-2" },
-                f.status === "proposed" ? btn("Confirm", async () => {
+                f.status === "proposed" ? btn(S("miniapp.confirm"), async () => {
                   try {
                     await api(`/api/v1/facts/${f.id}/confirm`, "POST");
                     await render();
@@ -415,7 +429,7 @@
                     setStatus(e.message, true);
                   }
                 }, "bg-emerald-600 hover:bg-emerald-500") : null,
-                f.status === "proposed" ? btn("Reject", async () => {
+                f.status === "proposed" ? btn(S("miniapp.reject"), async () => {
                   try {
                     await api(`/api/v1/facts/${f.id}/reject`, "POST");
                     await render();
@@ -423,7 +437,7 @@
                     setStatus(e.message, true);
                   }
                 }) : null,
-                btn("Delete", async () => {
+                btn(S("miniapp.btn_delete"), async () => {
                   try {
                     await api(`/api/v1/facts/${f.id}`, "DELETE");
                     await render();
@@ -434,7 +448,7 @@
               )
             ])
           )
-        : empty("No facts yet.")
+        : empty(S("miniapp.facts_empty"))
     );
   }
 
@@ -454,22 +468,35 @@
     const digest = input({ type: "time", value: settings.digest_time.slice(0, 5) });
     const motivation = el("input", { type: "checkbox" });
     motivation.checked = settings.motivation_enabled;
+    const languages = await api("/api/v1/i18n/languages");
+    const language = select(
+      languages.map((l) => [l.code, l.label]),
+      settings.language
+    );
 
     viewEl.append(
       card([
-        el("h2", { class: "font-semibold" }, "Settings"),
-        el("label", { class: "text-xs text-slate-400 space-y-1 block" }, "Timezone", tz),
-        el("label", { class: "text-xs text-slate-400 space-y-1 block" }, "Daily digest time", digest),
-        el("label", { class: "flex items-center gap-2 text-sm" }, motivation, "Send motivational messages"),
-        btn("Save", async () => {
+        el("h2", { class: "font-semibold" }, S("miniapp.settings")),
+        el("label", { class: "text-xs text-slate-400 space-y-1 block" }, S("miniapp.settings_timezone"), tz),
+        el("label", { class: "text-xs text-slate-400 space-y-1 block" }, S("miniapp.settings_digest"), digest),
+        el("label", { class: "text-xs text-slate-400 space-y-1 block" }, S("miniapp.settings_language"), language),
+        el("label", { class: "flex items-center gap-2 text-sm" }, motivation, S("miniapp.settings_motivation")),
+        btn(S("miniapp.save"), async () => {
           try {
             const saved = await api("/api/v1/settings", "PATCH", {
               timezone: tz.value,
               digest_time: digest.value,
               motivation_enabled: motivation.checked,
+              language: language.value,
             });
             me.settings = saved;
-            setStatus("Settings saved.");
+            // Reload the locale dictionary if the language changed so the
+            // whole UI switches immediately, without a divergent local copy.
+            if (saved.language && saved.language !== me.language) {
+              me.language = saved.language;
+              STR = await api(`/api/v1/i18n/${saved.language}`);
+            }
+            setStatus(S("miniapp.settings_saved"));
             await render();
           } catch (e) {
             setStatus(e.message, true);
@@ -496,10 +523,10 @@
   async function render() {
     viewEl.replaceChildren();
     tabsEl.replaceChildren();
-    for (const [key, label] of TABS) {
+    for (const [key, keyStr] of TAB_KEYS) {
       const active = key === tab;
       tabsEl.append(
-        btn(label, () => {
+        btn(S(keyStr), () => {
           tab = key;
           render();
         }, active ? "bg-indigo-600 hover:bg-indigo-500" : "bg-slate-800 hover:bg-slate-700")
@@ -510,11 +537,13 @@
 
   async function boot() {
     if (!INIT_DATA) {
-      setStatus("Open this page inside Telegram to continue.", true);
+      setStatus(S("miniapp.status_open"), true);
       return;
     }
     try {
       me = await api("/api/v1/me");
+      me.language = me.settings.language;
+      STR = await api(`/api/v1/i18n/${me.language}`);
       whoEl.textContent = [me.user.first_name, me.user.last_name].filter(Boolean).join(" ");
       setStatus("");
       await render();

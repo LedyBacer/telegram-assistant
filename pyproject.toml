@@ -55,6 +55,10 @@ select = [
 ]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# pytest fixtures are imported by name from other test modules (e.g. `client`).
+"tests/**/*.py" = ["F811"]
+
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI dependency injection: Depends()/Query() defaults are intentional.
 extend-immutable-calls = [

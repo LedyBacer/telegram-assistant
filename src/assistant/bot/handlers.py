@@ -1,4 +1,8 @@
-"""Bot handlers: main menu, task drafts, settings (SPEC §5-§7)."""
+"""Bot handlers: main menu, task drafts, settings (SPEC §5-§7).
+
+Every user-facing string is resolved through the central i18n translator
+(``assistant.i18n.t``) in the user's persisted language.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from assistant.bot.callbacks import (
     DraftCallback,
     FactCallback,
     ItemCallback,
+    LanguageCallback,
     MenuCallback,
     SettingsCallback,
 )
@@ -27,12 +32,14 @@ from assistant.bot.keyboards import (
     draft_kb,
     fact_kb,
     items_kb,
+    language_kb,
     main_menu_kb,
     settings_kb,
     workouts_kb,
 )
 from assistant.bot.states import SettingsStates, TaskDraftStates, WorkoutStates
 from assistant.config import get_settings
+from assistant.i18n import DEFAULT_LANGUAGE, is_supported, t
 from assistant.models.calendar_items import CalendarItem, ItemKind, ItemPriority
 from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.facts import FactStatus
@@ -47,22 +54,6 @@ from assistant.services import workouts as workouts_service
 from assistant.services.users import upsert_user
 
 router = Router(name="bot")
-
-DRAFT_HELP = (
-    "Just describe the task in natural language, e.g.\n"
-    "\"Tomorrow at 18:30 remind me to call Alex\".\n\n"
-    "You can also send the structured line format:\n"
-    "title: Buy groceries\n"
-    "date: 2026-09-21\n"
-    "time: 18:30\n"
-    "due: 2026-09-21 19:00\n"
-    "priority: high\n"
-    "kind: event\n"
-    "remind: -30, 0\n"
-    "description: milk, bread\n"
-    "`remind:` is optional — minutes before the start time (0 = at the\n"
-    "start, negative = after). Only `title` is required. /cancel aborts."
-)
 
 
 @dataclass(slots=True)
@@ -85,6 +76,10 @@ def _user_tz(user: User) -> ZoneInfo:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError):
         return ZoneInfo("UTC")
+
+
+def _user_lang(user: User) -> str:
+    return user.settings.language if user.settings is not None else DEFAULT_LANGUAGE
 
 
 def _parse_hhmm(value: str) -> time:
@@ -194,19 +189,38 @@ def _ai_draft_to_task_draft(ai: AITaskDraft, tz: ZoneInfo) -> TaskDraft:
     )
 
 
-def _draft_preview(draft: TaskDraft, tz: ZoneInfo) -> str:
+def _draft_preview(draft: TaskDraft, tz: ZoneInfo, lang: str) -> str:
     icon = "📆" if draft.kind is ItemKind.event else "✅"
-    lines = [f"{icon} {draft.title}", f"kind: {draft.kind.value}", f"priority: {draft.priority.value}"]
+    lines = [
+        f"{icon} {draft.title}",
+        t(lang, "draft.kind", kind=draft.kind.value),
+        t(lang, "draft.priority", priority=draft.priority.value),
+    ]
     if draft.starts_at:
-        lines.append(f"start: {draft.starts_at.astimezone(tz):%Y-%m-%d %H:%M} ({tz})")
+        lines.append(
+            t(
+                lang,
+                "draft.start",
+                when=draft.starts_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+                tz=tz,
+            )
+        )
     if draft.due_at:
-        lines.append(f"due: {draft.due_at.astimezone(tz):%Y-%m-%d %H:%M} ({tz})")
+        lines.append(
+            t(
+                lang,
+                "draft.due",
+                when=draft.due_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+                tz=tz,
+            )
+        )
     if draft.remind_offsets:
-        lines.append(f"remind: {', '.join(str(o) for o in draft.remind_offsets)} min before start")
+        offsets = ", ".join(str(o) for o in draft.remind_offsets)
+        lines.append(t(lang, "draft.remind", offsets=offsets))
     if draft.description:
-        lines.append(f"notes: {draft.description}")
+        lines.append(t(lang, "draft.notes", notes=draft.description))
     if draft.ambiguities:
-        lines.append("assumed: " + "; ".join(draft.ambiguities))
+        lines.append(t(lang, "draft.assumed", assumed="; ".join(draft.ambiguities)))
     return "\n".join(lines)
 
 
@@ -246,9 +260,9 @@ def _parse_workout_schedule(text: str, tz: ZoneInfo) -> tuple[str, datetime]:
     return name, when
 
 
-def _fmt_items(items: list[CalendarItem], tz: ZoneInfo) -> str:
+def _fmt_items(items: list[CalendarItem], tz: ZoneInfo, lang: str) -> str:
     if not items:
-        return "Nothing here."
+        return t(lang, "tasks.empty")
     lines = []
     for item in items:
         icon = {"task": "✅", "event": "📆"}[item.kind]
@@ -256,7 +270,11 @@ def _fmt_items(items: list[CalendarItem], tz: ZoneInfo) -> str:
         if item.starts_at:
             when = item.starts_at.astimezone(tz).strftime("%Y-%m-%d %H:%M")
         elif item.due_at:
-            when = f"due {item.due_at.astimezone(tz):%Y-%m-%d %H:%M}"
+            when = t(
+                lang,
+                "tasks.item_due",
+                when=item.due_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+            )
         prefix = f"{when}  " if when else ""
         lines.append(f"{icon} {prefix}{item.title} [{item.priority}]")
     return "\n".join(lines)
@@ -280,29 +298,30 @@ async def cmd_start(
 ) -> None:
     tg_user = message.from_user
     user = await _ensure_user(session, tg_user)
+    lang = _user_lang(user)
     await state.clear()
     base = get_settings().public_base_url
     await message.answer(
-        f"Hi {user.first_name}! I keep your tasks, events, workouts, and files.\n"
-        "Pick a section below.",
-        reply_markup=main_menu_kb(base),
+        t(lang, "start.welcome", name=user.first_name),
+        reply_markup=main_menu_kb(lang, base),
     )
 
 
 @router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: State) -> None:
+async def cmd_cancel(
+    message: Message, session: AsyncSession, state: State
+) -> None:
+    user = await _ensure_user(session, message.from_user)
+    lang = _user_lang(user)
     await state.clear()
-    await message.answer("Cancelled.", reply_markup=main_menu_kb())
+    await message.answer(t(lang, "common.cancelled"), reply_markup=main_menu_kb(lang))
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
-    await message.answer(
-        "Use the menu below. ➕ creates tasks/events, ⚙️ adjusts settings, "
-        "/remember <text> stores a fact, /facts lists them, "
-        "/cancel aborts an in-progress step.",
-        reply_markup=main_menu_kb(),
-    )
+async def cmd_help(message: Message, session: AsyncSession) -> None:
+    user = await _ensure_user(session, message.from_user)
+    lang = _user_lang(user)
+    await message.answer(t(lang, "help.text"), reply_markup=main_menu_kb(lang))
 
 
 @router.message(Command("remember"))
@@ -310,12 +329,11 @@ async def cmd_remember(
     message: Message, session: AsyncSession
 ) -> None:
     user = await _ensure_user(session, message.from_user)
+    lang = _user_lang(user)
     text = (message.text or "").partition(" ")[2].strip()
     if not text:
         await message.answer(
-            'Usage: /remember <what to remember>, e.g.\n/remember I prefer morning workouts\n\n'
-            "I will ask you to confirm before storing it as a fact.",
-            reply_markup=main_menu_kb(),
+            t(lang, "facts.usage"), reply_markup=main_menu_kb(lang)
         )
         return
     try:
@@ -323,30 +341,48 @@ async def cmd_remember(
             session, user, value=text, provenance="telegram:/remember"
         )
     except ValueError as exc:
-        await message.answer(f"I couldn't store that: {exc}")
+        await message.answer(t(lang, "facts.cant_store", error=exc))
         return
     await message.answer(
-        f"📝 Proposed fact: {fact.value}\nConfirm it to remember long-term:",
-        reply_markup=fact_kb(fact.id, confirmable=True),
+        t(lang, "facts.proposed", value=fact.value),
+        reply_markup=fact_kb(fact.id, confirmable=True, language=lang),
     )
 
 
 @router.message(Command("facts"))
 async def cmd_facts(message: Message, session: AsyncSession) -> None:
     user = await _ensure_user(session, message.from_user)
+    lang = _user_lang(user)
     facts = await facts_service.list_facts(session, user, limit=20)
     if not facts:
         await message.answer(
-            "You have no stored facts. Use /remember to add one.",
-            reply_markup=main_menu_kb(),
+            t(lang, "facts.empty"), reply_markup=main_menu_kb(lang)
         )
         return
-    lines = ["Your stored facts:"]
+    lines = [t(lang, "facts.list")]
     for fact in facts:
-        lines.append(f"• [{fact.status}] {fact.value}")
+        lines.append(t(lang, "facts.item", status=fact.status, value=fact.value))
     await message.answer(
         "\n".join(lines),
-        reply_markup=fact_kb(facts[0].id, confirmable=facts[0].status == FactStatus.proposed.value),
+        reply_markup=fact_kb(
+            facts[0].id,
+            confirmable=facts[0].status == FactStatus.proposed.value,
+            language=lang,
+        ),
+    )
+
+
+@router.message(Command("language"))
+async def cmd_language(
+    message: Message, session: AsyncSession, state: State
+) -> None:
+    """Explicit language change (persisted per user in PostgreSQL)."""
+    user = await _ensure_user(session, message.from_user)
+    lang = _user_lang(user)
+    await state.clear()
+    await message.answer(
+        t(lang, "settings.language_prompt"),
+        reply_markup=language_kb(lang),
     )
 
 
@@ -357,30 +393,37 @@ async def on_fact(
     session: AsyncSession,
 ) -> None:
     user = await _ensure_user(session, callback.from_user)
+    lang = _user_lang(user)
     if callback_data.action == "confirm":
         fact = await facts_service.confirm_fact(
             session, user, callback_data.fact_id
         )
         text = (
-            f"✅ Remembered: {fact.value}\nI'll use confirmed facts in chat."
+            t(lang, "facts.stored", value=fact.value)
             if fact is not None
-            else "That fact is no longer available."
+            else t(lang, "facts.unavailable")
         )
     elif callback_data.action == "reject":
         fact = await facts_service.reject_fact(
             session, user, callback_data.fact_id
         )
         text = (
-            f"❌ Rejected: {fact.value}" if fact is not None else "That fact is no longer available."
+            t(lang, "facts.rejected", value=fact.value)
+            if fact is not None
+            else t(lang, "facts.unavailable")
         )
     elif callback_data.action == "delete":
         deleted = await facts_service.delete_fact(
             session, user, callback_data.fact_id
         )
-        text = "🗑 Deleted." if deleted else "That fact is no longer available."
+        text = (
+            t(lang, "facts.deleted")
+            if deleted
+            else t(lang, "facts.unavailable")
+        )
     else:
-        text = "Main menu:"
-    await callback.message.edit_text(text, reply_markup=main_menu_kb())
+        text = t(lang, "common.main_menu")
+    await callback.message.edit_text(text, reply_markup=main_menu_kb(lang))
     await callback.answer()
 
 
@@ -393,57 +436,64 @@ async def on_menu(
 ) -> None:
     user = await _ensure_user(session, callback.from_user)
     tz = _user_tz(user)
+    lang = _user_lang(user)
     section = callback_data.section
 
     if section == "main":
         await callback.message.edit_text(
-            "Main menu:", reply_markup=main_menu_kb()
+            t(lang, "common.main_menu"), reply_markup=main_menu_kb(lang)
         )
     elif section == "task":
         await state.set_state(TaskDraftStates.waiting_for_text)
-        await callback.message.edit_text(DRAFT_HELP)
+        await callback.message.edit_text(t(lang, "draft.help"))
     elif section == "today":
         day = datetime.now(tz=tz).date()
         items = await calendar_service.list_today(session, user)
         await callback.message.edit_text(
-            f"📅 Today ({day.isoformat()}):\n{_fmt_items(items, tz)}",
-            reply_markup=items_kb(items) if items else main_menu_kb(),
+            t(lang, "tasks.today_title", date=day.isoformat())
+            + "\n"
+            + _fmt_items(items, tz, lang),
+            reply_markup=items_kb(items, lang) if items else main_menu_kb(lang),
         )
     elif section == "upcoming":
         items = await calendar_service.list_upcoming(session, user)
         await callback.message.edit_text(
-            f"📆 Next 7 days:\n{_fmt_items(items, tz)}",
-            reply_markup=items_kb(items) if items else main_menu_kb(),
+            t(lang, "tasks.upcoming_title") + "\n" + _fmt_items(items, tz, lang),
+            reply_markup=items_kb(items, lang) if items else main_menu_kb(lang),
         )
     elif section == "workouts":
         stats = await workouts_service.workout_stats(session, user)
         logs = await workouts_service.list_workouts(session, user, limit=5)
         lines = [
-            f"💪 Total: {stats['total']} · this week: {stats['this_week']} · "
-            f"streak: {stats['current_streak']}d (best {stats['longest_streak']}d)"
+            t(
+                lang,
+                "workouts.stats",
+                total=stats["total"],
+                week=stats["this_week"],
+                streak=stats["current_streak"],
+                best=stats["longest_streak"],
+            )
         ]
         if logs:
-            lines.append("Recent:")
+            lines.append(t(lang, "workouts.recent"))
             lines.extend(
                 f"🏋️ {log.started_at.astimezone(tz):%Y-%m-%d %H:%M}  {log.name}"
-                + (f" ({log.duration_minutes} min)" if log.duration_minutes else "")
+                + (
+                    t(lang, "workouts.minutes", minutes=log.duration_minutes)
+                    if log.duration_minutes
+                    else ""
+                )
                 for log in logs
             )
         else:
-            lines.append("No workouts logged yet.")
-        await callback.message.edit_text("\n".join(lines), reply_markup=workouts_kb())
+            lines.append(t(lang, "workouts.empty"))
+        await callback.message.edit_text("\n".join(lines), reply_markup=workouts_kb(lang))
     elif section == "log_workout":
         await state.set_state(WorkoutStates.waiting_log)
-        await callback.message.edit_text(
-            "Send: name, minutes, effort (1-10) — the last two are optional.\n"
-            "Example: Running, 30, 7\n/cancel aborts."
-        )
+        await callback.message.edit_text(t(lang, "workouts.log_prompt"))
     elif section == "schedule_workout":
         await state.set_state(WorkoutStates.waiting_schedule)
-        await callback.message.edit_text(
-            "Send: name, YYYY-MM-DD HH:MM\n"
-            "Example: Running, 2026-09-23 18:00\n/cancel aborts."
-        )
+        await callback.message.edit_text(t(lang, "workouts.schedule_prompt"))
     elif section == "files":
         files = (
             (
@@ -458,41 +508,84 @@ async def on_menu(
             .all()
         )
         if not files:
-            body = "No files yet. Send me a document to store it."
+            body = t(lang, "files.empty")
         else:
             body = "\n".join(
-                f"📄 {f.original_filename} — {f.state.value} ({f.size_bytes} bytes)"
+                t(
+                    lang,
+                    "files.item",
+                    filename=f.original_filename,
+                    state=f.state.value,
+                    size=f.size_bytes,
+                )
                 for f in files
             )
-        await callback.message.edit_text(body, reply_markup=main_menu_kb())
+        await callback.message.edit_text(body, reply_markup=main_menu_kb(lang))
     elif section == "ask":
         await callback.message.edit_text(
-            "Send me a question as a normal message and I will answer it.",
-            reply_markup=main_menu_kb(),
+            t(lang, "ask.prompt"), reply_markup=main_menu_kb(lang)
         )
     elif section == "settings":
-        await callback.message.edit_text("Settings:", reply_markup=settings_kb())
+        await callback.message.edit_text(
+            t(lang, "settings.prompt"), reply_markup=settings_kb(lang)
+        )
     else:
-        await callback.message.edit_text("Main menu:", reply_markup=main_menu_kb())
+        await callback.message.edit_text(
+            t(lang, "common.main_menu"), reply_markup=main_menu_kb(lang)
+        )
     await callback.answer()
 
 
 @router.callback_query(SettingsCallback.filter())
 async def on_settings(
-    callback: CallbackQuery, callback_data: SettingsCallback, state: State
+    callback: CallbackQuery,
+    callback_data: SettingsCallback,
+    session: AsyncSession,
+    state: State,
 ) -> None:
+    user = await _ensure_user(session, callback.from_user)
+    lang = _user_lang(user)
     if callback_data.action == "timezone":
         await state.set_state(SettingsStates.timezone)
-        await callback.message.edit_text(
-            "Send the IANA timezone, e.g. Europe/Berlin. /cancel aborts."
-        )
+        await callback.message.edit_text(t(lang, "settings.tz_prompt"))
     elif callback_data.action == "digest_time":
         await state.set_state(SettingsStates.digest_time)
+        await callback.message.edit_text(t(lang, "settings.digest_prompt"))
+    elif callback_data.action == "language":
         await callback.message.edit_text(
-            "Send the digest time as HH:MM (24-hour). /cancel aborts."
+            t(lang, "settings.language_prompt"),
+            reply_markup=language_kb(lang),
         )
     else:
-        await callback.message.edit_text("Settings:", reply_markup=settings_kb())
+        await callback.message.edit_text(
+            t(lang, "settings.prompt"), reply_markup=settings_kb(lang)
+        )
+    await callback.answer()
+
+
+@router.callback_query(LanguageCallback.filter())
+async def on_language(
+    callback: CallbackQuery,
+    callback_data: LanguageCallback,
+    session: AsyncSession,
+    state: State,
+) -> None:
+    """Persist the chosen language and re-render immediately in it."""
+    user = await _ensure_user(session, callback.from_user)
+    code = callback_data.code
+    if not is_supported(code):
+        lang = _user_lang(user)
+        await callback.message.edit_text(
+            t(lang, "errors.generic"), reply_markup=settings_kb(lang)
+        )
+        await callback.answer()
+        return
+    user.settings.language = code
+    await state.clear()
+    await callback.message.edit_text(
+        t(code, "settings.language_changed", label=t(code, f"settings.language_{code}")),
+        reply_markup=settings_kb(code),
+    )
     await callback.answer()
 
 
@@ -504,10 +597,11 @@ async def on_draft(
     state: State,
 ) -> None:
     user = await _ensure_user(session, callback.from_user)
+    lang = _user_lang(user)
     if callback_data.action == "cancel":
         await state.clear()
         await callback.message.edit_text(
-            "Draft cancelled.", reply_markup=main_menu_kb()
+            t(lang, "draft.cancelled"), reply_markup=main_menu_kb(lang)
         )
     else:
         data = await state.get_data()
@@ -532,10 +626,10 @@ async def on_draft(
             session, user, item, offsets_minutes=draft.remind_offsets
         )
         await state.clear()
-        text = f"✅ Saved: {draft.title}"
+        text = t(lang, "draft.saved", title=draft.title)
         if reminders:
-            text += f"\n⏰ {len(reminders)} reminder(s) scheduled."
-        await callback.message.edit_text(text, reply_markup=main_menu_kb())
+            text += "\n" + t(lang, "draft.reminders", count=len(reminders))
+        await callback.message.edit_text(text, reply_markup=main_menu_kb(lang))
     await callback.answer()
 
 
@@ -547,35 +641,40 @@ async def on_item(
 ) -> None:
     user = await _ensure_user(session, callback.from_user)
     tz = _user_tz(user)
+    lang = _user_lang(user)
     if callback_data.action == "complete":
         item = await calendar_service.complete_item(
             session, user, callback_data.item_id
         )
         if item is None:
-            text = "That item is no longer available."
+            text = t(lang, "common.unavailable")
         else:
             # A completed item's pending reminders are no longer useful.
             await reminders_service.cancel_item_reminders(
                 session, user, item.id
             )
             when = (
-                f" (was {item.starts_at.astimezone(tz):%Y-%m-%d %H:%M})"
+                t(
+                    lang,
+                    "tasks.was",
+                    time=item.starts_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+                )
                 if item.starts_at
                 else ""
             )
-            text = f"✅ Done: {item.title}{when}"
+            text = t(lang, "tasks.done", title=item.title, when=when)
     elif callback_data.action == "cancel":
         item = await calendar_service.cancel_item(
             session, user, callback_data.item_id
         )
         text = (
-            f"🚫 Cancelled: {item.title}"
+            t(lang, "tasks.cancelled", title=item.title)
             if item is not None
-            else "That item is no longer available."
+            else t(lang, "common.unavailable")
         )
     else:
-        text = "Main menu:"
-    await callback.message.edit_text(text, reply_markup=main_menu_kb())
+        text = t(lang, "common.main_menu")
+    await callback.message.edit_text(text, reply_markup=main_menu_kb(lang))
     await callback.answer()
 
 
@@ -594,12 +693,12 @@ async def on_document(message: Message, session: AsyncSession) -> None:
         telegram_file_id=doc.file_id,
         telegram_file_unique_id=doc.file_unique_id,
     )
+    lang = _user_lang(user)
     if file.state == FileState.rejected.value:
-        await message.answer(f"🚫 Couldn't store that file: {file.error}")
+        await message.answer(t(lang, "files.rejected", error=file.error))
     else:
         await message.answer(
-            f"📄 Saved {file.original_filename}. I'm indexing it in the "
-            "background — check 📁 My files for the status."
+            t(lang, "files.saved", filename=file.original_filename)
         )
 
 
@@ -609,6 +708,7 @@ async def on_text(
 ) -> None:
     text = message.text or ""
     user = await _ensure_user(session, message.from_user)
+    lang = _user_lang(user)
     current = await state.get_state()
 
     if current == TaskDraftStates.waiting_for_text:
@@ -628,46 +728,49 @@ async def on_text(
                 )
             except AIProviderError:
                 await message.answer(
-                    "I couldn't interpret that. Try rephrasing, or use the\n"
-                    f"structured format.\n\n{DRAFT_HELP}"
+                    t(lang, "draft.failed", help=t(lang, "draft.help"))
                 )
                 return
             draft = _ai_draft_to_task_draft(ai, tz)
             ai_dump = ai.model_dump(mode="json")
         await state.update_data(draft_text=text, draft_ai=ai_dump)
         await state.set_state(TaskDraftStates.confirm)
-        await message.answer(_draft_preview(draft, tz), reply_markup=draft_kb())
+        await message.answer(
+            _draft_preview(draft, tz, lang), reply_markup=draft_kb(lang)
+        )
     elif current == TaskDraftStates.confirm:
-        await message.answer("Please use the ✅ / ❌ buttons above.")
+        await message.answer(t(lang, "draft.confirm_prompt"))
     elif current == SettingsStates.timezone:
         try:
             ZoneInfo(text)
         except (ZoneInfoNotFoundError, ValueError):
-            await message.answer(f"{text!r} is not a valid IANA timezone. Try again.")
+            await message.answer(t(lang, "settings.tz_invalid", value=text))
             return
         user.settings.timezone = text
         await state.clear()
         await message.answer(
-            f"Timezone set to {text}.", reply_markup=settings_kb()
+            t(lang, "settings.tz_set", tz=text), reply_markup=settings_kb(lang)
         )
     elif current == SettingsStates.digest_time:
         try:
             clock = _parse_hhmm(text)
         except (ValueError, TypeError):
-            await message.answer("Use the 24-hour HH:MM format, e.g. 08:30.")
+            await message.answer(t(lang, "settings.digest_invalid"))
             return
         user.settings.digest_time = clock
         await state.clear()
         await message.answer(
-            f"Digest time set to {clock:%H:%M}.", reply_markup=settings_kb()
+            t(lang, "settings.digest_set", time=f"{clock:%H:%M}"),
+            reply_markup=settings_kb(lang),
         )
     elif current == WorkoutStates.waiting_log:
         try:
             name, duration, effort = _parse_workout_log(text)
         except ValueError as exc:
             await message.answer(
-                f"I couldn't read that: {exc}\n\n"
-                "Send: name, minutes, effort (1-10). /cancel aborts."
+                t(lang, "workouts.cant_read", error=exc)
+                + "\n\n"
+                + t(lang, "workouts.log_prompt")
             )
             return
         try:
@@ -679,13 +782,17 @@ async def on_text(
                 perceived_effort=effort,
             )
         except ValueError as exc:
-            await message.answer(f"I couldn't read that: {exc}")
+            await message.answer(t(lang, "workouts.cant_read", error=exc))
             return
         await state.clear()
         await message.answer(
-            f"🏋️ Logged: {log.name}"
-            + (f" ({log.duration_minutes} min)" if log.duration_minutes else ""),
-            reply_markup=workouts_kb(),
+            t(lang, "workouts.logged", name=log.name)
+            + (
+                t(lang, "workouts.minutes", minutes=log.duration_minutes)
+                if log.duration_minutes
+                else ""
+            ),
+            reply_markup=workouts_kb(lang),
         )
     elif current == WorkoutStates.waiting_schedule:
         tz = _user_tz(user)
@@ -693,8 +800,9 @@ async def on_text(
             name, when = _parse_workout_schedule(text, tz)
         except ValueError as exc:
             await message.answer(
-                f"I couldn't read that: {exc}\n\n"
-                "Send: name, YYYY-MM-DD HH:MM. /cancel aborts."
+                t(lang, "workouts.cant_read", error=exc)
+                + "\n\n"
+                + t(lang, "workouts.schedule_prompt")
             )
             return
         try:
@@ -702,14 +810,18 @@ async def on_text(
                 session, user, name=name, starts_at=when
             )
         except ValueError as exc:
-            await message.answer(f"I couldn't schedule that: {exc}")
+            await message.answer(t(lang, "workouts.cant_schedule", error=exc))
             return
         await state.clear()
         await message.answer(
-            f"📅 Scheduled: {item.title} at "
-            f"{item.starts_at.astimezone(tz):%Y-%m-%d %H:%M} ({tz}).\n"
-            "You'll get a reminder at the start time.",
-            reply_markup=main_menu_kb(),
+            t(
+                lang,
+                "workouts.scheduled",
+                title=item.title,
+                when=item.starts_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+                tz=tz,
+            ),
+            reply_markup=main_menu_kb(lang),
         )
     else:
         try:
@@ -724,9 +836,8 @@ async def on_text(
                 )
             )
             await message.answer(
-                "Sorry, I can't reach my language model right now. "
-                "Please try again in a bit.",
-                reply_markup=main_menu_kb(),
+                t(lang, "errors.ai_unavailable"),
+                reply_markup=main_menu_kb(lang),
             )
             return
-        await message.answer(reply, reply_markup=main_menu_kb())
+        await message.answer(reply, reply_markup=main_menu_kb(lang))

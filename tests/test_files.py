@@ -487,6 +487,10 @@ def _fake_document_message(mime_type: str = "text/plain") -> SimpleNamespace:
 
 
 async def test_on_document_registers_and_confirms(session) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.commit()
+
     message = _fake_document_message()
     await on_document(message, session)
     await session.commit()
@@ -500,6 +504,10 @@ async def test_on_document_registers_and_confirms(session) -> None:
 
 
 async def test_on_document_reports_rejection(session) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.commit()
+
     message = _fake_document_message(mime_type="image/png")
     await on_document(message, session)
     await session.commit()

@@ -13,6 +13,12 @@ class SettingsCallback(CallbackData, prefix="settings"):
     action: str
 
 
+class LanguageCallback(CallbackData, prefix="lang"):
+    """Select the user's interface language (persisted per user)."""
+
+    code: str
+
+
 class ItemCallback(CallbackData, prefix="item"):
     action: str
     item_id: int

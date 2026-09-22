@@ -241,6 +241,10 @@ async def test_on_text_uses_contextual_chat(session: AsyncSession, monkeypatch) 
 
 
 async def test_on_text_provider_down_gives_fallback(session: AsyncSession, monkeypatch) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.commit()
+
     monkeypatch.setattr(
         chat_service, "get_ai_provider", lambda: _FailingProvider()
     )
@@ -255,6 +259,10 @@ async def test_on_text_provider_down_gives_fallback(session: AsyncSession, monke
 
 
 async def test_on_text_still_routes_fsm_states(session: AsyncSession, monkeypatch) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.commit()
+
     monkeypatch.setattr(
         chat_service, "get_ai_provider", lambda: _FakeProvider(reply="chat-reply")
     )

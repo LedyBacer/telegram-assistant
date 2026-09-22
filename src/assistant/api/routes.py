@@ -35,6 +35,7 @@ from assistant.api.schemas import (
     WorkoutStatsOut,
 )
 from assistant.db import get_session
+from assistant.i18n import SUPPORTED_LANGUAGES, is_supported, load_locale, t
 from assistant.models.facts import FactStatus
 from assistant.models.reminders import ReminderStatus
 from assistant.models.users import User
@@ -472,6 +473,33 @@ async def update_settings(
         user.settings.digest_time = body.digest_time
     if body.motivation_enabled is not None:
         user.settings.motivation_enabled = body.motivation_enabled
+    if body.language is not None:
+        user.settings.language = body.language
     await session.commit()
     await session.refresh(user.settings)
     return SettingsOut.model_validate(user.settings)
+
+
+# ---------------------------------------------------------------------------
+# i18n — locale dictionaries for the Mini App (single translation source)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/i18n/languages")
+async def list_languages(user: User = Depends(get_current_user)) -> list[dict[str, str]]:
+    """Supported languages with the label shown in the user's own language."""
+    lang = user.settings.language if user.settings is not None else "ru"
+    return [
+        {"code": code, "label": t(lang, f"settings.language_{code}")}
+        for code in sorted(SUPPORTED_LANGUAGES)
+    ]
+
+
+@router.get("/i18n/{locale}")
+async def locale_dict(
+    locale: str, user: User = Depends(get_current_user)
+) -> dict[str, str]:
+    """The flat translation dictionary for a supported locale."""
+    if not is_supported(locale):
+        raise _not_found()
+    return load_locale(locale)

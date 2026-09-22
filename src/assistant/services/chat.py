@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.ai import AIProvider, get_ai_provider
 from assistant.ai.prompts import CHAT_SYSTEM
 from assistant.config import get_settings
+from assistant.i18n import DEFAULT_LANGUAGE, language_name
 from assistant.models.calendar_items import CalendarItem
 from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.reminders import Reminder, ReminderStatus
@@ -163,8 +164,16 @@ async def chat(
     ]
     history.append({"role": ChatRole.user.value, "content": text})
 
+    lang = (
+        user.settings.language
+        if user.settings is not None
+        else DEFAULT_LANGUAGE
+    )
     reply = await provider.chat(
-        system=CHAT_SYSTEM.format(context=render_context(ctx)),
+        system=CHAT_SYSTEM.format(
+            context=render_context(ctx),
+            language=language_name(lang),
+        ),
         messages=history,
     )
     session.add(

@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from assistant.db.base import Base
+from assistant.i18n import DEFAULT_LANGUAGE
 
 
 class User(Base):
@@ -70,6 +71,9 @@ class UserSettings(Base):
     )
     motivation_enabled: Mapped[bool] = mapped_column(
         default=True, server_default="true"
+    )
+    language: Mapped[str] = mapped_column(
+        String(16), default=DEFAULT_LANGUAGE, server_default=DEFAULT_LANGUAGE
     )
     extra: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     updated_at: Mapped[datetime] = mapped_column(

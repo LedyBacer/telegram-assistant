@@ -1,6 +1,20 @@
 # Progress
 
-Status: ALL 14 MILESTONES COMPLETE. Milestone 14 (independent chat/embedding
+Status: ALL 15 MILESTONES COMPLETE. Milestone 15 (production-ready per-user
+internationalization) done: `src/assistant/i18n/` registry + `t()` translator
+with `locales/{ru,en}.json` (RU default + fallback, never crashes on missing
+keys), `user_settings.language` (NOT NULL, server default `ru`) with new
+Alembic migration `e8a2c41b7f05`, bot language picker (Settings button +
+`/language`, immediate re-render, persisted), background jobs resolving the
+recipient's language at execution time, explicit AI answer-language
+instruction + language-neutral draft schema, Mini App rendering from the
+backend locale dictionaries (`/api/v1/i18n/*`) with settings persistence,
+and API `language` in settings with 422 on unsupported codes. Verified:
+fresh-DB migration, full suite 206 passing, Ruff clean, api/bot/worker
+import-verified, ru/en locale parity, two-user two-language tests,
+no global env-var language.
+
+Milestone 14 (independent chat/embedding
 providers + 384-dim pgvector) done: split `CHAT_*` / `EMBEDDING_*` config
 with legacy `OPENAI_*` fallback, independent AsyncOpenAI clients behind a
 composite `OpenAICompatibleProvider`, E5 prefixes centralized in the
@@ -245,11 +259,58 @@ confirmed in the catalog.
   `docs/` updated. Verified: fresh-DB migration, 176 passing, Ruff clean,
   imports OK, `vector(384)` + HNSW index in the catalog.
 
+- Milestone 15: production-ready per-user internationalization (i18n).
+  `src/assistant/i18n/service.py` — `SupportedLanguage` (StrEnum: `ru`,
+  `en`), `DEFAULT_LANGUAGE`/`FALLBACK_LANGUAGE = "ru"`,
+  `SUPPORTED_LANGUAGES` (derived from the enum), `LANGUAGE_NAMES`,
+  `language_name()`, `is_supported()`, `load_locale()` (independent copy of
+  the `@cache`d flat dict), and `t(language, key, **kwargs)`: unknown
+  language → RU, key missing from active locale → RU, key missing from RU →
+  the key itself (never raises), `{param}` interpolation with a safe-format
+  fallback; `Translator`/`for_language()` binding. Locale dictionaries at
+  `src/assistant/i18n/locales/{ru,en}.json` (same key set, parity enforced
+  by a test). Migration `e8a2c41b7f05_user_settings_language`:
+  `user_settings.language` `VARCHAR(16) NOT NULL DEFAULT 'ru'`, server
+  default, existing rows set to `'ru'`; downgrade drops the column.
+  `models/users.py`: `language` column with Python + server defaults.
+  `services/users.py` `upsert_user` never reads the Telegram
+  `language_code` — new users keep the default `ru`. Bot: `LanguageCallback`
+  (`prefix="lang"`), `settings_kb` gained a localized 🗣 language button,
+  `language_kb` (one button per supported code, localized labels),
+  `cmd_language` + `on_language` (persist, re-render settings + answer
+  immediately in the new language, reject unsupported codes); every
+  localized bot surface (start, help, menu, settings, drafts, tasks,
+  workouts, files, facts, reminders, digests, motivation, errors,
+  keyboards) now renders through `t(user.language, ...)`.
+  `services/reminders.py`: `create_item_reminders` stores the raw user
+  text; the "Напоминание: / Reminder:" wrapper is applied at delivery in
+  the recipient's CURRENT language. `services/digests.py` +
+  `motivation.py`: built at execution time in the recipient's language.
+  `ai/prompts.py` `CHAT_SYSTEM` gained `{language}` ("Always answer in
+  {language}"); `DRAFT_SYSTEM` stays language-neutral; user text is never
+  translated. API: `Settings`/`SettingsUpdate` expose `language` (422 on
+  unsupported codes); new authed endpoints `GET /api/v1/i18n/languages`
+  (`[{code, label}]`) and `GET /api/v1/i18n/{locale}` (404 on unknown).
+  Mini App `miniapp/app.js`: all UI strings fetched from the backend
+  locale dictionary for the user's language (single source of truth, no
+  localStorage copy), Settings tab gains a language select, saving
+  persists via `PATCH /settings` and reloads the dictionary; initData
+  auth unchanged. Ruff config: per-file `F811` ignore for test fixture
+  imports. Tests: `tests/test_i18n.py` (30 — service/registry, parity,
+  fallbacks, interpolation, column defaults, no language_code override,
+  two-user scoping, persistence, start/language bot flows, reminder +
+  digest language at execution, AI language instruction, neutral draft
+  prompt, API read/update/422, i18n endpoints) + targeted updates in
+  existing suites (reminders/digests/facts/files/chat/api) to the new
+  execution-time wrapper semantics. README + docs updated. Verified:
+  fresh-DB migration, 206 passing, Ruff clean, imports OK.
+
 ## Current milestone
 
-- None — all 14 milestones complete.
+- None — all 15 milestones complete.
 
 ## Next
 
 - Project is complete. Future work (out of scope for this run): real
-  Telegram/OpenAI credential smoke tests, CI pipeline, observability.
+  Telegram/OpenAI credential smoke tests, CI pipeline, observability,
+  additional languages (ru/en supported today).

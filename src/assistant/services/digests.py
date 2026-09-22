@@ -18,7 +18,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from assistant.i18n import DEFAULT_LANGUAGE, t
 from assistant.models.calendar_items import CalendarItem
 from assistant.models.digests import DigestDelivery
 from assistant.models.jobs import BackgroundJob, JobStatus
@@ -43,22 +45,27 @@ def _user_tz(user: User) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+def _user_lang(user: User) -> str:
+    return user.settings.language if user.settings is not None else DEFAULT_LANGUAGE
+
+
 def _idempotency_key(user_id: int, digest_date: date) -> str:
     return f"digest:{user_id}:{digest_date.isoformat()}"
 
 
-def _item_line(item: CalendarItem) -> str:
-    parts = [f"- {item.title} [{item.kind.value}]"]
+def _item_line(item: CalendarItem, language: str) -> str:
+    parts = [t(language, "digest.item", title=item.title, kind=item.kind.value)]
     if item.starts_at is not None:
-        parts.append(f"starts {item.starts_at.isoformat()}")
+        parts.append(t(language, "digest.item_starts", when=item.starts_at.isoformat()))
     if item.due_at is not None:
-        parts.append(f"due {item.due_at.isoformat()}")
+        parts.append(t(language, "digest.item_due", when=item.due_at.isoformat()))
     return ", ".join(parts)
 
 
 async def build_digest(session: AsyncSession, user: User) -> str:
     """Render the digest text from current application state."""
     tz = _user_tz(user)
+    language = _user_lang(user)
     today = datetime.now(tz=tz).date()
     today_items = (await calendar_service.list_today(session, user))[:TODAY_LIMIT]
     overdue_items = (await calendar_service.list_overdue(session, user))[:OVERDUE_LIMIT]
@@ -67,21 +74,33 @@ async def build_digest(session: AsyncSession, user: User) -> str:
     )[:UPCOMING_LIMIT]
     stats = await workouts_service.workout_stats(session, user)
 
-    sections: list[str] = [f"Good morning, {user.first_name}! Your day on {today.isoformat()}:"]
+    sections: list[str] = [
+        t(language, "digest.title", name=user.first_name, date=today.isoformat())
+    ]
     if today_items:
-        sections.append("Today:\n" + "\n".join(_item_line(i) for i in today_items))
+        sections.append(
+            t(language, "digest.today") + "\n" + "\n".join(_item_line(i, language) for i in today_items)
+        )
     else:
-        sections.append("Today: nothing scheduled.")
+        sections.append(t(language, "digest.today_empty"))
     if overdue_items:
-        sections.append("Overdue:\n" + "\n".join(_item_line(i) for i in overdue_items))
+        sections.append(
+            t(language, "digest.overdue") + "\n" + "\n".join(_item_line(i, language) for i in overdue_items)
+        )
     if upcoming_items:
         sections.append(
-            "Upcoming (7 days):\n" + "\n".join(_item_line(i) for i in upcoming_items)
+            t(language, "digest.upcoming")
+            + "\n"
+            + "\n".join(_item_line(i, language) for i in upcoming_items)
         )
     if stats["total"]:
         sections.append(
-            f"Workouts: {stats['this_week']} this week, "
-            f"current streak {stats['current_streak']} day(s)."
+            t(
+                language,
+                "digest.workouts",
+                week=stats["this_week"],
+                streak=stats["current_streak"],
+            )
         )
 
     state = motivation.MotivationState(
@@ -182,7 +201,11 @@ async def _handle_digest_send(session: AsyncSession, job: BackgroundJob) -> None
     if delivery.sent_at is not None:
         # Already delivered (retry/restart): idempotent no-op.
         return
-    user = await session.get(User, delivery.user_id)
+    # Eager-load settings so the recipient's language is read at execution
+    # time (a later language change must take effect for this digest).
+    user = await session.get(
+        User, delivery.user_id, options=[selectinload(User.settings)]
+    )
     if user is None:
         return
     content = await build_digest(session, user)

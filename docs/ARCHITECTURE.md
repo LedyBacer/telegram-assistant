@@ -46,6 +46,46 @@ worker ─────────────────────> durable 
   text/markdown/PDF/DOCX.
 5. **Idempotent digests.** Digest generation for (user, day) is keyed so
   duplicate jobs/worker restarts produce exactly one digest.
+6. **Per-user language (i18n).** Supported languages are registered once in
+  `SupportedLanguage` (`src/assistant/i18n/service.py`); every user stores
+  their choice in `user_settings.language` (NOT NULL, default and server
+  default `ru`). There is no global/env-var language. Russian is the
+  fallback for unknown languages and missing keys, and a key missing from
+  Russian returns the key itself (never an exception).
+
+## Internationalization (i18n)
+
+- **Registry and translator.** `src/assistant/i18n/service.py` centralizes
+  `SupportedLanguage`, `DEFAULT_LANGUAGE = "ru"`, `FALLBACK_LANGUAGE = "ru"`,
+  `SUPPORTED_LANGUAGES`, `LANGUAGE_NAMES`, and the translator
+  `t(language, key, **kwargs)` (`{param}` interpolation; safe on missing
+  kwargs). Handlers, services, the API, and the worker only call `t()` —
+  no hard-coded UI strings and no `"ru"`/`"en"` literals outside this
+  module.
+- **Locale files.** Flat `{"section.key": "value"}` JSON dictionaries at
+  `src/assistant/i18n/locales/{ru,en}.json`, loaded once per process
+  (`@cache`) and served as independent copies. `ru` and `en` must keep the
+  same key set (enforced by a test).
+- **User scope.** `upsert_user` creates `UserSettings` with the default
+  language and never reads the Telegram client's `language_code`; new users
+  get `ru`. Changes go through the bot (Settings → Language / `/language`)
+  or the API (`PATCH /settings` with validation → 422 on unknown codes).
+- **Execution-time resolution.** Background jobs (reminders, digest,
+  motivation) read the recipient's language when they run, so switching
+  language immediately affects the next delivery; user-authored content
+  (reminder text, titles, facts, filenames) is never translated.
+- **AI.** The chat system prompt carries an explicit answer-language
+  instruction (`language_name`); the structured task-draft schema and its
+  prompt are language-neutral and understand Russian and English alike.
+  User messages are never pre-translated.
+- **Mini App.** Single source of truth: `GET /api/v1/i18n/languages`
+  (`[{code, label}]`) and `GET /api/v1/i18n/{locale}` (the flat dictionary).
+  The SPA renders from the fetched dictionary, persists the choice via
+  `PATCH /settings`, and reloads the dictionary on change — no divergent
+  local copy. initData auth is unchanged.
+- **Adding a language.** Register the code in `SupportedLanguage`, add its
+  display name to `LANGUAGE_NAMES`, and drop `locales/<code>.json` with the
+  full key set. Nothing else changes.
 
 ## Code layout
 
@@ -57,6 +97,7 @@ src/assistant/
 ├── models/            # SQLAlchemy 2.x ORM models
 ├── ai/                # OpenAI-compatible providers: independent chat and
 │                      # embedding clients (separate servers/keys/models)
+├── i18n/              # language registry + t() + locales/{ru,en}.json
 ├── services/          # calendar, tasks, reminders, workouts, files, facts,
 │                      # retrieval, digest, queue — shared by bot/api/worker
 ├── bot/               # aiogram routers, callbacks, FSM, keyboards

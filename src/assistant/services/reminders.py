@@ -13,7 +13,9 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from assistant.i18n import DEFAULT_LANGUAGE, t
 from assistant.models.calendar_items import CalendarItem
 from assistant.models.jobs import BackgroundJob, JobStatus
 from assistant.models.reminders import Reminder, ReminderStatus
@@ -100,7 +102,9 @@ async def create_item_reminders(
             session,
             user,
             fire_at=fire_at,
-            message=f"Reminder: {item.title}",
+            # Store the user's text only; the localized "Reminder:" wrapper
+            # is applied at delivery time in the user's current language.
+            message=item.title,
             calendar_item=item,
             trigger_type="item_linked",
             offset_minutes=offset,
@@ -200,10 +204,21 @@ async def _handle_reminder_send(
     if reminder.status != ReminderStatus.pending.value:
         # Already sent (retry/restart) or cancelled: idempotent no-op.
         return
-    user = await session.get(User, reminder.user_id)
+    user = await session.get(
+        User, reminder.user_id, options=[selectinload(User.settings)]
+    )
     if user is None:
         return
-    await notifications.send_text(user.id, reminder.message)
+    # The wrapper is localized at execution time so a later language change
+    # takes effect; the user's own reminder text is sent unchanged.
+    language = (
+        user.settings.language
+        if user.settings is not None
+        else DEFAULT_LANGUAGE
+    )
+    await notifications.send_text(
+        user.id, t(language, "reminders.notification", message=reminder.message)
+    )
     reminder.status = ReminderStatus.sent.value
     reminder.sent_at = datetime.now(UTC)
     await session.flush()

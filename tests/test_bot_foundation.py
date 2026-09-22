@@ -51,7 +51,7 @@ class TestCallbacks:
 
 class TestKeyboards:
     def test_main_menu_without_base_url(self) -> None:
-        kb = keyboards.main_menu_kb()
+        kb = keyboards.main_menu_kb("ru")
         flat = [b for row in kb.inline_keyboard for b in row]
         assert len(flat) == 7  # miniapp button hidden without base_url
         assert all(b.callback_data is not None for b in flat)
@@ -59,7 +59,7 @@ class TestKeyboards:
         assert data == {s for s, _ in keyboards.SECTIONS if s != "miniapp"}
 
     def test_main_menu_with_base_url(self) -> None:
-        kb = keyboards.main_menu_kb("https://example.test/miniapp")
+        kb = keyboards.main_menu_kb("ru", "https://example.test/miniapp")
         flat = [b for row in kb.inline_keyboard for b in row]
         assert len(flat) == 8
         web = [b for b in flat if b.web_app is not None]
@@ -67,12 +67,13 @@ class TestKeyboards:
         assert web[0].web_app.url == "https://example.test/miniapp"
 
     def test_settings_and_draft_keyboards(self) -> None:
-        s = [b for row in keyboards.settings_kb().inline_keyboard for b in row]
-        assert [callbacks.SettingsCallback.unpack(b.callback_data) for b in s[:2]] == [
+        s = [b for row in keyboards.settings_kb("ru").inline_keyboard for b in row]
+        assert [callbacks.SettingsCallback.unpack(b.callback_data) for b in s[:3]] == [
             callbacks.SettingsCallback(action="timezone"),
             callbacks.SettingsCallback(action="digest_time"),
+            callbacks.SettingsCallback(action="language"),
         ]
-        d = [b for row in keyboards.draft_kb().inline_keyboard for b in row]
+        d = [b for row in keyboards.draft_kb("ru").inline_keyboard for b in row]
         assert [callbacks.DraftCallback.unpack(b.callback_data) for b in d] == [
             callbacks.DraftCallback(action="confirm"),
             callbacks.DraftCallback(action="cancel"),

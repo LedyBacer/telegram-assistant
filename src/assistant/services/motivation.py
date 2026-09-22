@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from assistant.i18n import DEFAULT_LANGUAGE, t
 from assistant.models.users import User
 
 _MIN_STREAK_FOR_PRAISE = 2
@@ -24,21 +25,19 @@ class MotivationState:
 
 
 def motivational_line(user: User, state: MotivationState) -> str | None:
-    """Return one short line based on real state, or None to stay silent."""
+    """Return one short line based on real state, or None to stay silent.
+
+    Rendered in the user's persisted language at call time.
+    """
     if user.settings is not None and not user.settings.motivation_enabled:
         return None
+    language = user.settings.language if user.settings is not None else DEFAULT_LANGUAGE
     if state.has_overdue:
-        return (
-            "You have overdue items — even a ten-minute push today keeps "
-            "the momentum alive."
-        )
+        return t(language, "motivation.overdue")
     if state.has_upcoming_workout:
-        return "Workout on the way — a bit of rest now is fuel for later."
+        return t(language, "motivation.workout")
     if state.current_streak >= _MIN_STREAK_FOR_PRAISE:
-        return (
-            f"{state.current_streak}-day streak. Consistency compounds; "
-            "keep it alive."
-        )
+        return t(language, "motivation.streak", streak=state.current_streak)
     if state.schedule_empty:
-        return "Your schedule is clear today — a good time to plan one small win."
-    return "One thing done is better than ten planned."
+        return t(language, "motivation.empty")
+    return t(language, "motivation.default")

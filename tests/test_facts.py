@@ -177,6 +177,10 @@ def _fake_fact_callback(user_id: int = 61) -> SimpleNamespace:
 async def test_cmd_remember_proposes_and_asks_confirmation(
     session: AsyncSession,
 ) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.commit()
+
     message = _fake_message("/remember I prefer morning workouts")
     await cmd_remember(message, session)
     await session.commit()
@@ -188,6 +192,10 @@ async def test_cmd_remember_proposes_and_asks_confirmation(
 
 
 async def test_cmd_remember_without_text_shows_usage(session: AsyncSession) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.commit()
+
     message = _fake_message("/remember")
     await cmd_remember(message, session)
     await session.commit()
@@ -212,6 +220,10 @@ async def test_cmd_facts_lists_stored_facts(session: AsyncSession) -> None:
 
 
 async def test_cmd_facts_empty_state(session: AsyncSession) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.commit()
+
     message = _fake_message("/facts")
     await cmd_facts(message, session)
     await session.commit()

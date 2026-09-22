@@ -97,7 +97,9 @@ async def test_create_item_reminders_resolves_offsets(
     for r in reminders:
         assert r.trigger_type == "item_linked"
         assert r.calendar_item_id == item.id
-        assert r.message == "Reminder: Standup"
+        # The stored text is the user's title only; the localized
+        # "Reminder:" wrapper is applied at delivery time.
+        assert r.message == "Standup"
 
 
 async def test_create_item_reminders_without_starts_at_is_empty(
