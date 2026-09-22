@@ -112,7 +112,7 @@ FastAPI 0.141.1, SQLAlchemy 2.0.54, asyncpg, Alembic 1.20.0, Pydantic
 | 12 | `47a7b99` | Migration-chain test (SPEC §26 gap closed) |
 | 13 | — | This report + final verification |
 | 14 | `17d2683` | Independent chat/embedding providers + `vector(384)` migration |
-| 15 | (this run) | Per-user internationalization (ru/en): registry + `t()`, `user_settings.language` migration, bot/Mini App/API language selection, execution-time job localization, AI language instruction, 30 i18n tests |
+| 15 | `c378f71` | Per-user internationalization (ru/en): registry + `t()`, `user_settings.language` migration, bot/Mini App/API language selection, execution-time job localization, AI language instruction, 30 i18n tests |
 
 ## 4. Verification (SPEC §31 + QWEN.md)
 
