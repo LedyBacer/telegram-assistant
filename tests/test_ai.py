@@ -1,12 +1,18 @@
 """AI provider abstraction and structured task-draft tests (SPEC §6, §15, §30).
 
-External model calls are faked: the OpenAI SDK client is mocked for provider
+External model calls are faked: the OpenAI SDK clients are mocked for provider
 unit tests and a hand-rolled fake provider is used for the bot flow. No real
 credentials or network access are required.
+
+Covers the split-provider design: chat and embeddings use independent
+OpenAI-compatible clients with independent base URLs, API keys, and models;
+E5 prefixes are applied centrally by the embedding provider; embedding
+dimensions are validated against the configured value.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -15,13 +21,19 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from openai import APIError
+from pydantic import ValidationError
 from sqlalchemy import text
 
 from assistant.ai import (
+    E5_DOCUMENT_PREFIX,
+    E5_QUERY_PREFIX,
     AIOutputValidationError,
     AIProviderError,
     AITaskDraft,
+    EmbeddingDimensionError,
+    OpenAIChatProvider,
     OpenAICompatibleProvider,
+    OpenAIEmbeddingProvider,
     build_ai_provider,
 )
 from assistant.bot import handlers
@@ -30,7 +42,7 @@ from assistant.bot.states import TaskDraftStates
 from assistant.config import Settings
 
 # ---------------------------------------------------------------------------
-# Provider unit tests (mocked AsyncOpenAI client)
+# Provider unit tests (mocked AsyncOpenAI clients)
 # ---------------------------------------------------------------------------
 
 
@@ -40,8 +52,14 @@ def _fake_completion(content: str) -> Any:
     )
 
 
-def _provider_with_fake_client() -> tuple[OpenAICompatibleProvider, AsyncMock]:
-    provider = OpenAICompatibleProvider(api_key="test-key", chat_model="fake-model")
+def _fake_embedding_response(vectors: list[list[float]]) -> Any:
+    return SimpleNamespace(data=[SimpleNamespace(embedding=list(v)) for v in vectors])
+
+
+def _chat_provider_with_fake_client(
+    model: str = "fake-model",
+) -> tuple[OpenAIChatProvider, AsyncMock]:
+    provider = OpenAIChatProvider(api_key="chat-key", model=model)
     create = AsyncMock(return_value=_fake_completion('{"title": "ok"}'))
     provider._client = SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=create))
@@ -49,21 +67,32 @@ def _provider_with_fake_client() -> tuple[OpenAICompatibleProvider, AsyncMock]:
     return provider, create
 
 
+def _embedding_provider_with_fake_client(
+    model: str = "fake-embed-model",
+    dimensions: int = 384,
+) -> tuple[OpenAIEmbeddingProvider, AsyncMock]:
+    provider = OpenAIEmbeddingProvider(
+        api_key="embed-key", model=model, dimensions=dimensions
+    )
+    create = AsyncMock(
+        return_value=_fake_embedding_response([[0.1] * dimensions])
+    )
+    provider._client = SimpleNamespace(embeddings=SimpleNamespace(create=create))
+    return provider, create
+
+
 def _api_error() -> APIError:
     return APIError("boom", httpx.Request("POST", "https://x.test"), body=None)
 
 
-def test_provider_chat_prefends_system_and_returns_content() -> None:
-    provider, create = _provider_with_fake_client()
+def test_chat_provider_prefends_system_and_returns_content() -> None:
+    provider, create = _chat_provider_with_fake_client()
     create.return_value = _fake_completion("hello back")
 
-    result = provider.chat(
-        system="SYS", messages=[{"role": "user", "content": "hi"}]
+    out = asyncio.run(
+        provider.chat(system="SYS", messages=[{"role": "user", "content": "hi"}])
     )
 
-    import asyncio
-
-    out = asyncio.run(result)
     assert out == "hello back"
     kwargs = create.await_args.kwargs
     assert kwargs["model"] == "fake-model"
@@ -73,22 +102,18 @@ def test_provider_chat_prefends_system_and_returns_content() -> None:
     assert kwargs["store"] is False
 
 
-def test_provider_chat_wraps_api_errors() -> None:
-    provider, create = _provider_with_fake_client()
+def test_chat_provider_wraps_api_errors() -> None:
+    provider, create = _chat_provider_with_fake_client()
     create.side_effect = _api_error()
     with pytest.raises(AIProviderError, match="chat completion failed"):
-        import asyncio
-
         asyncio.run(
             provider.chat(system="S", messages=[{"role": "user", "content": "x"}])
         )
 
 
 def test_chat_structured_success() -> None:
-    provider, create = _provider_with_fake_client()
+    provider, create = _chat_provider_with_fake_client()
     create.return_value = _fake_completion('{"title": "Call Alex", "kind": "task"}')
-
-    import asyncio
 
     out = asyncio.run(
         provider.chat_structured(
@@ -111,12 +136,11 @@ def test_chat_structured_success() -> None:
 
 
 def test_chat_structured_retries_on_invalid_then_succeeds() -> None:
-    provider, create = _provider_with_fake_client()
+    provider, create = _chat_provider_with_fake_client()
     create.side_effect = [
         _fake_completion("not json at all"),
         _fake_completion('{"title": "Valid"}'),
     ]
-    import asyncio
 
     out = asyncio.run(
         provider.chat_structured(
@@ -130,12 +154,11 @@ def test_chat_structured_retries_on_invalid_then_succeeds() -> None:
 
 
 def test_chat_structured_raises_after_exhausting_attempts() -> None:
-    provider, create = _provider_with_fake_client()
+    provider, create = _chat_provider_with_fake_client()
     create.side_effect = [
         _fake_completion("nope"),
         _fake_completion('{"title": "", "kind": "task"}'),  # title too short
     ]
-    import asyncio
 
     with pytest.raises(AIOutputValidationError, match="schema validation"):
         asyncio.run(
@@ -149,9 +172,8 @@ def test_chat_structured_raises_after_exhausting_attempts() -> None:
 
 
 def test_chat_structured_wraps_api_errors() -> None:
-    provider, create = _provider_with_fake_client()
+    provider, create = _chat_provider_with_fake_client()
     create.side_effect = _api_error()
-    import asyncio
 
     with pytest.raises(AIProviderError, match="structured completion failed"):
         asyncio.run(
@@ -163,19 +185,175 @@ def test_chat_structured_wraps_api_errors() -> None:
         )
 
 
-def test_build_ai_provider_from_settings() -> None:
+# ---------------------------------------------------------------------------
+# Independent provider configuration
+# ---------------------------------------------------------------------------
+
+
+def test_build_ai_provider_uses_independent_clients() -> None:
     settings = Settings(
         database_url="postgresql+asyncpg://u:p@localhost/db",
         public_base_url="https://app.test",
         telegram_bot_token="1:test",
-        openai_api_key="sk-test",
-        openai_base_url="https://openai-compatible.example/v1",
-        chat_model="test-model",
+        chat_base_url="https://chat.example/v1",
+        chat_api_key="chat-key",
+        chat_model="qwen3.5-9b-64k",
+        embedding_base_url="https://embed.example/v1",
+        embedding_api_key="embed-key",
+        embedding_model="multilingual-e5-small",
+        embedding_dimensions=384,
     )
     provider = build_ai_provider(settings)
     assert isinstance(provider, OpenAICompatibleProvider)
-    # The SDK normalizes the base URL (trailing slash).
-    assert str(provider._client.base_url) == "https://openai-compatible.example/v1/"
+    chat_client = provider._chat_provider._client
+    embed_client = provider._embedding_provider._client
+    # The SDK normalizes base URLs (trailing slash).
+    assert str(chat_client.base_url) == "https://chat.example/v1/"
+    assert str(embed_client.base_url) == "https://embed.example/v1/"
+    assert chat_client.api_key == "chat-key"
+    assert embed_client.api_key == "embed-key"
+    assert provider._chat_provider._model == "qwen3.5-9b-64k"
+    assert provider._embedding_provider._model == "multilingual-e5-small"
+    assert provider._embedding_provider._dimensions == 384
+
+
+def test_settings_fall_back_to_legacy_openai_variables() -> None:
+    settings = Settings(
+        database_url="postgresql+asyncpg://u:p@localhost/db",
+        public_base_url="https://app.test",
+        telegram_bot_token="1:test",
+        openai_api_key="legacy-key",
+        openai_base_url="https://legacy.example/v1",
+    )
+    assert settings.chat_api_key == "legacy-key"
+    assert settings.embedding_api_key == "legacy-key"
+    assert settings.chat_base_url == "https://legacy.example/v1"
+    assert settings.embedding_base_url == "https://legacy.example/v1"
+    provider = build_ai_provider(settings)
+    # Both independent clients inherit the legacy endpoint.
+    assert str(provider._chat_provider._client.base_url) == "https://legacy.example/v1/"
+    assert str(provider._embedding_provider._client.base_url) == "https://legacy.example/v1/"
+    assert provider._chat_provider._client.api_key == "legacy-key"
+    assert provider._embedding_provider._client.api_key == "legacy-key"
+
+
+def test_provider_specific_variables_take_precedence_over_legacy() -> None:
+    settings = Settings(
+        database_url="postgresql+asyncpg://u:p@localhost/db",
+        public_base_url="https://app.test",
+        telegram_bot_token="1:test",
+        openai_api_key="legacy-key",
+        chat_api_key="chat-key",
+    )
+    assert settings.chat_api_key == "chat-key"
+    assert settings.embedding_api_key == "legacy-key"
+
+
+def test_settings_require_ai_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Ignore the .env file so it cannot supply keys this test removes.
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    for var in ("OPENAI_API_KEY", "CHAT_API_KEY", "EMBEDDING_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    with pytest.raises(ValidationError, match="credentials"):
+        Settings(
+            database_url="postgresql+asyncpg://u:p@localhost/db",
+            public_base_url="https://app.test",
+            telegram_bot_token="1:test",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Embedding provider: E5 prefixes and dimension validation
+# ---------------------------------------------------------------------------
+
+
+def test_embed_documents_applies_e5_document_prefix() -> None:
+    provider, create = _embedding_provider_with_fake_client()
+    create.return_value = _fake_embedding_response([[0.1] * 384, [0.2] * 384])
+
+    out = asyncio.run(provider.embed_documents(texts=["chunk one", "chunk two"]))
+
+    kwargs = create.await_args.kwargs
+    assert kwargs["model"] == "fake-embed-model"
+    # llama.cpp /v1/embeddings: only the OpenAI-compatible fields, no
+    # OpenAI-specific options.
+    assert set(kwargs) == {"model", "input"}
+    assert kwargs["input"] == [
+        f"{E5_DOCUMENT_PREFIX}chunk one",
+        f"{E5_DOCUMENT_PREFIX}chunk two",
+    ]
+    assert len(out) == 2
+
+
+def test_embed_query_applies_e5_query_prefix() -> None:
+    provider, create = _embedding_provider_with_fake_client()
+
+    out = asyncio.run(provider.embed_query(query="quarterly plan"))
+
+    assert create.await_args.kwargs["input"] == [f"{E5_QUERY_PREFIX}quarterly plan"]
+    assert len(out) == 384
+
+
+def test_embed_dimension_default_is_384() -> None:
+    provider = OpenAIEmbeddingProvider(api_key="k")
+    assert provider._dimensions == 384
+
+
+def test_embed_rejects_unexpected_document_dimension() -> None:
+    provider, create = _embedding_provider_with_fake_client(dimensions=384)
+    create.return_value = _fake_embedding_response([[0.0] * 512])
+
+    with pytest.raises(EmbeddingDimensionError, match="expected 384, got 512"):
+        asyncio.run(provider.embed_documents(texts=["x"]))
+
+
+def test_embed_rejects_unexpected_query_dimension() -> None:
+    provider, create = _embedding_provider_with_fake_client(dimensions=384)
+    create.return_value = _fake_embedding_response([[0.0] * 768])
+
+    with pytest.raises(EmbeddingDimensionError, match="expected 384, got 768"):
+        asyncio.run(provider.embed_query(query="x"))
+
+
+def test_embed_wraps_api_errors() -> None:
+    provider, create = _embedding_provider_with_fake_client()
+    create.side_effect = _api_error()
+
+    with pytest.raises(AIProviderError, match="embedding failed"):
+        asyncio.run(provider.embed_documents(texts=["x"]))
+
+
+def test_composite_provider_routes_calls_to_independent_clients() -> None:
+    chat, chat_create = _chat_provider_with_fake_client(model="chat-model")
+    chat_create.return_value = _fake_completion("hi there")
+    embed, embed_create = _embedding_provider_with_fake_client(model="embed-model")
+    provider = OpenAICompatibleProvider(chat=chat, embedding=embed)
+
+    reply = asyncio.run(
+        provider.chat(system="s", messages=[{"role": "user", "content": "hi"}])
+    )
+    assert reply == "hi there"
+    assert chat_create.await_args.kwargs["model"] == "chat-model"
+    assert embed_create.await_count == 0
+
+    chat_create.return_value = _fake_completion('{"title": "Drafted"}')
+    draft = asyncio.run(
+        provider.chat_structured(
+            system="s", messages=[{"role": "user", "content": "x"}], schema=AITaskDraft
+        )
+    )
+    assert isinstance(draft, AITaskDraft)
+
+    vectors = asyncio.run(provider.embed_documents(texts=["c"]))
+    assert len(vectors) == 1
+    assert embed_create.await_args.kwargs["model"] == "embed-model"
+    assert embed_create.await_args.kwargs["input"] == ["passage: c"]
+
+    vector = asyncio.run(provider.embed_query(query="q"))
+    assert len(vector) == 384
+    # Each capability only ever hits its own client.
+    assert chat_create.await_count == 2
+    assert embed_create.await_count == 2
 
 
 # ---------------------------------------------------------------------------

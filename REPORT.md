@@ -1,7 +1,7 @@
 # Final Report — Smart Personal Assistant / Motivator
 
 Date: 2026-09-22
-Status: all 13 milestones complete; SPEC §31 Definition of Done verified.
+Status: all 14 milestones complete; SPEC §31 Definition of Done verified.
 
 ## 1. What was built
 
@@ -23,7 +23,7 @@ Features implemented (SPEC §1–§30):
   plus a start-time reminder.
 - **Files + semantic retrieval** — Telegram document uploads (server-side
   storage keys), durable ingestion job (txt/md/pdf/docx extraction,
-  word-boundary overlapping chunks, batch embeddings into `Vector(1536)`),
+  word-boundary overlapping chunks, batch embeddings into `Vector(384)`),
   hybrid retrieval (pgvector cosine + keyword boost) with citations,
   per-user chunk ownership, file deletion.
 - **User facts** — proposed → confirmed/rejected/superseded lifecycle;
@@ -40,8 +40,14 @@ Features implemented (SPEC §1–§30):
   HMAC verified with the bot token (constant-time compare, `auth_date`
   freshness with future-skew tolerance, strict user validation, bots
   rejected); 26 authed `/api/v1` endpoints, all user-scoped.
-- **AI layer** — `AIProvider` abstraction with an OpenAI-compatible
-  implementation (structured JSON drafts, batch embeddings, bounded
+- **AI layer** — `AIProvider` abstraction with *independent*
+  OpenAI-compatible clients for chat/generation (`CHAT_BASE_URL` /
+  `CHAT_API_KEY` / `CHAT_MODEL`) and embeddings (`EMBEDDING_BASE_URL` /
+  `EMBEDDING_API_KEY` / `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS`,
+  legacy `OPENAI_*` fallback) so the two capabilities may live on
+  separate servers; E5 prefixes applied centrally (`passage: ` /
+  `query: `), llama.cpp-compatible `/v1/embeddings` (model + input only)
+  with client-side dimension validation, structured JSON drafts, bounded
   retries, `store=False` on chat completions to avoid provider-side
   conversation persistence — SPEC §15); lazy provider construction keeps
   tests credential-free.
@@ -52,7 +58,8 @@ Features implemented (SPEC §1–§30):
 src/assistant/
   api/        FastAPI app, initData auth, /api/v1 routes, pydantic schemas
   bot/        aiogram entrypoint, handlers, callbacks, keyboards, FSM states
-  ai/         provider protocol, OpenAI-compatible provider, prompts, schemas
+  ai/         provider protocol, independent chat/embedding providers,
+              prompts, schemas
   models/     SQLAlchemy 2 async ORM (11 tables, pgvector HNSW index)
   services/   calendar, reminders, workouts, files, facts, chat, digests,
               motivation, notifications, jobs (queue), users
@@ -60,8 +67,9 @@ src/assistant/
   db/         async engine, session, Base
   config.py   pydantic-settings (env-driven)
 miniapp/      index.html + app.js SPA
-alembic/      async migration env + initial schema (c390315de59f)
-tests/        13 test modules, 166 tests, real PostgreSQL
+alembic/      async migration env + initial schema (c390315de59f) +
+              embedding 1536→384 (7b492f548c86)
+tests/        13 test modules, 176 tests, real PostgreSQL
 docs/         ARCHITECTURE.md, ASSUMPTIONS.md, RESEARCH.md
 ```
 
@@ -86,6 +94,7 @@ FastAPI 0.141.1, SQLAlchemy 2.0.54, asyncpg, Alembic 1.20.0, Pydantic
 | 11 | `5f52c77` | Mini App initData auth + /api/v1 |
 | 12 | `47a7b99` | Migration-chain test (SPEC §26 gap closed) |
 | 13 | — | This report + final verification |
+| 14 | `f54deb1` | Independent chat/embedding providers + `vector(384)` migration |
 
 ## 4. Verification (SPEC §31 + QWEN.md)
 
@@ -97,24 +106,25 @@ All checks executed on 2026-09-22:
 | Docker Compose config | `docker compose config --quiet` — valid |
 | Application image builds | `docker compose build` — api, bot, worker images built |
 | PostgreSQL healthy | `ta-pgvector` up (PostgreSQL 17.11 + pgvector 0.8.6) |
-| Migrations from empty database | created fresh `ta_fresh_final` DB, `alembic upgrade head` applied cleanly; also covered in-suite by `tests/test_migrations.py` (throwaway DB: head stamp, exact table set vs `Base.metadata`, pgvector extension, HNSW index) |
-| Full pytest suite | **166 passed** — run twice: on the dev DB and on the fresh migrated DB (21.05 s) |
+| Migrations from empty database | recreated the `assistant` DB and `alembic upgrade head` applied cleanly (initial schema + `7b492f548c86` 1536→384); also covered in-suite by `tests/test_migrations.py` (throwaway DB: head stamp, exact table set vs `Base.metadata`, pgvector extension, HNSW index) |
+| Full pytest suite | **176 passed** on the fresh migrated DB (18.3 s); previously verified twice (dev DB + fresh DB) at 166 |
 | Ruff | `ruff check .` — all checks passed (`ruff format` is not a project gate; pre-existing files are unformatted) |
 | FastAPI application imports | OK (routes serve; FastAPI 0.141 materializes included routers lazily) |
 | Bot application imports | OK (`assistant.bot.main`) |
 | Worker smoke path | `python -m assistant.worker.main` started, polled an empty queue for 15 s, stopped cleanly (exit 0) |
 | Concurrency test (PostgreSQL locking) | `tests/test_jobs.py` — concurrent claimers, no double-claim via `FOR UPDATE SKIP LOCKED`, against real PostgreSQL |
 | Mini App auth tests | `tests/test_init_data.py` — 17 unit tests (valid/wrong-token/tampered/stale/future/missing/malformed payloads) + 4 authed-API 401 tests in `tests/test_api.py` |
-| Real-PostgreSQL flows | items CRUD + reminders, workout stats, file search, facts lifecycle, digest scheduling, bot draft flows — all in the 166-test suite against a real PG 17 |
+| Real-PostgreSQL flows | items CRUD + reminders, workout stats, file search, facts lifecycle, digest scheduling, bot draft flows — all in the 176-test suite against a real PG 17 |
+| pgvector column + index | `file_chunks.embedding` is `vector(384)` (atttypmod 384) and `ix_file_chunks_embedding_hnsw` (hnsw, cosine) present in the catalog after `alembic upgrade head` |
 | No TODO/stub/placeholder | grep of `src/` and `miniapp/` — none (only HTML `placeholder` input attributes) |
 | README/docs | README.md + docs/ARCHITECTURE.md + docs/ASSUMPTIONS.md + docs/RESEARCH.md |
 | Git working tree clean | `git status` clean after each milestone commit; nothing pushed to any remote |
 
 Test-suite breakdown (collected): `test_bot_foundation` (25),
-`test_api` (20), `test_files` (17), `test_init_data` (17),
+`test_api` (20), `test_ai` (19), `test_files` (17), `test_init_data` (17),
 `test_facts` (14), `test_reminders` (14), `test_jobs` (11),
-`test_digests` (11), `test_chat` (10), `test_ai` (9),
-`test_calendar` (9), `test_workouts` (7), `test_migrations` (2) = 166.
+`test_digests` (11), `test_chat` (10), `test_calendar` (9),
+`test_workouts` (7), `test_migrations` (2) = 176.
 
 External AI/Telegram HTTP calls are mocked in tests (fake providers,
 sender stubs, locally signed initData); production integration code is
@@ -133,7 +143,7 @@ verified.
 
 ```bash
 uv sync
-cp .env.example .env            # fill TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, ...
+cp .env.example .env            # fill TELEGRAM_BOT_TOKEN, CHAT_*/EMBEDDING_* (or legacy OPENAI_*)
 docker compose up postgres      # or point DATABASE_URL at any PG 16+ + pgvector
 uv run alembic upgrade head
 uv run python -m assistant.bot.main      # bot

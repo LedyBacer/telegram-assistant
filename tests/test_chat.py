@@ -45,17 +45,24 @@ class _FakeProvider:
         self.messages = list(messages)
         return self.reply
 
-    async def embed(self, *, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
         self.embed_calls += 1
         return [[0.0] * EMBEDDING_DIMENSIONS for _ in texts]
+
+    async def embed_query(self, *, query: str) -> list[float]:
+        self.embed_calls += 1
+        return [0.0] * EMBEDDING_DIMENSIONS
 
 
 class _FailingProvider:
     async def chat(self, *, system: str, messages: list[dict[str, str]]) -> str:
         raise AIProviderError("chat completion failed: down")
 
-    async def embed(self, *, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
         return [[0.0] * EMBEDDING_DIMENSIONS for _ in texts]
+
+    async def embed_query(self, *, query: str) -> list[float]:
+        return [0.0] * EMBEDDING_DIMENSIONS
 
 
 async def _seed_context(session: AsyncSession, user: User) -> None:

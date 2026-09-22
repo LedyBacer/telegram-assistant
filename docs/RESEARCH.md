@@ -57,6 +57,19 @@ Per QWEN.md, only the successful lookups above are claimed as Context7-assisted.
   so the provider avoids the `.parse()` helper and validates the JSON content
   client-side (see ASSUMPTIONS #13).
 
+### llama.cpp server compatibility (chat + embeddings)
+
+- llama.cpp's `server` exposes OpenAI-compatible `/v1/chat/completions` and
+  `/v1/embeddings`; `AsyncOpenAI(base_url="http://host:port/v1")` works
+  against it for both.
+- Embedding requests use only the `model` + `input` fields — llama.cpp does
+  not support OpenAI-only options such as `dimensions`, so the provider never
+  sends them. The dimension of the returned vectors is validated client-side
+  against `EMBEDDING_DIMENSIONS`.
+- Chat requests send `store=False` (SPEC §15); llama.cpp ignores unknown
+  fields, and OpenAI-compatible servers use it to skip provider-side
+  conversation storage.
+
 ## Alembic async (1.13+)
 
 - `alembic init -t async`.
@@ -70,7 +83,7 @@ Per QWEN.md, only the successful lookups above are claimed as Context7-assisted.
 ## PostgreSQL / pgvector (17, pgvector 0.8.x)
 
 - `CREATE EXTENSION IF NOT EXISTS vector;`
-- Store `Vector(1536)` columns; HNSW index:
+- Store `Vector(384)` columns; HNSW index:
   `CREATE INDEX ... ON table USING hnsw (embedding vector_cosine_ops);`
 - Cosine distance operator: `embedding <=> $1` (ascending = most similar first).
 

@@ -21,7 +21,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from assistant.db.base import Base
 
-EMBEDDING_DIMENSIONS = 1536
+# Must match the EMBEDDING_DIMENSIONS setting and the pgvector column type
+# (multilingual-e5-small produces 384-dimensional vectors).
+EMBEDDING_DIMENSIONS = 384
 
 
 class FileState(enum.StrEnum):

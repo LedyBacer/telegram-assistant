@@ -36,14 +36,23 @@ async def _user(session: AsyncSession, user_id: int = 51) -> User:
 
 class _FakeEmbedder:
     """Deterministic embedder: marker 0 if the text mentions 'quantum',
-    marker 1 for 'coffee', marker 2 otherwise."""
+    marker 1 for 'coffee', marker 2 otherwise.
+
+    Records the raw texts received from the service: they must arrive
+    without E5 prefixes (the real provider applies them, not the caller).
+    """
 
     def __init__(self) -> None:
-        self.calls: list[list[str]] = []
+        self.document_calls: list[list[str]] = []
+        self.query_calls: list[str] = []
 
-    async def embed(self, *, texts: list[str]) -> list[list[float]]:
-        self.calls.append(list(texts))
+    async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
+        self.document_calls.append(list(texts))
         return [_marker_vector(self._marker(t)) for t in texts]
+
+    async def embed_query(self, *, query: str) -> list[float]:
+        self.query_calls.append(query)
+        return _marker_vector(self._marker(query))
 
     @staticmethod
     def _marker(text: str) -> int:

@@ -29,7 +29,7 @@ worker ─────────────────────> durable 
   (download → extract → chunk → embed → store), morning digest generation
   (idempotent per user/day), reminder firing.
 - **postgres** — single state store: relational tables, the `jobs` queue, and
-  `Vector(1536)` columns with HNSW cosine indexes for hybrid retrieval.
+  `Vector(384)` columns with HNSW cosine indexes for hybrid retrieval.
 
 ## Key invariants
 
@@ -55,7 +55,8 @@ src/assistant/
 ├── logging.py
 ├── db/                # engine, session factory, Base
 ├── models/            # SQLAlchemy 2.x ORM models
-├── ai/                # OpenAI-compatible provider (chat.parse + embeddings)
+├── ai/                # OpenAI-compatible providers: independent chat and
+│                      # embedding clients (separate servers/keys/models)
 ├── services/          # calendar, tasks, reminders, workouts, files, facts,
 │                      # retrieval, digest, queue — shared by bot/api/worker
 ├── bot/               # aiogram routers, callbacks, FSM, keyboards

@@ -17,7 +17,7 @@ task drafting and document embeddings (pgvector).
 ## Quick start (Docker)
 
 ```bash
-cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, PUBLIC_BASE_URL
+cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN, CHAT_*/EMBEDDING_* vars, PUBLIC_BASE_URL
 docker compose up --build
 ```
 
@@ -42,6 +42,48 @@ Local: any PostgreSQL 16+ with the `vector` extension
 (`CREATE EXTENSION vector;`). The test/dev database `assistant` is used by
 default (`DATABASE_URL` in `.env`); the suite also accepts
 `TEST_DATABASE_URL`.
+
+## AI providers (chat and embeddings)
+
+Chat/generation and embeddings are configured **independently** and may be
+served by two separate OpenAI-compatible servers (e.g. two llama.cpp
+instances) — the application never assumes one host provides both:
+
+- **Chat / structured generation** uses only `CHAT_BASE_URL`,
+  `CHAT_API_KEY`, `CHAT_MODEL` (default `qwen3.5-9b-64k`).
+- **Embeddings / RAG** uses only `EMBEDDING_BASE_URL`,
+  `EMBEDDING_API_KEY`, `EMBEDDING_MODEL` (default `multilingual-e5-small`)
+  and `EMBEDDING_DIMENSIONS` (384). Vectors are stored as pgvector
+  `vector(384)` with an HNSW cosine index.
+
+Example (two llama.cpp servers):
+
+```bash
+CHAT_BASE_URL=http://llm-host:18085/v1
+CHAT_API_KEY=replace-me
+CHAT_MODEL=qwen3.5-9b-64k
+
+EMBEDDING_BASE_URL=http://llm-host:18086/v1
+EMBEDDING_API_KEY=replace-me
+EMBEDDING_MODEL=multilingual-e5-small
+EMBEDDING_DIMENSIONS=384
+```
+
+`multilingual-e5-small` expects E5 prefixes, which the embedding provider
+applies automatically and centrally: stored document chunks are embedded as
+`passage: <text>` and search queries as `query: <text>`. The prefixes are
+never persisted — chunk text and user queries are stored/returned in their
+original form.
+
+Embedding responses are validated against `EMBEDDING_DIMENSIONS`; a server
+that returns vectors of a different size fails with a clear application
+error instead of writing invalid data.
+
+The embedding request uses only the OpenAI-compatible `model` + `input`
+shape, so llama.cpp's `/v1/embeddings` is fully supported.
+
+Legacy fallback: when the `CHAT_*` / `EMBEDDING_*` base-URL/key variables are
+absent, `OPENAI_BASE_URL` / `OPENAI_API_KEY` are used for both providers.
 
 ## Migrations
 

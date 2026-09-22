@@ -1,12 +1,16 @@
 # Progress
 
-Status: ALL 13 MILESTONES COMPLETE. Milestone 13 (final verification per
-SPEC §31 + QWEN.md) done: uv sync OK, `docker compose config` valid,
-api/bot/worker images built, PostgreSQL healthy, migrations applied from
-an empty database, full suite 166 passing (on the dev DB AND on a fresh
-migrated DB), `ruff check` clean, api/bot/worker import-verified, worker
-smoke path ran clean, concurrency (SKIP LOCKED) + Mini App initData tests
-pass, no TODO/stub/placeholder, docs + REPORT.md written, git tree clean.
+Status: ALL 14 MILESTONES COMPLETE. Milestone 14 (independent chat/embedding
+providers + 384-dim pgvector) done: split `CHAT_*` / `EMBEDDING_*` config
+with legacy `OPENAI_*` fallback, independent AsyncOpenAI clients behind a
+composite `OpenAICompatibleProvider`, E5 prefixes centralized in the
+embedding provider, llama.cpp-compatible `/v1/embeddings` (model+input
+only) with client-side dimension validation, migration
+`7b492f548c86` shrinking `file_chunks.embedding` to `vector(384)` with the
+HNSW cosine index rebuilt. Verified on a fresh database: `alembic upgrade
+head` clean, full suite 176 passing, `ruff check` clean, api/bot/worker
+import-verified, DB column `vector(384)` + `ix_file_chunks_embedding_hnsw`
+confirmed in the catalog.
 
 ## Completed
 
@@ -210,9 +214,40 @@ pass, no TODO/stub/placeholder, docs + REPORT.md written, git tree clean.
   found no TODO/FIXME/stub/placeholder in `src/` or `miniapp/`; README +
   docs present. `REPORT.md` written; nothing pushed to any remote.
 
+- Milestone 14: independent chat/embedding providers (OpenAI-compatible).
+  `src/assistant/config.py` — `chat_base_url` / `chat_api_key` /
+  `chat_model` and `embedding_base_url` / `embedding_api_key` /
+  `embedding_model` / `embedding_dimensions` (default 384); a
+  `model_validator` fills them from the legacy `OPENAI_API_KEY` /
+  `OPENAI_BASE_URL` when the provider-specific variables are absent and
+  requires at least one credential source. `src/assistant/ai/provider.py`
+  — `OpenAIChatProvider` (chat + chat_structured, `store=False`) and
+  `OpenAIEmbeddingProvider` (`embed_documents` / `embed_query`) as
+  independent AsyncOpenAI clients; the embedding provider applies the E5
+  prefixes centrally (`passage: ` for stored chunks, `query: ` for
+  queries) and validates every returned vector against
+  `EMBEDDING_DIMENSIONS` (`EmbeddingDimensionError` on mismatch); requests
+  send only `model` + `input` so llama.cpp `/v1/embeddings` works.
+  `OpenAICompatibleProvider` is a composite over the two; `build_ai_provider`
+  wires them from settings. The `AIProvider` protocol now exposes
+  `embed_documents` / `embed_query` (replacing `embed`);
+  `services/files.py` updated accordingly. `models/files.py`:
+  `EMBEDDING_DIMENSIONS = 384`. Migration
+  `7b492f548c86_embedding_vector_384`: drops the HNSW index,
+  `batch_alter_table` drops + re-adds the column as `Vector(384)`
+  (pre-production: existing vectors discarded), recreates the HNSW cosine
+  index; downgrade restores `vector(1536)`. Tests: `tests/test_ai.py`
+  rewritten for the split clients (independent base URLs/keys/models,
+  legacy fallback precedence, credential requirement, E5 prefix
+  application, llama.cpp request shape, dimension validation, composite
+  routing); fake providers in `test_chat.py` / `test_files.py` /
+  `test_api.py` adopt the new protocol. `.env.example`, README, and
+  `docs/` updated. Verified: fresh-DB migration, 176 passing, Ruff clean,
+  imports OK, `vector(384)` + HNSW index in the catalog.
+
 ## Current milestone
 
-- None — all 13 milestones complete.
+- None — all 14 milestones complete.
 
 ## Next
 

@@ -308,7 +308,13 @@ async def _run_pipeline(session: AsyncSession, file: UserFile) -> None:
     if chunks:
         await _set_file_state(session, file, FileState.embedding)
         for i in range(0, len(chunks), settings.embedding_batch_size):
-            vectors.extend(await provider.embed(texts=chunks[i : i + settings.embedding_batch_size]))
+            # The provider applies the E5 document prefix; chunks are stored
+            # in their original form.
+            vectors.extend(
+                await provider.embed_documents(
+                    texts=chunks[i : i + settings.embedding_batch_size]
+                )
+            )
         if len(vectors) != len(chunks):
             raise AIProviderError(
                 f"expected {len(chunks)} embeddings, got {len(vectors)}"
@@ -406,7 +412,9 @@ async def retrieve_chunks(
     if not query or top_k <= 0:
         return []
     provider = provider or get_ai_provider()
-    (query_vec,) = await provider.embed(texts=[query])
+    # The provider applies the E5 query prefix; the user's visible query is
+    # left unmodified.
+    query_vec = await provider.embed_query(query=query)
 
     distance = FileChunk.embedding.cosine_distance(query_vec).label("distance")
     semantic = (

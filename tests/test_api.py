@@ -322,8 +322,11 @@ async def test_reminder_validation(client: httpx.AsyncClient) -> None:
 
 
 class _FakeProvider:
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [[0.01] * 1536 for _ in texts]
+    async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
+        return [[0.01] * 384 for _ in texts]
+
+    async def embed_query(self, *, query: str) -> list[float]:
+        return [0.01] * 384
 
 
 async def test_files_list_and_search(
@@ -348,7 +351,7 @@ async def test_files_list_and_search(
             position=0,
             text="The quarterly plan covers launch milestones.",
             char_count=len("The quarterly plan covers launch milestones."),
-            embedding=[0.02] * 1536,
+            embedding=[0.02] * 384,
         )
     )
     await session.commit()
