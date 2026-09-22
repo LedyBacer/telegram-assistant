@@ -25,6 +25,7 @@ from assistant.ai.provider import (
     OpenAIChatProvider,
     OpenAICompatibleProvider,
     OpenAIEmbeddingProvider,
+    extract_json_object,
 )
 from assistant.ai.schemas import AITaskDraft
 from assistant.config import Settings, get_settings
@@ -41,6 +42,7 @@ __all__ = [
     "OpenAICompatibleProvider",
     "OpenAIEmbeddingProvider",
     "build_ai_provider",
+    "extract_json_object",
     "get_ai_provider",
 ]
 

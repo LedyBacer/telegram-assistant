@@ -13,12 +13,24 @@ classes instead of leaking SDK exceptions to callers.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from typing import Protocol, TypeVar, runtime_checkable
 
 from openai import APIError, AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
+logger = logging.getLogger("assistant.ai")
+
 T = TypeVar("T", bound=BaseModel)
+
+# Appended to the system prompt for every structured call so the model emits
+# a bare JSON object even when its own defaults add prose around it.
+JSON_OUTPUT_INSTRUCTION = (
+    "\n\nOutput format: reply with ONLY a single valid JSON object that "
+    "matches the required schema. No markdown, no code fences, no comments, "
+    "no text before or after the JSON."
+)
 
 # One chat turn: {"role": "system"|"user"|"assistant", "content": str}.
 Message = dict[str, str]
@@ -29,6 +41,82 @@ Message = dict[str, str]
 # original chunk/query text is never modified.
 E5_DOCUMENT_PREFIX = "passage: "
 E5_QUERY_PREFIX = "query: "
+
+
+def _balanced_object_span(text: str, start: int) -> int | None:
+    """End index (inclusive) of the brace-balanced object opened at ``start``.
+
+    Tracks double-quoted strings and escapes so braces inside string values
+    do not break the balance. Returns None when the object is unbalanced.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def extract_json_object(content: str) -> dict:
+    """Extract the first JSON object from raw model content.
+
+    Tolerates real Qwen/llama.cpp output shapes: a bare object, an object
+    wrapped in ```json fences, a thinking preamble in front of the object,
+    and trailing prose after it. Raises ``ValueError`` when no object can be
+    parsed (the caller decides whether to retry).
+    """
+    text = (content or "").strip()
+    if not text:
+        raise ValueError("empty model response")
+    fence = re.search(r"```(?:json)?\s*(.+?)```", text, re.DOTALL)
+    candidates: list[str] = []
+    if fence:
+        candidates.append(fence.group(1).strip())
+    candidates.append(text)
+    balanced: list[str] = []
+    start = text.find("{")
+    while start != -1:
+        end = _balanced_object_span(text, start)
+        if end is None:
+            start = text.find("{", start + 1)
+        else:
+            balanced.append(text[start : end + 1])
+            start = text.find("{", end + 1)  # nested objects are not separate candidates
+    # Models often echo the requested format (a small valid JSON example) in
+    # a thinking preamble before the real answer, so prefer the LAST
+    # balanced object when several parse.
+    candidates.extend(reversed(balanced))
+    for span in candidates:
+        try:
+            data = json.loads(span)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise ValueError("no JSON object in model response")
+
+
+def _redact_for_log(exc: APIError) -> str:
+    """Provider error text for logs: keeps the diagnostic, drops secrets."""
+    text = str(exc)
+    text = re.sub(r"(?i)(api[_-]?key|authorization|bearer)[=:]\s*\S+", r"\1=<redacted>", text)
+    return text[:1000]
 
 
 class AIProviderError(RuntimeError):
@@ -105,33 +193,70 @@ class OpenAIChatProvider:
     async def chat_structured(
         self, *, system: str, messages: list[Message], schema: type[T]
     ) -> T:
-        response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": schema.__name__,
-                "schema": schema.model_json_schema(),
-            },
-        }
+        """Structured completion compatible with llama.cpp ``/v1``.
+
+        Does NOT send OpenAI-only ``response_format=json_schema`` (llama.cpp
+        rejects/ignores it, which breaks extraction on real deployments): the
+        JSON contract is carried in the system prompt, and the JSON object is
+        extracted from plain content (Qwen-style thinking preambles, code
+        fences, and trailing prose all tolerated) before Pydantic validation.
+        """
+        system_with_json = system + JSON_OUTPUT_INSTRUCTION
         last_error: Exception | None = None
-        for _ in range(self._max_attempts):
+        conversation: list[Message] = list(messages)
+        for attempt in range(1, self._max_attempts + 1):
             try:
                 response = await self._client.chat.completions.create(
                     model=self._model,
-                    messages=[{"role": "system", "content": system}, *messages],
+                    messages=[{"role": "system", "content": system_with_json}, *conversation],
                     temperature=0,
-                    response_format=response_format,
                     store=False,
                 )
             except APIError as exc:
+                logger.warning(
+                    "structured completion API error (model=%s schema=%s "
+                    "attempt=%d/%d input_chars=%d): %s",
+                    self._model,
+                    schema.__name__,
+                    attempt,
+                    self._max_attempts,
+                    sum(len(m["content"]) for m in conversation),
+                    _redact_for_log(exc),
+                )
                 raise AIProviderError(
                     f"structured completion failed: {exc}"
                 ) from exc
-            content = response.choices[0].message.content
+            content = response.choices[0].message.content or ""
             try:
-                data = json.loads(content) if content else {}
+                data = extract_json_object(content)
                 return schema.model_validate(data)
-            except (json.JSONDecodeError, ValidationError) as exc:
+            except (ValueError, ValidationError) as exc:
                 last_error = exc
+                logger.info(
+                    "structured output rejected (model=%s schema=%s "
+                    "attempt=%d/%d content_chars=%d): %s",
+                    self._model,
+                    schema.__name__,
+                    attempt,
+                    self._max_attempts,
+                    len(content),
+                    type(exc).__name__,
+                )
+                if attempt < self._max_attempts:
+                    # Corrective feedback so the next attempt can self-repair.
+                    conversation = [
+                        *messages,
+                        {"role": "assistant", "content": content},
+                        {
+                            "role":
+                            "user",
+                            "content": (
+                                "Your previous reply was not a valid JSON object "
+                                f"matching the required schema ({exc}). Reply again "
+                                "with ONLY the corrected JSON object."
+                            ),
+                        },
+                    ]
         raise AIOutputValidationError(
             f"model output failed schema validation after "
             f"{self._max_attempts} attempts"

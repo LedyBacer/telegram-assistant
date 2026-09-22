@@ -13,10 +13,11 @@ dimensions are validated against the configured value.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -35,6 +36,7 @@ from assistant.ai import (
     OpenAICompatibleProvider,
     OpenAIEmbeddingProvider,
     build_ai_provider,
+    extract_json_object,
 )
 from assistant.bot import handlers
 from assistant.bot.handlers import on_draft, on_text
@@ -127,11 +129,11 @@ def test_chat_structured_success() -> None:
     assert out.title == "Call Alex"
     assert out.kind == "task"
     kwargs = create.await_args.kwargs
-    assert kwargs["response_format"]["type"] == "json_schema"
-    assert (
-        kwargs["response_format"]["json_schema"]["schema"]["properties"]["title"]
-        is not None
-    )
+    # llama.cpp /v1 does not support OpenAI-only response_format=json_schema:
+    # the JSON contract travels in the system prompt instead.
+    assert "response_format" not in kwargs
+    assert "ONLY a single valid JSON object" in kwargs["messages"][0]["content"]
+    assert kwargs["temperature"] == 0
     # SPEC §15: avoid provider-side storage of conversations.
     assert kwargs["store"] is False
 
@@ -184,6 +186,83 @@ def test_chat_structured_wraps_api_errors() -> None:
                 schema=AITaskDraft,
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# extract_json_object: real Qwen/llama.cpp output shapes
+# ---------------------------------------------------------------------------
+
+
+def test_extract_json_object_bare() -> None:
+    assert extract_json_object('{"title": "A", "kind": "task"}') == {
+        "title": "A",
+        "kind": "task",
+    }
+
+
+def test_extract_json_object_fenced() -> None:
+    content = 'Here you go:\n```json\n{"title": "A"}\n```\nHope that helps.'
+    assert extract_json_object(content) == {"title": "A"}
+
+
+def test_extract_json_object_thinking_preamble_and_trailing_prose() -> None:
+    content = (
+        'The user wants a task to call Sergey at 17:00 today. Let me draft it.\n'
+        '{"title": "Позвонить Сергею", "start": "2026-09-22 17:00", '
+        '"reminder_offsets": [0]}\n'
+        "I resolved the date to today."
+    )
+    out = extract_json_object(content)
+    assert out["title"] == "Позвонить Сергею"
+    assert out["reminder_offsets"] == [0]
+
+
+def test_extract_json_object_ignores_braces_in_prose_and_strings() -> None:
+    # Braces in the prose and inside a string value must not break extraction.
+    content = (
+        'Use the format {"key": "value"} carefully.\n'
+        '{"title": "Braces }{ inside", "kind": "event"}'
+    )
+    out = extract_json_object(content)
+    assert out == {"title": "Braces }{ inside", "kind": "event"}
+
+
+def test_extract_json_object_nested_object() -> None:
+    content = 'Sure: {"a": {"b": 1}, "c": [1, 2]} done.'
+    assert extract_json_object(content) == {"a": {"b": 1}, "c": [1, 2]}
+
+
+def test_extract_json_object_no_object_raises() -> None:
+    with pytest.raises(ValueError, match="no JSON object"):
+        extract_json_object("I don't know what to do with this request.")
+
+
+def test_extract_json_object_empty_raises() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        extract_json_object("   ")
+
+
+def test_chat_structured_handles_qwen_preamble_in_single_call() -> None:
+    """A realistic Qwen3.5 reply (prose + fenced JSON) parses on attempt 1."""
+    provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
+    create.return_value = _fake_completion(
+        'Конечно, оформлю задачу.\n'
+        "```json\n"
+        '{"title": "Позвонить Сергею", "kind": "task", '
+        '"start": "2026-09-22 17:00", "reminder_offsets": [0]}\n'
+        "```"
+    )
+
+    out = asyncio.run(
+        provider.chat_structured(
+            system="S",
+            messages=[{"role": "user", "content": "Мне нужно сегодня позвонить Сергею в 17:00"}],
+            schema=AITaskDraft,
+        )
+    )
+    assert out.title == "Позвонить Сергею"
+    assert out.start == datetime(2026, 9, 22, 17, 0)
+    assert create.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -484,3 +563,60 @@ async def test_on_text_ai_failure_shows_help_and_stays_in_flow(
     assert "couldn't interpret" in message.answer.await_args.args[0]
     state.set_state.assert_not_awaited()
     state.update_data.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Relative dates ("today" / "сегодня") resolved in the user's timezone
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("phrase", "language", "tz_name"),
+    [
+        ("Мне нужно сегодня позвонить Сергею в 17:00", "ru", "Africa/Nairobi"),
+        ("Сегодня напомни мне позвонить Сергею в 17:00", "ru", "Europe/Moscow"),
+        ("I need to call Sergey today at 17:00", "en", "America/New_York"),
+    ],
+)
+async def test_on_text_relative_today_resolved_in_user_timezone(
+    session, monkeypatch, phrase: str, language: str, tz_name: str
+) -> None:
+    """The model gets the user's TZ + current date in the system prompt and
+    returns a *local* naive time; the handler must pin it to the user's
+    timezone before persisting UTC."""
+    tz = ZoneInfo(tz_name)
+    local_start = datetime.combine(datetime.now(tz).date(), time(17, 0))
+    user, _ = await upsert_user(session, user_id=31, first_name="Nat")
+    user.settings.language = language
+    user.settings.timezone = tz_name
+    await session.commit()
+
+    monkeypatch.setattr(
+        handlers,
+        "get_ai_provider",
+        lambda: _FakeProvider(
+            draft=AITaskDraft(
+                title="Позвонить Сергею" if language == "ru" else "Call Sergey",
+                start=local_start,  # naive local time, as the model returns it
+                reminder_offsets=[0],
+            )
+        ),
+    )
+    state = _fake_state(TaskDraftStates.waiting_for_text.state)
+    await on_text(_fake_message(phrase), session, state)
+    await session.commit()
+    updated = state.update_data.await_args.kwargs
+
+    data_state = _fake_state(data=updated)
+    callback = SimpleNamespace(
+        from_user=_fake_tg_user(),
+        message=SimpleNamespace(edit_text=AsyncMock()),
+        answer=AsyncMock(),
+    )
+    await on_draft(
+        callback, handlers.DraftCallback(action="confirm"), session, data_state
+    )
+    await session.commit()
+
+    item = (await session.execute(text("SELECT starts_at FROM calendar_items"))).one()
+    assert item[0] == local_start.replace(tzinfo=tz).astimezone(UTC)
