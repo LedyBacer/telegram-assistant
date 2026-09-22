@@ -21,6 +21,21 @@ cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN, CHAT_*/EMBEDDING_* vars, PU
 docker compose up --build
 ```
 
+## Network exposure
+
+Uvicorn is **never exposed directly to the network**:
+
+- The `api` service publishes its port as `127.0.0.1:8000:8000`
+  (loopback-only). Nothing else is published — PostgreSQL has **no**
+  published port and is reachable only from inside the compose network.
+- A future public Mini App is served through an **HTTPS reverse proxy**
+  (e.g. Caddy/Traefik/nginx) that terminates TLS and forwards to
+  `127.0.0.1:8000`. `PUBLIC_BASE_URL` must point at that proxy, not at the
+  raw Uvicorn port.
+
+`scripts/acceptance.sh` fails the run if any published port in
+`docker-compose.yml` is not loopback-bound.
+
 ## Local development
 
 ```bash
@@ -128,11 +143,20 @@ uv run alembic current        # inspect the applied revision
 ```bash
 uv run pytest           # full suite (needs a reachable PostgreSQL + pgvector)
 uv run ruff check .     # lint gate
+bash scripts/acceptance.sh   # production-like end-to-end acceptance run
 ```
 
 Tests require a reachable PostgreSQL 17 with pgvector (see `DATABASE_URL` /
 `TEST_DATABASE_URL`). No real Telegram or OpenAI credentials are needed —
 external AI/Telegram HTTP calls are mocked, and initData is signed locally.
+
+`scripts/acceptance.sh` is a production-like verification run: a **fresh**
+Docker PostgreSQL, `alembic upgrade head`, API start + `/healthz` check,
+worker start with several digest-scheduling iterations (users with and
+without settings rows — no `MissingGreenlet`), bot dispatcher wiring with
+Telegram mocked, RU/EN onboarding and NL task-draft tests, the full pytest
+suite against the fresh database, Ruff, `docker compose config` validation,
+and the loopback-only port-exposure audit.
 
 ## Mini App development
 
