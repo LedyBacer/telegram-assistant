@@ -221,6 +221,31 @@ async def list_items(
     return list(items)
 
 
+async def list_overdue(
+    session: AsyncSession, user: User, *, limit: int = 20
+) -> list[CalendarItem]:
+    """List scheduled items whose ``due_at`` is in the past (SPEC §16)."""
+    tz = _user_tz(user)
+    items = (
+        (
+            await session.execute(
+                select(CalendarItem)
+                .where(
+                    CalendarItem.user_id == user.id,
+                    CalendarItem.status == ItemStatus.scheduled.value,
+                    CalendarItem.due_at.is_not(None),
+                    CalendarItem.due_at < datetime.now(tz=tz),
+                )
+                .order_by(CalendarItem.due_at)
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(items)
+
+
 async def list_today(
     session: AsyncSession, user: User
 ) -> list[CalendarItem]:

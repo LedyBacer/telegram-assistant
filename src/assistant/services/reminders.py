@@ -18,6 +18,7 @@ from assistant.models.calendar_items import CalendarItem
 from assistant.models.jobs import BackgroundJob, JobStatus
 from assistant.models.reminders import Reminder, ReminderStatus
 from assistant.models.users import User
+from assistant.services import notifications
 from assistant.services.jobs import cancel_job, create_job
 
 REMINDER_SEND_JOB_TYPE = "reminder_send"
@@ -183,12 +184,9 @@ async def cancel_item_reminders(
 async def _handle_reminder_send(
     session: AsyncSession, job: BackgroundJob
 ) -> None:
-    """Deliver a reminder: mark it sent exactly once (flush only).
-
-    The actual Telegram message delivery is a later-milestone concern
-    (motivation/digest services); this handler makes the durable send state
-    idempotent so job retries/restarts never double-send.
-    """
+    """Deliver a reminder through the Bot API and mark it sent exactly once
+    (flush only). If the send fails the exception propagates so the job is
+    re-queued with backoff and the reminder stays ``pending``."""
     if job.status != JobStatus.running.value:
         return
     reminder_id = job.payload.get("reminder_id")
@@ -202,6 +200,10 @@ async def _handle_reminder_send(
     if reminder.status != ReminderStatus.pending.value:
         # Already sent (retry/restart) or cancelled: idempotent no-op.
         return
+    user = await session.get(User, reminder.user_id)
+    if user is None:
+        return
+    await notifications.send_text(user.id, reminder.message)
     reminder.status = ReminderStatus.sent.value
     reminder.sent_at = datetime.now(UTC)
     await session.flush()

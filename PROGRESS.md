@@ -1,10 +1,11 @@
 # Progress
 
-Status: Milestone 9 (user facts lifecycle + contextual AI chat) complete
-and green — facts service with explicit confirm/reject/supersede lifecycle,
-selective bounded chat context, `CHAT_SYSTEM` prompt, `/remember` + `/facts`
-+ fact callback buttons, free text now routes through contextual AI chat
-with a provider-down fallback; full suite 116 passing, Ruff clean.
+Status: Milestone 10 (durable morning digest + motivation + real reminder
+delivery) complete and green — `digests` service with per-(user, day)
+idempotency, worker-side `notifications` Telegram sender, state-derived
+motivation lines, periodic digest scheduling in the worker loop, reminders
+now actually delivered through the Bot API; full suite 127 passing, Ruff
+clean.
 
 ## Completed
 
@@ -115,11 +116,33 @@ with a provider-down fallback; full suite 116 passing, Ruff clean.
   `tests/test_chat.py` (9) against real PostgreSQL with a fake provider;
   full suite 116 passing; Ruff clean.
 
+- Milestone 10: durable morning digest + motivation + real delivery
+  (SPEC §16-17). `src/assistant/services/notifications.py` — worker-side
+  Telegram sender (lazy shared `Bot`, same token as the bot process;
+  `send_text` raises on failure so jobs re-queue with backoff).
+  `src/assistant/services/motivation.py` — deterministic, state-derived
+  one-line motivation (overdue / upcoming workout / streak / empty
+  schedule / generic), disabled by `motivation_enabled`.
+  `src/assistant/services/digests.py` — `build_digest` (today, overdue,
+  upcoming-7d, workout stats, motivation line), `schedule_todays_digest`
+  (one `DigestDelivery` per (user, local date) via the `uq_digests_user_day`
+  constraint + `digest:{user}:{date}` idempotency key; past digest times
+  fire immediately), `ensure_digest_jobs` (all-users pass), `digest_send`
+  handler (send-then-stamp `sent_at`, idempotent on replay).
+  `calendar.list_overdue` added. Worker: periodic `schedule_digests()` pass
+  every `digest_schedule_interval_seconds` (default 30 s), `notifications.
+  close()` on shutdown; `worker/handlers.py` registers the digest handler.
+  `reminders._handle_reminder_send` now delivers the message through the
+  Bot API before marking sent (failures re-queue). Config:
+  `digest_schedule_interval_seconds`. `tests/test_digests.py` (11) against
+  real PostgreSQL with a fake sender; `tests/test_reminders.py` gained an
+  autouse sender stub. Full suite 127 passing; Ruff clean.
+
 ## Current milestone
 
-- Milestone 9 verified; commit in progress.
+- Milestone 10 verified; commit in progress.
 
 ## Next
 
-1. Milestone 9: commit.
-2. Milestone 10: Morning digest (idempotent per user/day, SPEC §16).
+1. Milestone 10: commit.
+2. Milestone 11: Mini App (initData HMAC) + /api/v1 authed endpoints (SPEC §18).

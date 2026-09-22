@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,11 +12,20 @@ from assistant.models.jobs import BackgroundJob, JobStatus
 from assistant.models.reminders import ReminderStatus
 from assistant.models.users import User
 from assistant.services import calendar as cal
+from assistant.services import notifications
 from assistant.services import reminders as rem
 from assistant.services.jobs import create_job
 from assistant.services.users import upsert_user
 
 FIRE_AT = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _stub_sender(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Reminder delivery tests must not call the Telegram API."""
+    sender = AsyncMock()
+    monkeypatch.setattr(notifications, "send_text", sender)
+    return sender
 
 
 async def _user(session: AsyncSession, user_id: int = 11) -> User:

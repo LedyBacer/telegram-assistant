@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     worker_batch_size: int = 10
     job_max_attempts: int = 3
 
+    # Morning digest scheduling
+    digest_schedule_interval_seconds: float = 30.0
+
 
 @lru_cache
 def get_settings() -> Settings:
