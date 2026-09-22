@@ -11,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.i18n import LocalizableError
 from assistant.models.facts import FactStatus, UserFact
 from assistant.models.users import User
 
@@ -34,9 +35,9 @@ async def propose_fact(
     """Create a new fact in the ``proposed`` state (flush only)."""
     value = (value or "").strip()
     if not value:
-        raise ValueError("Fact value is required.")
+        raise LocalizableError("facts.err_required")
     if len(value) > MAX_FACT_LENGTH:
-        raise ValueError(f"Fact value is too long (max {MAX_FACT_LENGTH}).")
+        raise LocalizableError("facts.err_too_long", max=MAX_FACT_LENGTH)
     if confidence is not None and not 0 <= confidence <= 1:
         raise ValueError("confidence must be between 0 and 1.")
     fact = UserFact(
@@ -129,9 +130,9 @@ async def supersede_fact(
         return None
     value = value.strip()
     if not value:
-        raise ValueError("Fact value is required.")
+        raise LocalizableError("facts.err_required")
     if len(value) > MAX_FACT_LENGTH:
-        raise ValueError(f"Fact value is too long (max {MAX_FACT_LENGTH}).")
+        raise LocalizableError("facts.err_too_long", max=MAX_FACT_LENGTH)
     new = UserFact(
         user_id=user.id,
         category=(category or old.category)[:64],

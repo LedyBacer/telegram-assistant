@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.bot.callbacks import FactCallback
 from assistant.bot.handlers import cmd_facts, cmd_remember, on_fact
+from assistant.i18n import LocalizableError
 from assistant.models.facts import FactStatus, UserFact
 from assistant.models.users import User
 from assistant.services import facts
@@ -44,10 +45,13 @@ async def test_propose_fact_starts_proposed(session: AsyncSession) -> None:
 
 async def test_propose_fact_rejects_blank_and_overlong(session: AsyncSession) -> None:
     user = await _user(session)
-    with pytest.raises(ValueError, match="required"):
+    with pytest.raises(LocalizableError) as exc:
         await facts.propose_fact(session, user, value="   ")
-    with pytest.raises(ValueError, match="too long"):
+    assert exc.value.key == "facts.err_required"
+    with pytest.raises(LocalizableError) as exc:
         await facts.propose_fact(session, user, value="x" * (facts.MAX_FACT_LENGTH + 1))
+    assert exc.value.key == "facts.err_too_long"
+    assert exc.value.params["max"] == facts.MAX_FACT_LENGTH
     assert (await session.scalars(select(UserFact))).all() == []
 
 
@@ -95,8 +99,9 @@ async def test_supersede_rejects_blank_value(session: AsyncSession) -> None:
     user = await _user(session)
     fact = await facts.propose_fact(session, user, value="value")
     await session.commit()
-    with pytest.raises(ValueError, match="required"):
+    with pytest.raises(LocalizableError) as exc:
         await facts.supersede_fact(session, user, fact.id, value="  ")
+    assert exc.value.key == "facts.err_required"
     await session.rollback()
 
 

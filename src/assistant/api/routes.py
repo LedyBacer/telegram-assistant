@@ -35,7 +35,13 @@ from assistant.api.schemas import (
     WorkoutStatsOut,
 )
 from assistant.db import get_session
-from assistant.i18n import SUPPORTED_LANGUAGES, is_supported, load_locale, t
+from assistant.i18n import (
+    DEFAULT_LANGUAGE,
+    SUPPORTED_LANGUAGES,
+    is_supported,
+    load_locale,
+    t,
+)
 from assistant.models.facts import FactStatus
 from assistant.models.reminders import ReminderStatus
 from assistant.models.users import User
@@ -488,7 +494,7 @@ async def update_settings(
 @router.get("/i18n/languages")
 async def list_languages(user: User = Depends(get_current_user)) -> list[dict[str, str]]:
     """Supported languages with the label shown in the user's own language."""
-    lang = user.settings.language if user.settings is not None else "ru"
+    lang = user.settings.language if user.settings is not None else DEFAULT_LANGUAGE
     return [
         {"code": code, "label": t(lang, f"settings.language_{code}")}
         for code in sorted(SUPPORTED_LANGUAGES)

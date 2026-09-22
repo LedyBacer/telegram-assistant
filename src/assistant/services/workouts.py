@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.i18n import LocalizableError
 from assistant.models.calendar_items import CalendarItem, ItemKind
 from assistant.models.users import User
 from assistant.models.workout_logs import WorkoutLog, WorkoutStatus
@@ -51,15 +52,15 @@ async def log_workout(
 ) -> WorkoutLog:
     """Record a workout. Naive ``started_at`` is taken in the user's timezone."""
     if not name.strip():
-        raise ValueError("Workout name is required.")
+        raise LocalizableError("workouts.err_name")
     if len(name) > 200:
-        raise ValueError("Workout name is too long (max 200 characters).")
+        raise LocalizableError("workouts.err_name_long")
     if duration_minutes is not None and duration_minutes <= 0:
-        raise ValueError("Duration must be positive.")
+        raise LocalizableError("workouts.err_duration")
     if notes and len(notes) > 4000:
-        raise ValueError("Notes are too long (max 4000 characters).")
+        raise LocalizableError("workouts.err_notes", max=4000)
     if perceived_effort is not None and not 1 <= perceived_effort <= 10:
-        raise ValueError("Perceived effort must be between 1 and 10.")
+        raise LocalizableError("workouts.err_effort")
 
     tz = _user_tz(user)
     log = WorkoutLog(

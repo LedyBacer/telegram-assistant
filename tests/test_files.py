@@ -160,7 +160,8 @@ async def test_register_upload_rejects_unsupported_mime(session) -> None:
     await session.commit()
 
     assert file.state == FileState.rejected.value
-    assert "Unsupported file type" in (file.error or "")
+    assert file.error == "files.err_unsupported"
+    assert (file.extra or {})["rejection"] == {"mime": "image/png"}
     assert file.job_id is None
     jobs = (await session.scalars(select(BackgroundJob))).all()
     assert jobs == []
@@ -180,7 +181,10 @@ async def test_register_upload_rejects_oversize(session) -> None:
     await session.commit()
 
     assert file.state == FileState.rejected.value
-    assert "too large" in (file.error or "")
+    assert file.error == "files.err_too_large"
+    rejection = (file.extra or {})["rejection"]
+    assert rejection["size"] == max_bytes + 1
+    assert rejection["max"] == max_bytes
     assert file.job_id is None
 
 

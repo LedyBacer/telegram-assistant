@@ -9,12 +9,15 @@ Public API:
 - :func:`load_locale` — the raw flat dictionary for a locale (served by the
   Mini App API so the frontend and the bot share one translation source).
 - :func:`is_supported` — validation helper for the settings API.
+- :class:`LocalizableError` — validation errors carrying a locale key so
+  user-facing messages render in the user's language.
 """
 
 from assistant.i18n.service import (
     DEFAULT_LANGUAGE,
     FALLBACK_LANGUAGE,
     SUPPORTED_LANGUAGES,
+    LocalizableError,
     SupportedLanguage,
     Translator,
     for_language,
@@ -28,6 +31,7 @@ __all__ = [
     "DEFAULT_LANGUAGE",
     "FALLBACK_LANGUAGE",
     "SUPPORTED_LANGUAGES",
+    "LocalizableError",
     "SupportedLanguage",
     "Translator",
     "for_language",

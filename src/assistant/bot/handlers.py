@@ -39,7 +39,13 @@ from assistant.bot.keyboards import (
 )
 from assistant.bot.states import SettingsStates, TaskDraftStates, WorkoutStates
 from assistant.config import get_settings
-from assistant.i18n import DEFAULT_LANGUAGE, is_supported, t
+from assistant.i18n import (
+    DEFAULT_LANGUAGE,
+    LocalizableError,
+    is_supported,
+    load_locale,
+    t,
+)
 from assistant.models.calendar_items import CalendarItem, ItemKind, ItemPriority
 from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.facts import FactStatus
@@ -80,6 +86,29 @@ def _user_tz(user: User) -> ZoneInfo:
 
 def _user_lang(user: User) -> str:
     return user.settings.language if user.settings is not None else DEFAULT_LANGUAGE
+
+
+def _render_validation_error(exc: ValueError, lang: str, fallback_key: str) -> str:
+    """Render a validation error in the user's language.
+
+    ``LocalizableError`` carries a locale key; any other ``ValueError`` falls
+    back to a generic localized message with the raw text as ``{error}``.
+    """
+    if isinstance(exc, LocalizableError):
+        return t(lang, exc.key, **exc.params)
+    return t(lang, fallback_key, error=exc)
+
+
+def _file_rejection_text(file: UserFile, lang: str) -> str:
+    """Localized rejection reason for a rejected upload.
+
+    The service stores the locale key in ``file.error`` and its parameters in
+    ``file.extra["rejection"]``; legacy/free-text errors are shown verbatim.
+    """
+    key = file.error or ""
+    if key in load_locale(DEFAULT_LANGUAGE):
+        return t(lang, key, **(file.extra or {}).get("rejection", {}))
+    return key
 
 
 def _parse_hhmm(value: str) -> time:
@@ -228,7 +257,7 @@ def _parse_workout_log(text: str) -> tuple[str, int | None, int | None]:
     """Parse ``name, minutes, effort`` (last two optional) for logging."""
     parts = [p.strip() for p in text.split(",") if p.strip()]
     if not parts:
-        raise ValueError("Workout name is required.")
+        raise LocalizableError("workouts.err_name")
     name = parts[0]
     duration: int | None = None
     effort: int | None = None
@@ -236,12 +265,12 @@ def _parse_workout_log(text: str) -> tuple[str, int | None, int | None]:
         try:
             duration = int(parts[1])
         except ValueError:
-            raise ValueError("Minutes must be a whole number.") from None
+            raise LocalizableError("workouts.err_minutes") from None
     if len(parts) > 2:
         try:
             effort = int(parts[2])
         except ValueError:
-            raise ValueError("Effort must be a whole number 1-10.") from None
+            raise LocalizableError("workouts.err_effort") from None
     return name, duration, effort
 
 
@@ -249,12 +278,12 @@ def _parse_workout_schedule(text: str, tz: ZoneInfo) -> tuple[str, datetime]:
     """Parse ``name, YYYY-MM-DD HH:MM`` for scheduling."""
     parts = [p.strip() for p in text.split(",") if p.strip()]
     if len(parts) < 2:
-        raise ValueError("Send: name, YYYY-MM-DD HH:MM")
+        raise LocalizableError("workouts.err_format")
     name = parts[0]
     try:
         when = datetime.fromisoformat(" ".join(parts[1:]))
     except ValueError:
-        raise ValueError("Time must look like 2026-09-23 18:00.") from None
+        raise LocalizableError("workouts.err_time") from None
     if when.tzinfo is None:
         when = when.replace(tzinfo=tz)
     return name, when
@@ -341,7 +370,7 @@ async def cmd_remember(
             session, user, value=text, provenance="telegram:/remember"
         )
     except ValueError as exc:
-        await message.answer(t(lang, "facts.cant_store", error=exc))
+        await message.answer(_render_validation_error(exc, lang, "facts.cant_store"))
         return
     await message.answer(
         t(lang, "facts.proposed", value=fact.value),
@@ -695,7 +724,9 @@ async def on_document(message: Message, session: AsyncSession) -> None:
     )
     lang = _user_lang(user)
     if file.state == FileState.rejected.value:
-        await message.answer(t(lang, "files.rejected", error=file.error))
+        await message.answer(
+            t(lang, "files.rejected", error=_file_rejection_text(file, lang))
+        )
     else:
         await message.answer(
             t(lang, "files.saved", filename=file.original_filename)
@@ -768,7 +799,7 @@ async def on_text(
             name, duration, effort = _parse_workout_log(text)
         except ValueError as exc:
             await message.answer(
-                t(lang, "workouts.cant_read", error=exc)
+                _render_validation_error(exc, lang, "workouts.cant_read")
                 + "\n\n"
                 + t(lang, "workouts.log_prompt")
             )
@@ -800,7 +831,7 @@ async def on_text(
             name, when = _parse_workout_schedule(text, tz)
         except ValueError as exc:
             await message.answer(
-                t(lang, "workouts.cant_read", error=exc)
+                _render_validation_error(exc, lang, "workouts.cant_read")
                 + "\n\n"
                 + t(lang, "workouts.schedule_prompt")
             )

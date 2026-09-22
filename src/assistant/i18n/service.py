@@ -60,6 +60,21 @@ def is_supported(language: str) -> bool:
     return language in SUPPORTED_LANGUAGES
 
 
+class LocalizableError(ValueError):
+    """A validation error whose message is a locale key, not a fixed string.
+
+    Handlers render it in the user's persisted language via
+    ``t(language, exc.key, **exc.params)`` so user-facing validation errors
+    are never hardcoded in one language. The locale key is also a safe
+    ``str()`` (no raw provider/user text embedded).
+    """
+
+    def __init__(self, key: str, **params: object) -> None:
+        self.key = key
+        self.params = params
+        super().__init__(key)
+
+
 @cache
 def _load(locale: str) -> dict[str, str]:
     with (LOCALES_DIR / f"{locale}.json").open(encoding="utf-8") as handle:

@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.i18n import LocalizableError
 from assistant.models.reminders import Reminder
 from assistant.models.users import User
 from assistant.models.workout_logs import WorkoutStatus
@@ -41,24 +42,28 @@ async def test_log_workout_defaults(session: AsyncSession) -> None:
 
 async def test_log_workout_validation(session: AsyncSession) -> None:
     user = await _user(session)
-    with pytest.raises(ValueError, match="required"):
+    with pytest.raises(LocalizableError) as exc:
         await wo.log_workout(session, user, name="  ", started_at=NOW)
-    with pytest.raises(ValueError, match="too long"):
-        await wo.log_workout(
-            session, user, name="x" * 201, started_at=NOW
-        )
-    with pytest.raises(ValueError, match="positive"):
+    assert exc.value.key == "workouts.err_name"
+    with pytest.raises(LocalizableError) as exc:
+        await wo.log_workout(session, user, name="x" * 201, started_at=NOW)
+    assert exc.value.key == "workouts.err_name_long"
+    with pytest.raises(LocalizableError) as exc:
         await wo.log_workout(
             session, user, name="X", started_at=NOW, duration_minutes=0
         )
-    with pytest.raises(ValueError, match="1 and 10"):
+    assert exc.value.key == "workouts.err_duration"
+    with pytest.raises(LocalizableError) as exc:
         await wo.log_workout(
             session, user, name="X", started_at=NOW, perceived_effort=11
         )
-    with pytest.raises(ValueError, match="too long"):
+    assert exc.value.key == "workouts.err_effort"
+    with pytest.raises(LocalizableError) as exc:
         await wo.log_workout(
             session, user, name="X", started_at=NOW, notes="x" * 4001
         )
+    assert exc.value.key == "workouts.err_notes"
+    assert exc.value.params["max"] == 4000
 
 
 async def test_log_workout_naive_time_uses_user_timezone(

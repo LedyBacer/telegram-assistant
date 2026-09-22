@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.ai import AIProvider, AIProviderError, get_ai_provider
 from assistant.config import get_settings
 from assistant.db import get_session_factory
+from assistant.i18n import LocalizableError
 from assistant.models.files import FileChunk, FileState, UserFile
 from assistant.models.jobs import BackgroundJob
 from assistant.models.users import User
@@ -100,7 +101,8 @@ async def register_upload(
     reason = _rejection_reason(file.mime_type, size_bytes, settings.max_upload_size_bytes)
     if reason is not None:
         file.state = FileState.rejected.value
-        file.error = reason[:1000]
+        file.error = reason.key[:1000]
+        file.extra = {**(file.extra or {}), "rejection": dict(reason.params)}
         await session.flush()
         return file
 
@@ -118,11 +120,14 @@ async def register_upload(
     return file
 
 
-def _rejection_reason(mime_type: str, size_bytes: int | None, max_bytes: int) -> str | None:
+def _rejection_reason(
+    mime_type: str, size_bytes: int | None, max_bytes: int
+) -> LocalizableError | None:
+    """A localized rejection reason (locale key + params), or ``None``."""
     if mime_type not in SUPPORTED_MIME_TYPES:
-        return f"Unsupported file type: {mime_type}. "
+        return LocalizableError("files.err_unsupported", mime=mime_type)
     if size_bytes is not None and size_bytes > max_bytes:
-        return f"File is too large ({size_bytes} > {max_bytes} bytes)."
+        return LocalizableError("files.err_too_large", size=size_bytes, max=max_bytes)
     return None
 
 
