@@ -1,8 +1,11 @@
 # Final Report — Smart Personal Assistant / Motivator
 
 Date: 2026-09-22
-Status: all 15 milestones complete; SPEC §31 Definition of Done verified;
-production-ready per-user internationalization (i18n) added and verified.
+Status: all 16 milestones complete; SPEC §31 Definition of Done verified;
+production-ready per-user internationalization (i18n) added and verified;
+focused production runtime-hardening pass (MissingGreenlet fix, onboarding
+i18n completion, Qwen3.5/llama.cpp NL parsing, loopback-only API bind,
+production-like acceptance run) implemented and verified end-to-end.
 
 ## 1. What was built
 
@@ -86,7 +89,8 @@ miniapp/      index.html + app.js SPA (all UI strings from backend locales)
 alembic/      async migration env + initial schema (c390315de59f) +
               embedding 1536→384 (7b492f548c86) + user_settings.language
               (e8a2c41b7f05)
-tests/        14 test modules, 206 tests, real PostgreSQL
+tests/        15 test modules, 235 tests, real PostgreSQL
+scripts/      acceptance.sh — production-like end-to-end verification run
 docs/         ARCHITECTURE.md, ASSUMPTIONS.md, RESEARCH.md
 ```
 
@@ -113,6 +117,7 @@ FastAPI 0.141.1, SQLAlchemy 2.0.54, asyncpg, Alembic 1.20.0, Pydantic
 | 13 | — | This report + final verification |
 | 14 | `17d2683` | Independent chat/embedding providers + `vector(384)` migration |
 | 15 | `c378f71` | Per-user internationalization (ru/en): registry + `t()`, `user_settings.language` migration, bot/Mini App/API language selection, execution-time job localization, AI language instruction, 30 i18n tests |
+| 16 | `8c3425b`, `965f760`, `f4f0529`, `35e6b35`, `8954951` | Production runtime-hardening pass: MissingGreenlet fix in digest worker + regression tests; onboarding/FSM i18n completion + localized validation errors; llama.cpp-compatible structured NL parsing for Qwen3.5; loopback-only API bind; `scripts/acceptance.sh` production-like verification run; 235 tests |
 
 ## 4. Verification (SPEC §31 + QWEN.md)
 
@@ -122,17 +127,19 @@ All checks executed on 2026-09-22:
 |-------|--------|
 | `uv sync` | OK (58 packages, lock resolved) |
 | Docker Compose config | `docker compose config --quiet` — valid |
+| Network exposure (M16) | `docker-compose.yml` publishes the API as `127.0.0.1:8000:8000` (loopback-only); PostgreSQL has **no** published port; `scripts/acceptance.sh` fails the run on any non-loopback published port |
 | Application image builds | `docker compose build` — api, bot, worker images built |
 | PostgreSQL healthy | `ta-pgvector` up (PostgreSQL 17.11 + pgvector 0.8.6) |
 | Migrations from empty database | recreated the `assistant` DB and `alembic upgrade head` applied cleanly (initial schema + `7b492f548c86` 1536→384 + `e8a2c41b7f05` user_settings.language); also covered in-suite by `tests/test_migrations.py` (throwaway DB: head stamp, exact table set vs `Base.metadata`, pgvector extension, HNSW index) |
-| Full pytest suite | **206 passed** on the fresh migrated DB (≈21 s); previous state verified twice (dev DB + fresh DB) at 176 |
+| Full pytest suite | **235 passed** on the fresh migrated DB (`scripts/acceptance.sh`); previous state verified twice (dev DB + fresh DB) at 176, then 206 |
 | Ruff | `ruff check .` — all checks passed (`ruff format` is not a project gate; pre-existing files are unformatted) |
+| Production-like acceptance run (M16) | `bash scripts/acceptance.sh` — 13 checks, all passed: fresh Docker PostgreSQL, `alembic upgrade head`, API start + `/healthz`, worker running digest-scheduling iterations against users with and without `UserSettings` rows with **no `MissingGreenlet`** and 2 digests persisted, bot dispatcher wiring with Telegram mocked, RU/EN onboarding tests, Qwen-style NL task-draft tests, full 235-test pytest suite on the fresh database, Ruff, compose config, loopback-only port audit |
 | FastAPI application imports | OK (routes serve; FastAPI 0.141 materializes included routers lazily) |
 | Bot application imports | OK (`assistant.bot.main`) |
 | Worker smoke path | `python -m assistant.worker.main` started, polled an empty queue for 15 s, stopped cleanly (exit 0) |
 | Concurrency test (PostgreSQL locking) | `tests/test_jobs.py` — concurrent claimers, no double-claim via `FOR UPDATE SKIP LOCKED`, against real PostgreSQL |
 | Mini App auth tests | `tests/test_init_data.py` — 17 unit tests (valid/wrong-token/tampered/stale/future/missing/malformed payloads) + 4 authed-API 401 tests in `tests/test_api.py` |
-| Real-PostgreSQL flows | items CRUD + reminders, workout stats, file search, facts lifecycle, digest scheduling, bot draft flows — all in the 206-test suite against a real PG 17 |
+| Real-PostgreSQL flows | items CRUD + reminders, workout stats, file search, facts lifecycle, digest scheduling, bot draft flows — all in the 235-test suite against a real PG 17 |
 | i18n: column + default | `user_settings.language` VARCHAR(16) NOT NULL, column default `'ru'`; new users default `ru`; existing rows migrated to `ru` (asserted in `tests/test_i18n.py`) |
 | i18n: ru/en parity | identical key sets in `locales/ru.json` / `locales/en.json` (enforced by `test_locale_key_parity_ru_en`); two users in two languages verified end-to-end (bot start, reminders, digest, API) |
 | pgvector column + index | `file_chunks.embedding` is `vector(384)` (atttypmod 384) and `ix_file_chunks_embedding_hnsw` (hnsw, cosine) present in the catalog after `alembic upgrade head` |
@@ -141,10 +148,11 @@ All checks executed on 2026-09-22:
 | Git working tree clean | `git status` clean after each milestone commit; nothing pushed to any remote |
 
 Test-suite breakdown (collected): `test_bot_foundation` (25),
-`test_i18n` (30), `test_api` (20), `test_ai` (19), `test_files` (17),
-`test_init_data` (17), `test_facts` (14), `test_reminders` (14),
-`test_jobs` (11), `test_digests` (11), `test_chat` (10),
-`test_calendar` (9), `test_workouts` (7), `test_migrations` (2) = 206.
+`test_i18n` (30), `test_ai` (30), `test_api` (20), `test_files` (17),
+`test_init_data` (17), `test_onboarding_i18n` (16), `test_facts` (14),
+`test_reminders` (14), `test_digests` (13), `test_jobs` (11),
+`test_chat` (10), `test_calendar` (9), `test_workouts` (7),
+`test_migrations` (2) = 235.
 
 External AI/Telegram HTTP calls are mocked in tests (fake providers,
 sender stubs, locally signed initData); production integration code is
@@ -171,6 +179,65 @@ uv run python -m assistant.api.main      # api (port 8000, /miniapp served)
 uv run python -m assistant.worker.main   # worker
 uv run pytest                     # full suite (needs PostgreSQL)
 uv run ruff check .
+bash scripts/acceptance.sh        # production-like end-to-end acceptance run
 ```
 
 Or `docker compose up` for all four services.
+
+## 7. Milestone 16 — Production runtime-hardening pass (2026-09-22)
+
+A focused hardening pass on reported production issues and exposure; no
+redesign of unrelated functionality.
+
+1. **MissingGreenlet in the digest worker.** The production traceback
+   (`worker.main.schedule_digests()` → `digests_service.ensure_digest_jobs()`
+   → `_user_tz` → `user.settings.timezone`) was a lazy relationship load in an
+   async context. Fix: `User.settings` is eager-loaded via
+   `selectinload(User.settings)` in `ensure_digest_jobs()` and via
+   `session.get(..., options=[selectinload(...)])` in the digest send path
+   (`src/assistant/services/digests.py`). No `MissingGreenlet` catch, no
+   implicit lazy DB I/O. Regression tests in `tests/test_digests.py`:
+   `ensure_digest_jobs()` works against real PostgreSQL for users with and
+   without a `UserSettings` row (and is idempotent), plus a test proving the
+   old non-eager query shape raises `MissingGreenlet`. The acceptance run
+   exercises the real worker polling loop over several digest-scheduling
+   iterations, error-free.
+2. **Onboarding i18n completed.** All onboarding/FSM prompts (start,
+   timezone, digest-time, cancellation, task-creation confirmations,
+   validation errors) use the persisted per-user language via `t()`; no
+   hardcoded English for a Russian user and no hardcoded Russian for an
+   English user; user-authored content is never translated. Covered by
+   `tests/test_onboarding_i18n.py` (16 tests, RU and EN). Validation errors in
+   the workouts/facts/files services raise `LocalizableError` with locale
+   keys + parameters, surfaced localized by the bot and as `{"error": key}` by
+   the API.
+3. **Qwen3.5 / llama.cpp NL task parsing.** Structured parsing no longer
+   depends on OpenAI-only `response_format=json_schema`; the JSON contract
+   lives in the system prompt and responses are parsed with a robust
+   `extract_json_object` (code fences, thinking preambles, trailing prose,
+   braces in strings, last-balanced-object preference). Pydantic validation
+   (`AITaskDraft`, `extra="forbid"`) and the explicit user confirmation before
+   any DB write are preserved. Parsing failures log redacted, structured
+   context (no secrets, no raw provider errors). Regression tests use
+   realistic Qwen-style responses for "Мне нужно сегодня позвонить Сергею в
+   17:00", "Сегодня напомни мне позвонить Сергею в 17:00" and the English
+   equivalent, with relative-date resolution in the user's timezone, plus
+   FSM state-isolation and `/cancel` tests (`tests/test_ai.py`,
+   `tests/test_bot_foundation.py`).
+4. **API exposure.** `docker-compose.yml` publishes the API as
+   `127.0.0.1:8000:8000` (loopback-only); PostgreSQL is not published at all.
+   A future public Mini App is served through an HTTPS reverse proxy
+   forwarding to `127.0.0.1:8000` — documented in README ("Network
+   exposure") and enforced by the acceptance script's port audit.
+5. **Production-like acceptance run.** `scripts/acceptance.sh` (13 checks,
+   all passed on 2026-09-22): compose config valid; loopback-only port
+   audit; fresh `pgvector/pgvector:pg17` container; `alembic upgrade head`;
+   API starts and answers `/healthz`; worker completes several
+   digest-scheduling iterations with no `MissingGreenlet` and persists digests
+   for a user with and a user without settings; bot imports and wires its
+   dispatcher with Telegram mocked; RU and EN onboarding tests;
+   Qwen-style NL task-draft tests; the full 235-test pytest suite against the
+   fresh database; `ruff check .` clean.
+
+Verification state after Milestone 16: **235 tests passing, Ruff clean,
+compose valid, working tree clean, nothing pushed to any remote.**

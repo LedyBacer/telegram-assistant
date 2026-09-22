@@ -1,6 +1,34 @@
 # Progress
 
-Status: ALL 15 MILESTONES COMPLETE. Milestone 15 (production-ready per-user
+Status: MILESTONE 16 COMPLETE (production runtime-hardening pass). Milestone 16
+done: (1) worker `MissingGreenlet` fix — `digests.ensure_digest_jobs` eager-
+loads `User.settings` via `selectinload` (also `digest_send` handler);
+regression tests in `tests/test_digests.py` (users WITH and WITHOUT a
+`UserSettings` row, repeated passes, plus a test pinning the lazy-load hazard).
+(2) Onboarding i18n complete — every onboarding/FSM/validation user-facing
+string resolves through `t()` / `LocalizableError` in the user's persisted
+language (timezone, digest time, cancellation, task creation, workout + fact
++ file validation, incl. `workouts.err_notes`); RU/EN onboarding + FSM
+state-isolation tests in `tests/test_onboarding_i18n.py`; user-authored
+content never translated. (3) Qwen3.5/llama.cpp NL task parsing —
+`chat_structured` no longer sends OpenAI-only `response_format`; JSON contract
+in the system prompt; `extract_json_object` (fences, thinking preambles,
+trailing prose, braces-in-strings; prefers the LAST balanced object, skips
+nested ones); corrective-feedback retry (2 attempts); structured logging with
+secrets redacted (`_redact_for_log`); explicit confirm-before-mutate preserved;
+relative dates ("сегодня"/"today") resolved in the user's timezone (prompt
+carries tz + now); regression tests with realistic Qwen-style responses in
+RU/EN. (4) API loopback-only: compose `api` port now `127.0.0.1:8000:8000`;
+Postgres publishes no ports; README "Network exposure" documents the HTTPS
+reverse-proxy path for a future public Mini App. (5) `scripts/acceptance.sh`
+— production-like verification: fresh Docker Postgres, `alembic upgrade head`,
+API start + `/healthz`, worker with several digest-scheduling iterations (no
+`MissingGreenlet`), bot dispatcher wiring (Telegram mocked), RU/EN onboarding
+tests, NL draft tests, full pytest on the fresh DB, Ruff, `docker compose
+config`, loopback-only port-exposure audit. Verified: acceptance run fully
+green, full suite 235 passing, Ruff clean.
+
+Milestone 15 (production-ready per-user
 internationalization) done: `src/assistant/i18n/` registry + `t()` translator
 with `locales/{ru,en}.json` (RU default + fallback, never crashes on missing
 keys), `user_settings.language` (NOT NULL, server default `ru`) with new
@@ -305,12 +333,25 @@ confirmed in the catalog.
   execution-time wrapper semantics. README + docs updated. Verified:
   fresh-DB migration, 206 passing, Ruff clean, imports OK.
 
+- Milestone 16: production runtime-hardening pass (see status block at top):
+  worker `MissingGreenlet` fix (eager `selectinload(User.settings)` in
+  `ensure_digest_jobs` + `digest_send` handler) with regression tests;
+  onboarding i18n complete via `t()`/`LocalizableError` (RU/EN + FSM
+  state-isolation tests); llama.cpp/Qwen3.5-compatible structured parsing
+  (no `response_format`, `extract_json_object`, corrective retry, redacted
+  structured logging, relative dates in the user's timezone) with RU/EN
+  regression tests; API published loopback-only
+  (`127.0.0.1:8000:8000`, README "Network exposure"); new
+  `scripts/acceptance.sh` production-like verification run (fully green).
+  Full suite 235 passing; Ruff clean.
+
 ## Current milestone
 
-- None — all 15 milestones complete.
+- None — all 16 milestones complete.
 
 ## Next
 
 - Project is complete. Future work (out of scope for this run): real
-  Telegram/OpenAI credential smoke tests, CI pipeline, observability,
-  additional languages (ru/en supported today).
+  Telegram/OpenAI credential smoke tests, HTTPS reverse proxy deployment for
+  the Mini App, CI pipeline, observability, additional languages
+  (ru/en supported today).
