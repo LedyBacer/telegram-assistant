@@ -17,7 +17,7 @@ import logging
 import re
 from typing import Protocol, TypeVar, runtime_checkable
 
-from openai import APIError, AsyncOpenAI
+from openai import APIError, APITimeoutError, AsyncOpenAI, Timeout
 from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger("assistant.ai")
@@ -123,6 +123,15 @@ class AIProviderError(RuntimeError):
     """The model provider could not be reached or returned an API error."""
 
 
+class AITimeoutError(AIProviderError):
+    """The provider did not finish within the configured chat timeout.
+
+    Distinct from :class:`AIOutputValidationError`: a full inference timeout
+    is not a model misbehaviour that a second equally long inference would
+    fix, so callers do not retry it.
+    """
+
+
 class AIOutputValidationError(AIProviderError):
     """The model repeatedly produced output that failed schema validation."""
 
@@ -167,16 +176,36 @@ class OpenAIChatProvider:
         base_url: str | None = None,
         model: str = "qwen3.5-9b-64k",
         max_attempts: int = 2,
-        timeout: float = 60.0,
+        timeout: float = 180.0,
+        thinking_enabled: bool = True,
     ) -> None:
         self._model = model
         self._max_attempts = max_attempts
+        self._timeout = timeout
+        self._thinking_enabled = thinking_enabled
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=timeout,
+            # A non-streaming completion is a single read phase, so the
+            # configured value bounds the whole generation; connect/write/
+            # pool stay short and fail fast on an unhealthy network.
+            timeout=Timeout(connect=10.0, read=timeout, write=30.0, pool=10.0),
             max_retries=0,  # bounded retries are managed here
         )
+
+    def _chat_options(self) -> dict:
+        """Provider request options shared by every chat completion call.
+
+        ``chat_template_kwargs`` is the documented llama.cpp OpenAI-compatible
+        extension for the Jinja chat template; ``enable_thinking`` toggles
+        Qwen reasoning. It is sent explicitly in both directions so the mode
+        never relies on a server-side default. Embeddings never use it.
+        """
+        return {
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": self._thinking_enabled}
+            }
+        }
 
     async def chat(self, *, system: str, messages: list[Message]) -> str:
         try:
@@ -185,7 +214,18 @@ class OpenAIChatProvider:
                 messages=[{"role": "system", "content": system}, *messages],
                 temperature=0.7,
                 store=False,
+                **self._chat_options(),
             )
+        except APITimeoutError as exc:
+            logger.warning(
+                "chat completion timed out after %.0f s (model=%s): %s",
+                self._timeout,
+                self._model,
+                _redact_for_log(exc),
+            )
+            raise AITimeoutError(
+                f"chat completion timed out after {self._timeout:g} s"
+            ) from exc
         except APIError as exc:
             raise AIProviderError(f"chat completion failed: {exc}") from exc
         return response.choices[0].message.content or ""
@@ -211,7 +251,28 @@ class OpenAIChatProvider:
                     messages=[{"role": "system", "content": system_with_json}, *conversation],
                     temperature=0,
                     store=False,
+                    **self._chat_options(),
                 )
+            except APITimeoutError as exc:
+                # A full inference timeout is not a malformed response:
+                # immediately repeating an equally long inference would only
+                # double the user wait, so it fails cleanly here instead of
+                # consuming the remaining attempts.
+                logger.warning(
+                    "structured completion timed out after %.0f s "
+                    "(model=%s schema=%s attempt=%d/%d input_chars=%d); "
+                    "not retrying a full inference: %s",
+                    self._timeout,
+                    self._model,
+                    schema.__name__,
+                    attempt,
+                    self._max_attempts,
+                    sum(len(m["content"]) for m in conversation),
+                    _redact_for_log(exc),
+                )
+                raise AITimeoutError(
+                    f"structured completion timed out after {self._timeout:g} s"
+                ) from exc
             except APIError as exc:
                 logger.warning(
                     "structured completion API error (model=%s schema=%s "

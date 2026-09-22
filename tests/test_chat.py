@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.ai import AIProviderError
+from assistant.bot import handlers
 from assistant.bot.handlers import on_text
 from assistant.bot.states import TaskDraftStates
 from assistant.models.calendar_items import ItemKind
@@ -226,7 +227,20 @@ def _fake_state() -> SimpleNamespace:
     )
 
 
+def _no_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These tests assert a single outgoing message; the thinking UX
+    # (a temporary status message) is covered in tests/test_thinking_ux.py.
+    monkeypatch.setattr(
+        handlers,
+        "get_settings",
+        lambda: SimpleNamespace(
+            chat_thinking_enabled=False, public_base_url="https://app.test"
+        ),
+    )
+
+
 async def test_on_text_uses_contextual_chat(session: AsyncSession, monkeypatch) -> None:
+    _no_thinking(monkeypatch)
     monkeypatch.setattr(
         chat_service, "get_ai_provider", lambda: _FakeProvider(reply="chat-reply")
     )
@@ -245,6 +259,7 @@ async def test_on_text_provider_down_gives_fallback(session: AsyncSession, monke
     user.settings.language = "en"
     await session.commit()
 
+    _no_thinking(monkeypatch)
     monkeypatch.setattr(
         chat_service, "get_ai_provider", lambda: _FailingProvider()
     )

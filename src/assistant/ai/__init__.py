@@ -21,6 +21,7 @@ from assistant.ai.provider import (
     AIOutputValidationError,
     AIProvider,
     AIProviderError,
+    AITimeoutError,
     EmbeddingDimensionError,
     OpenAIChatProvider,
     OpenAICompatibleProvider,
@@ -32,6 +33,7 @@ from assistant.config import Settings, get_settings
 
 __all__ = [
     "AITaskDraft",
+    "AITimeoutError",
     "AIOutputValidationError",
     "AIProvider",
     "AIProviderError",
@@ -54,6 +56,8 @@ def build_ai_provider(settings: Settings) -> AIProvider:
             api_key=settings.chat_api_key,
             base_url=settings.chat_base_url,
             model=settings.chat_model,
+            timeout=settings.chat_timeout_seconds,
+            thinking_enabled=settings.chat_thinking_enabled,
         ),
         embedding=OpenAIEmbeddingProvider(
             api_key=settings.embedding_api_key,

@@ -551,6 +551,15 @@ async def test_on_text_ai_failure_shows_help_and_stays_in_flow(
     await session.commit()
 
     message = _fake_message("make it happen sometime")
+    # This test asserts a single outgoing message; the thinking status UX
+    # is covered in tests/test_thinking_ux.py.
+    monkeypatch.setattr(
+        handlers,
+        "get_settings",
+        lambda: SimpleNamespace(
+            chat_thinking_enabled=False, public_base_url="https://app.test"
+        ),
+    )
     monkeypatch.setattr(
         handlers,
         "get_ai_provider",

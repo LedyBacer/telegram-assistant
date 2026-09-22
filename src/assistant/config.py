@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     chat_api_key: str | None = None
     chat_base_url: str | None = None
     chat_model: str = "qwen3.5-9b-64k"
+    # How long (seconds) the application waits for a chat/generation
+    # completion from the provider. llama.cpp reasoning can exceed the
+    # OpenAI client's implicit 60 s default, so this is explicit.
+    chat_timeout_seconds: float = Field(default=180.0, ge=1, le=3600)
+    # Qwen thinking (reasoning) mode for the chat provider: sent explicitly
+    # to the llama.cpp server as chat_template_kwargs.enable_thinking.
+    # Applies to chat + structured generation only, never to embeddings.
+    chat_thinking_enabled: bool = True
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str = "multilingual-e5-small"

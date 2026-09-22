@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import text
 
-from assistant.bot import callbacks, keyboards
+from assistant.bot import callbacks, handlers, keyboards
 from assistant.bot.handlers import TaskDraft, _parse_draft
 from assistant.bot.states import TaskDraftStates
 from assistant.models.calendar_items import ItemKind, ItemPriority
@@ -203,9 +203,20 @@ async def test_upsert_user_creates_then_updates(session) -> None:
         await _truncate_users(session)
 
 
-async def test_on_text_stores_chat_message(session) -> None:
+async def test_on_text_stores_chat_message(
+    session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from assistant.bot.handlers import on_text
 
+    # This test asserts a single outgoing message; the thinking status UX
+    # is covered in tests/test_thinking_ux.py.
+    monkeypatch.setattr(
+        handlers,
+        "get_settings",
+        lambda: SimpleNamespace(
+            chat_thinking_enabled=False, public_base_url="https://app.test"
+        ),
+    )
     await _truncate_users(session)
     try:
         message = _fake_message("remember: finish the report")

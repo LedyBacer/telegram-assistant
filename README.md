@@ -65,7 +65,8 @@ served by two separate OpenAI-compatible servers (e.g. two llama.cpp
 instances) — the application never assumes one host provides both:
 
 - **Chat / structured generation** uses only `CHAT_BASE_URL`,
-  `CHAT_API_KEY`, `CHAT_MODEL` (default `qwen3.5-9b-64k`).
+  `CHAT_API_KEY`, `CHAT_MODEL` (default `qwen3.5-9b-64k`),
+  `CHAT_TIMEOUT_SECONDS` and `CHAT_THINKING_ENABLED`.
 - **Embeddings / RAG** uses only `EMBEDDING_BASE_URL`,
   `EMBEDDING_API_KEY`, `EMBEDDING_MODEL` (default `multilingual-e5-small`)
   and `EMBEDDING_DIMENSIONS` (384). Vectors are stored as pgvector
@@ -77,6 +78,8 @@ Example (two llama.cpp servers):
 CHAT_BASE_URL=http://llm-host:18085/v1
 CHAT_API_KEY=replace-me
 CHAT_MODEL=qwen3.5-9b-64k
+CHAT_TIMEOUT_SECONDS=180
+CHAT_THINKING_ENABLED=true
 
 EMBEDDING_BASE_URL=http://llm-host:18086/v1
 EMBEDDING_API_KEY=replace-me
@@ -96,6 +99,41 @@ error instead of writing invalid data.
 
 The embedding request uses only the OpenAI-compatible `model` + `input`
 shape, so llama.cpp's `/v1/embeddings` is fully supported.
+
+### Chat timeout and Qwen thinking mode
+
+- **`CHAT_TIMEOUT_SECONDS`** (default `180`) — how long (seconds) the
+  application waits for the chat provider to finish a completion before
+  giving up. llama.cpp models can spend a long time generating, so the
+  value is explicit instead of relying on the OpenAI client's implicit
+  60-second default. On timeout the request fails cleanly with a localized
+  error message; the timeout is logged with its configured value. The
+  setting applies to chat and structured generation only — the embedding
+  provider keeps its own (short) timeout.
+- **`CHAT_THINKING_ENABLED`** (default `true`) — Qwen *thinking*
+  (reasoning) mode, a llama.cpp/Qwen provider behavior, not a per-user
+  preference. The mode is sent **explicitly** with every chat/structured
+  completion via the documented llama.cpp OpenAI-compatible request field
+  `chat_template_kwargs.enable_thinking` (through the OpenAI client's
+  `extra_body`), never relying on a server default. `true` lets the model
+  reason before answering (slower, better reasoning); `false` disables
+  thinking (usually much lower latency, possibly reduced reasoning
+  quality). It applies to normal assistant chat and structured task-draft
+  generation; embeddings are unaffected. When thinking is enabled and a
+  chat/structured request is about to run, the bot sends a short
+  localized temporary status message ("Думаю…" / "Thinking…") in the
+  user's persisted language and removes it as soon as the provider
+  responds — including on timeout or provider error.
+
+### Structured completion retries
+
+Structured completion retries are bounded: at most 2 attempts in total. A
+**malformed model response** (no JSON / schema mismatch) may be retried once
+with corrective feedback. A **full inference timeout** is not a malformed
+response: the provider is simply slow, so the request fails cleanly
+(`AITimeoutError`) without immediately starting a second equally long
+inference — the worst-case user wait for a structured call is therefore the
+configured `CHAT_TIMEOUT_SECONDS`, not a multiple of it.
 
 Legacy fallback: when the `CHAT_*` / `EMBEDDING_*` base-URL/key variables are
 absent, `OPENAI_BASE_URL` / `OPENAI_API_KEY` are used for both providers.

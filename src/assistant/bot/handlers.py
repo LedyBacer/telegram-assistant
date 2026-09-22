@@ -6,6 +6,7 @@ Every user-facing string is resolved through the central i18n translator
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -61,6 +62,8 @@ from assistant.services.users import upsert_user
 
 router = Router(name="bot")
 
+logger = logging.getLogger("assistant.bot")
+
 
 @dataclass(slots=True)
 class TaskDraft:
@@ -86,6 +89,32 @@ def _user_tz(user: User) -> ZoneInfo:
 
 def _user_lang(user: User) -> str:
     return user.settings.language if user.settings is not None else DEFAULT_LANGUAGE
+
+
+async def _send_thinking(message: Message, lang: str) -> Message | None:
+    """Send the temporary localized "Thinking…" status message.
+
+    Only when ``CHAT_THINKING_ENABLED`` is true and an AI request is about to
+    run. The message is cosmetic: a failed send (e.g. Telegram flood limit)
+    must not break the request flow, so it is best-effort.
+    """
+    if not get_settings().chat_thinking_enabled:
+        return None
+    try:
+        return await message.answer(t(lang, "ai.thinking"))
+    except Exception:  # noqa: BLE001 — cosmetic message must never break the flow
+        logger.warning("failed to send the thinking status message", exc_info=True)
+        return None
+
+
+async def _delete_thinking(status: Message | None) -> None:
+    """Best-effort removal of the temporary status message."""
+    if status is None:
+        return
+    try:
+        await status.delete()
+    except Exception:  # noqa: BLE001 — deletion failure must not break the flow
+        logger.warning("failed to delete the thinking status message", exc_info=True)
 
 
 def _render_validation_error(exc: ValueError, lang: str, fallback_key: str) -> str:
@@ -751,6 +780,7 @@ async def on_text(
         except ValueError:
             # Natural language: let the model produce a typed draft. The
             # manual format stays available as a deterministic fallback.
+            thinking_status = await _send_thinking(message, lang)
             try:
                 ai = await get_ai_provider().chat_structured(
                     system=DRAFT_SYSTEM.format(tz=tz, now=datetime.now(tz).isoformat()),
@@ -758,10 +788,12 @@ async def on_text(
                     schema=AITaskDraft,
                 )
             except AIProviderError:
+                await _delete_thinking(thinking_status)
                 await message.answer(
                     t(lang, "draft.failed", help=t(lang, "draft.help"))
                 )
                 return
+            await _delete_thinking(thinking_status)
             draft = _ai_draft_to_task_draft(ai, tz)
             ai_dump = ai.model_dump(mode="json")
         await state.update_data(draft_text=text, draft_ai=ai_dump)
@@ -855,9 +887,11 @@ async def on_text(
             reply_markup=main_menu_kb(lang),
         )
     else:
+        thinking_status = await _send_thinking(message, lang)
         try:
             reply = await chat_service.chat(session, user, text)
         except AIProviderError:
+            await _delete_thinking(thinking_status)
             session.add(
                 ChatMessage(
                     user_id=user.id,
@@ -871,4 +905,5 @@ async def on_text(
                 reply_markup=main_menu_kb(lang),
             )
             return
+        await _delete_thinking(thinking_status)
         await message.answer(reply, reply_markup=main_menu_kb(lang))
