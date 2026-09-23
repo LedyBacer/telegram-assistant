@@ -50,16 +50,20 @@ async def _user(session: AsyncSession, user_id: int = 71) -> User:
 
 
 class _FakeProvider:
-    """Returns a fixed structured turn; the plain call returns ``reply``."""
+    """Returns a fixed structured turn; the fold (second structured) call
+    returns ``fold_turn`` (default: a plain reply ``reply``)."""
 
     def __init__(
         self,
         turn: AssistantTurn,
         reply: str = "folded-reply",
+        fold_turn: AssistantTurn | None = None,
     ) -> None:
         self.turn = turn
         self.reply = reply
+        self.fold_turn = fold_turn
         self.system: str | None = None
+        self.fold_system: str | None = None
         self.chat_system: str | None = None
         self.structured_calls = 0
         self.chat_calls = 0
@@ -73,9 +77,16 @@ class _FakeProvider:
     async def chat_structured(
         self, *, system: str, messages: list[dict[str, str]], schema
     ):
-        self.system = system
+        if self.structured_calls == 0:
+            self.system = system
+        else:
+            self.fold_system = system
         self.structured_calls += 1
-        return self.turn
+        if self.structured_calls == 1:
+            return self.turn
+        if self.fold_turn is not None:
+            return self.fold_turn
+        return AssistantTurn(reply=self.reply)
 
     async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
         self.embed_calls += 1
@@ -260,10 +271,10 @@ async def test_data_request_makes_second_model_call(session: AsyncSession) -> No
     await session.commit()
 
     assert result.model_calls == 2
-    assert provider.structured_calls == 1
-    assert provider.chat_calls == 1
+    assert provider.structured_calls == 2
+    assert provider.chat_calls == 0
     # The tool result (with the item id) was folded into the final prompt.
-    assert f"id={item.id}" in provider.chat_system
+    assert f"id={item.id}" in provider.fold_system
     assert result.reply == "Standup is your only item."
 
 
@@ -283,9 +294,9 @@ async def test_data_request_dedupes_and_bounds_tools(session: AsyncSession) -> N
         session, user, "list things", provider=provider
     )
     await session.commit()
-    # Two unique tools -> both rendered into the final system prompt.
-    assert "[calendar]" in provider.chat_system
-    assert "[workouts]" in provider.chat_system
+    # Two unique tools -> both rendered into the final fold prompt.
+    assert "[calendar]" in provider.fold_system
+    assert "[workouts]" in provider.fold_system
     assert result.model_calls == 2
 
 
@@ -389,7 +400,8 @@ async def test_state_tool_fold(session: AsyncSession) -> None:
     await session.commit()
     assert result.state is TurnState.TOOL_FOLD
     assert result.model_calls == 2
-    assert provider.chat_calls == 1
+    assert provider.structured_calls == 2
+    assert provider.chat_calls == 0
     assert result.reply == "folded"
 
 
@@ -505,8 +517,100 @@ async def test_tool_fold_blank_fold_without_clarification_raises(
         await turns_service.run_turn(session, user, "what do you know?", provider=provider)
     assert exc.value.key == "chat.empty_turn"
     await session.commit()
-    assert provider.chat_calls == 1
+    assert provider.structured_calls == 2
+    assert provider.chat_calls == 0
     assert (await session.scalars(select(ChatMessage))).all() == []
+
+
+# ---------------------------------------------------------------------------
+# Engine: lookup→mutation via the structured fold
+# ---------------------------------------------------------------------------
+
+
+async def test_lookup_then_mutation_in_two_calls(
+    session: AsyncSession,
+) -> None:
+    """Call 1 asks for the data the mutation depends on; the fold (call 2)
+    proposes the mutation with the real id revealed by the tool results."""
+    user = await _user(session)
+    item = await _seed(session, user)
+    turn1 = AssistantTurn(data_requests=[ReadToolRequest(tool="calendar")])
+    fold = AssistantTurn(
+        reply="Shall I move Standup to 20:00?",
+        actions=[
+            ActionProposal(
+                kind="update_item",
+                payload={"item_id": item.id, "starts_at": "2026-09-24 20:00"},
+                summary="Move Standup to 20:00",
+            )
+        ],
+    )
+    provider = _FakeProvider(turn1, fold_turn=fold)
+
+    result = await turns_service.run_turn(
+        session, user, "move standup to 20:00", provider=provider
+    )
+    await session.commit()
+
+    assert result.state is TurnState.TOOL_FOLD
+    assert result.model_calls == 2
+    assert result.reply == "Shall I move Standup to 20:00?"
+    # The tool result (with the item id) was in the fold prompt.
+    assert f"id={item.id}" in provider.fold_system
+    assert len(result.proposed_actions) == 1
+    action = result.proposed_actions[0]
+    assert action.status == ActionStatus.proposed.value
+    assert action.payload["item_id"] == item.id
+    # The optimistic baseline is captured at proposal time.
+    assert action.payload.get("expected_updated_at")
+    # The proposal is durable; the item itself is untouched until confirm.
+    stored = await session.get(PendingAction, action.id)
+    assert stored.status == ActionStatus.proposed.value
+    refreshed = await session.get(CalendarItem, item.id)
+    assert refreshed.status == "scheduled"
+
+
+async def test_fold_data_requests_are_ignored(session: AsyncSession) -> None:
+    """The fold is the last call: stray data_requests in it cannot start a
+    third call (no ReAct loop)."""
+    user = await _user(session)
+    turn1 = AssistantTurn(data_requests=[ReadToolRequest(tool="facts")])
+    fold = AssistantTurn(
+        reply="ok",
+        data_requests=[ReadToolRequest(tool="calendar")],
+    )
+    provider = _FakeProvider(turn1, fold_turn=fold)
+
+    result = await turns_service.run_turn(
+        session, user, "what do you know?", provider=provider
+    )
+    await session.commit()
+
+    assert result.state is TurnState.TOOL_FOLD
+    assert result.model_calls == 2
+    assert provider.structured_calls == 2
+    assert result.reply == "ok"
+
+
+async def test_fold_clarification_used_when_reply_blank(
+    session: AsyncSession,
+) -> None:
+    """When the tool results leave the request ambiguous, the fold's
+    clarification becomes the assistant message."""
+    user = await _user(session)
+    turn1 = AssistantTurn(data_requests=[ReadToolRequest(tool="calendar")])
+    fold = AssistantTurn(clarification="Which standup do you mean?")
+    provider = _FakeProvider(turn1, fold_turn=fold)
+
+    result = await turns_service.run_turn(
+        session, user, "move standup", provider=provider
+    )
+    await session.commit()
+
+    assert result.state is TurnState.TOOL_FOLD
+    assert result.reply == "Which standup do you mean?"
+    roles = [m.role for m in (await session.scalars(select(ChatMessage))).all()]
+    assert roles == [ChatRole.user.value, ChatRole.assistant.value]
 
 
 # ---------------------------------------------------------------------------
@@ -802,11 +906,12 @@ async def test_documents_tool_retrieves_with_deterministic_citations(
     await session.commit()
 
     assert result.reply == "Your warranty covers repairs for two years."
-    assert provider.chat_calls == 1
+    assert provider.structured_calls == 2
+    assert provider.chat_calls == 0
     assert len(result.retrieved_chunks) == 1
     chunk = result.retrieved_chunks[0]
     assert chunk.file_name == "warranty.txt"
-    assert "warranty" in provider.chat_system
+    assert "warranty" in provider.fold_system
     # Deterministic, application-rendered citation (SPEC §6.3).
     assert files_service.format_citations(result.retrieved_chunks) == "Sources: warranty.txt"
 
@@ -890,25 +995,20 @@ async def test_no_transaction_spans_provider_calls(session: AsyncSession) -> Non
     observed: dict[str, bool] = {}
 
     orig_structured = provider.chat_structured
-    orig_chat = provider.chat
     orig_embed = provider.embed_query
 
     async def structured(*, system, messages, schema):
-        observed["structured"] = session.in_transaction()
+        key = "structured" if provider.structured_calls == 0 else "fold"
+        observed[key] = session.in_transaction()
         return await orig_structured(
             system=system, messages=messages, schema=schema
         )
-
-    async def plain_chat(*, system, messages):
-        observed["chat"] = session.in_transaction()
-        return await orig_chat(system=system, messages=messages)
 
     async def embed(**kwargs):
         observed["embed"] = session.in_transaction()
         return await orig_embed(**kwargs)
 
     provider.chat_structured = structured
-    provider.chat = plain_chat
     provider.embed_query = embed
 
     result = await turns_service.run_turn(
@@ -916,6 +1016,10 @@ async def test_no_transaction_spans_provider_calls(session: AsyncSession) -> Non
     )
     await session.commit()
 
-    assert observed == {"structured": False, "embed": False, "chat": False}
+    assert observed == {
+        "structured": False,
+        "embed": False,
+        "fold": False,
+    }
     assert result.model_calls == 2
     assert len(result.retrieved_chunks) == 1

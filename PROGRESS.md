@@ -1,9 +1,42 @@
 # Progress
 
-Status: V3 PRIORITY 8 COMPLETE (conversational engine now follows a formal
-turn state machine — one terminal state per turn, exposed on TurnResult).
-Next: V3 Priority 9 (lookup→mutation within the bounded two-call
-architecture).
+Status: V3 PRIORITY 9 COMPLETE (lookup→mutation works within the bounded
+two-call architecture — the TOOL_FOLD second call is structured and can
+propose mutations using ids revealed by the read tools).
+Next: V3 Priority 10 (read tools + deterministic entity resolution).
+
+## V3 — Priority 9: lookup→mutation within the bounded two-call turn
+
+Previously the second (fold) model call was a plain text call, so a turn
+that first needed app data (e.g. "move standup to 20:00" — the item id is
+not in the context) could only end in a text answer: the model could not
+propose the mutation because the id only exists after the tool results.
+
+Now the fold is a **structured** call (new `TURN_FOLD_SYSTEM` prompt in
+`ai/prompts.py`; the plain-text `TURN_FINAL_SYSTEM` variant is gone):
+
+- Call 1: `AssistantTurn` with `data_requests` (no reply) → `TOOL_FOLD`.
+- Read tools run (bounded, deduped, user-scoped) and their results are
+  rendered with the real entity ids.
+- Call 2 (structured fold): returns the final `reply` plus any
+  `actions`/`facts`, where action payloads use only ids shown in the
+  tool results. `data_requests` are not offered and any stray ones are
+  ignored — the turn never loops and never makes a third call.
+- Phase C validates fold actions/facts through the same re-validation
+  path (kind schema, payload schema, optimistic baseline capture,
+  dedupe) as first-call proposals.
+- `TURN_SYSTEM` rule updated: when the referenced item is not in the
+  context and the user asked for a mutation, request the data (the fold
+  resolves the id) instead of only asking for clarification.
+
+Tests (3 new, 5 updated): `test_lookup_then_mutation_in_two_calls`
+(call-1 lookup → fold proposes `update_item` with the real id and
+captured baseline), `test_fold_data_requests_are_ignored` (no third
+call), `test_fold_clarification_used_when_reply_blank`; existing
+fold-path tests now assert the second structured call
+(`structured_calls == 2`, `fold_system`) and
+`test_no_transaction_spans_provider_calls` verifies no transaction spans
+the structured fold either. Verified: 371 pytest pass, Ruff clean.
 
 ## V3 — Priority 8: formal turn state machine
 

@@ -4,8 +4,10 @@ One turn is at most **two** model calls:
 
 1. A structured request returns a typed :class:`AssistantTurn` — a direct
    reply, read-tool data requests, proposed mutations, or a clarification.
-2. Only when the model requested app data does a second (plain) call fold
-   the deterministic read-tool results into a final text reply.
+2. Only when the model requested app data does a second (structured)
+   "fold" call return the final text reply plus any mutation proposals
+   that use the real ids revealed by the deterministic read-tool results
+   (lookup→mutation within the bounded turn).
 
 There is no ReAct loop: tool results are never re-offered for further tool
 requests, and malformed model output fails safely (the turn degrades to a
@@ -26,9 +28,11 @@ Lifecycle::
       -> STRUCTURED (Phase B: one structured call -> typed AssistantTurn)
       -> state classified by :func:`_classify_turn`, exactly one of:
 
-         TOOL_FOLD     run the bounded read tools, then exactly ONE plain
-                       call folding their results into the final reply.
-                       Terminal: the folded reply is the assistant message.
+         TOOL_FOLD     run the bounded read tools, then exactly ONE
+                       structured fold call returning the final reply and
+                       any mutation proposals resolved from the tool
+                       results. Terminal: the folded reply is the
+                       assistant message.
          DIRECT_REPLY  non-blank reply already present. Terminal: the
                        reply is the assistant message.
          CLARIFICATION no reply, non-blank clarification question.
@@ -61,10 +65,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions import get_action_kind, registered_kinds
 from assistant.ai import AIProvider, get_ai_provider
-from assistant.ai.prompts import TURN_FINAL_SYSTEM, TURN_SYSTEM
+from assistant.ai.prompts import TURN_FOLD_SYSTEM, TURN_SYSTEM
 from assistant.ai.schemas import (
     ActionProposal,
     AssistantTurn,
+    FactProposal,
     ReadToolRequest,
 )
 from assistant.i18n import DEFAULT_LANGUAGE, LocalizableError, language_name
@@ -302,7 +307,8 @@ async def run_turn(
     - **Phase A** — short read transaction: build the bounded context, then
       ``commit()`` to release the connection.
     - **Phase B** — the structured model call, the bounded read tools, and
-      the optional second model call, with **no open transaction** (each
+      the optional second (structured fold) model call, with **no open
+      transaction** (each
       read tool's queries run in short transactions of their own; the
       documents tool commits before its embedding call).
     - **Phase C** — short write transaction: persist proposals, proposed
@@ -356,10 +362,16 @@ async def run_turn(
     state = _classify_turn(turn)
 
     reply = turn.reply
+    clarification = turn.clarification
+    fold_actions: list[ActionProposal] = []
+    fold_facts: list[FactProposal] = []
     retrieved: list[files_service.RetrievedChunk] = []
     if state is TurnState.TOOL_FOLD:
         # The only state that makes the second (fold) model call; the
-        # other states are terminal after this structured call.
+        # other states are terminal after the structured call. The fold
+        # is STRUCTURED, so a lookup can be followed by a mutation
+        # proposal that uses the real ids revealed by the tool results
+        # (lookup→mutation within the bounded two-call turn).
         blocks = []
         for req in _dedupe_data_requests(turn.data_requests):
             tool_text, chunks = await run_read_tool(
@@ -378,19 +390,30 @@ async def run_turn(
                 ):
                     retrieved.append(chunk)
         await session.commit()  # release before the second model call
-        reply = await provider.chat(
-            system=TURN_FINAL_SYSTEM.format(
+        fold = await provider.chat_structured(
+            system=TURN_FOLD_SYSTEM.format(
                 tool_results="\n\n".join(blocks) if blocks else "(none)",
+                actions_doc=_actions_doc(),
                 language=language_name(lang),
+                tz=str(tz),
+                now=datetime.now(tz).isoformat(),
             ),
             messages=history,
+            schema=AssistantTurn,
         )
+        # The fold is the last word: no further data requests are
+        # possible (the schema is not offered), and any stray
+        # data_requests it produced are ignored — the turn never loops.
+        reply = fold.reply
+        clarification = fold.clarification or turn.clarification
+        fold_actions = list(fold.actions)
+        fold_facts = list(fold.facts)
         model_calls = 2
 
     # Phase C: short write transaction.
     proposed: list[PendingAction] = []
     skipped: list[ActionProposal] = []
-    for proposal in turn.actions:
+    for proposal in [*turn.actions, *fold_actions]:
         spec = get_action_kind(proposal.kind)
         if spec is None:
             skipped.append(proposal)
@@ -407,7 +430,7 @@ async def run_turn(
         )
 
     proposed_facts: list[UserFact] = []
-    for fact in turn.facts:
+    for fact in [*turn.facts, *fold_facts]:
         created = await facts_service.propose_if_absent(
             session,
             user,
@@ -422,7 +445,7 @@ async def run_turn(
     # clarification) degrades safely: proposals/facts alone are a valid
     # turn, otherwise a localized empty-turn error (Phase C is aborted
     # before any write).
-    final = reply if reply and reply.strip() else turn.clarification
+    final = reply if reply and reply.strip() else clarification
     if final is None:
         if proposed_facts or proposed:
             final = ""
