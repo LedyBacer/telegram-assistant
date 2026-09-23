@@ -1,0 +1,12 @@
+{
+  "name": "telegram-assistant",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:e2e": "playwright test --config=e2e/playwright.config.ts",
+    "smoke": "bash scripts/public_smoke.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}

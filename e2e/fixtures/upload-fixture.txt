@@ -1,0 +1,5 @@
+E2E upload fixture for the Telegram Assistant Mini App.
+
+This small text document is uploaded through the Files screen to verify the
+multipart upload path, the file list rendering, and the queued state badge.
+It is intentionally plain text so the ingestion pipeline can read it.

@@ -1,0 +1,61 @@
+import { defineConfig, devices } from "@playwright/test";
+
+// Isolated port + database for the E2E run so it never collides with a
+// developer's local API or touches the real `assistant` database.
+const E2E_PORT = Number(process.env.E2E_PORT ?? 8123);
+const E2E_DB = process.env.E2E_DATABASE ?? "assistant_e2e";
+const BASE = `http://127.0.0.1:${E2E_PORT}`;
+
+export default defineConfig({
+  testDir: "./tests",
+  testMatch: /\.e2e\.ts$/,
+  // Reset the isolated E2E database (create + migrate + TRUNCATE) before
+  // every run so the scenario assertions start from empty tables.
+  globalSetup: "./global-setup.ts",
+  // Screenshots land in a gitignored artifact dir (see .gitignore).
+  outputDir: "../test-results",
+  fullyParallel: false,
+  workers: 1,
+  retries: 0,
+  forbidOnly: !!process.env.CI,
+  reporter: [["list"]],
+  use: {
+    baseURL: BASE,
+    // Primary mobile viewport (iPhone 14-class). No horizontal overflow is
+    // allowed at this width.
+    viewport: { width: 390, height: 844 },
+    // Deterministic locale/timezone so date formatting assertions are stable.
+    locale: "ru-RU",
+    timezoneId: "UTC",
+    actionTimeout: 15_000,
+    navigationTimeout: 30_000,
+  },
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chromium"] },
+    },
+  ],
+  webServer: {
+    command: "uv run python -m assistant.api.main",
+    cwd: "..",
+    url: `${BASE}/healthz`,
+    reuseExistingServer: !process.env.CI,
+    timeout: 120_000,
+    env: {
+      ...process.env,
+      ASSISTANT_API_PORT: String(E2E_PORT),
+      // Test-only auth: activates the deterministic test user in-process.
+      // Production never sets this, so the bypass cannot activate from a
+      // normal HTTP request.
+      ASSISTANT_TEST_AUTH: "1",
+      DATABASE_URL: `postgresql+asyncpg://assistant:assistant@localhost:5432/${E2E_DB}`,
+      PUBLIC_BASE_URL: BASE,
+      TELEGRAM_BOT_TOKEN: "e2e-test-token",
+      OPENAI_API_KEY: "e2e-key",
+      OPENAI_BASE_URL: "http://127.0.0.1:9/v1",
+      FILE_STORAGE_DIR: "storage/e2e-files",
+      LOG_LEVEL: "WARNING",
+    },
+  },
+});
