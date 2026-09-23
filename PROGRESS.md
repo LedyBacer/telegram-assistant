@@ -410,16 +410,32 @@ confirmed in the catalog.
   override (verified inert in production: 401 without initData),
   390x844 viewport, isolated `assistant_e2e` DB truncated via a single
   `TRUNCATE ... CASCADE` in `e2e/global-setup.ts` (wired as Playwright
-  `globalSetup`), 4 specs / 20-step scenario green, console guard,
+  `globalSetup`), 5 specs green (a11y, 20-step scenario, per-screen
+  audit, screenshots, theme), console guard (suppresses Chromium's
+  spurious `net::ERR_ABORTED` on completed `204 No Content` requests),
   programmatic theme/layout/a11y/touch-target assertions, 6 reference
   screenshots in gitignored `test-artifacts/screenshots/`;
-  `scripts/public_smoke.sh` read-only post-deploy check; README fully
-  updated. Verification: 263 pytest passing (fresh DB), Ruff clean,
-  `docker compose config` valid, full Playwright suite 4/4, smoke PASS,
-  prod-auth negative check 401, working tree clean, nothing pushed.
+  `scripts/public_smoke.sh` read-only post-deploy check (executed against
+  the live public URL: it correctly FAILs there only because the public
+  server still runs a pre-deployment version); README fully updated.
+  The per-screen audit spec found and fixed three real issues:
+  `list_range` now returns items of every status (completed/cancelled
+  items stay on their calendar day so the UI can show a badge and offer
+  deletion), the settings motivation switch got a full 44px hit target
+  (the 30px track is drawn centered inside it), and the audit's flatpickr
+  Escape step focuses the picker input (flatpickr listens for Escape on
+  its input, not the document).
+  Verification: 264 pytest passing (fresh DB), Ruff clean, `docker
+  compose config` valid, full Playwright suite 5/5 (incl. a per-screen
+  audit spec), smoke PASS locally, prod-auth negative check 401, working
+  tree clean, nothing pushed.
 
 ## Next
 
+- Manual deployment of the current `main` to
+  https://telegram-assistant.bacer.ru, then re-run
+  `BASE_URL=https://telegram-assistant.bacer.ru bash
+  scripts/public_smoke.sh` (expected PASS after deploy).
 - Future work (out of scope for this run): real Telegram/OpenAI
   credential smoke tests, HTTPS reverse proxy deployment for the Mini
   App, CI pipeline, observability, additional languages (ru/en

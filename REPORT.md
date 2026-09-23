@@ -397,10 +397,46 @@ only; backend touched in three focused places.
     workflow, and the E2E + smoke-test sections; `PROGRESS.md` updated;
     `.gitignore` covers `test-artifacts/` and `node_modules/`.
 
-Verification state after Milestone 18: **263 tests passing (fresh
+11. **Per-screen audit spec + public-URL check.** `e2e/tests/screens-audit.e2e.ts`
+    adds a programmatic per-screen audit (calendar states + day selection +
+    `has-events` marker, upcoming/new/workouts/files/facts states, file
+    upload with status badge and no storage-path leak, fact exact-text
+    rendering, full task lifecycle create → complete → delete with
+    `alertdialog` confirmation, settings rows for language/timezone/digest
+    time + motivation switch with immediate ru→en→ru UI updates, and
+    touch-target/overflow/forbidden-literal checks on all seven sections).
+    `scripts/public_smoke.sh` was executed read-only against the live public
+    URL: the production server currently runs an **older deployed version**
+    (`/` → 302 via the reverse-proxy workaround, `/miniapp` → 307, new ES
+    module assets 404), so the script correctly reports FAIL until the
+    manual deployment ships this code — exactly its designed post-deploy
+    role (it passes against the current code locally).
+
+12. **Fixes found by the per-screen audit.** Running the audit spec
+    surfaced three real issues, all fixed and covered by tests:
+    (a) `calendar_service.list_range` filtered to `scheduled` items only,
+    so a completed task vanished from the Mini App month view — it now
+    returns items of every status (completed/cancelled items stay on
+    their day with a status badge and a delete action); new regression
+    test `test_list_range_includes_completed`;
+    (b) the settings motivation switch input was 30px tall (below the
+    44px touch-target floor) — it now has a 44px hit target with the
+    30px track drawn centered inside it (`background-size`, knob
+    re-centered);
+    (c) the console guard false-positived on Chromium's spurious
+    `net::ERR_ABORTED` `requestfailed` event for requests that already
+    completed with `204 No Content` (verified: the same request fires
+    both a 204 `response` and the `requestfailed`; the server log shows
+    `DELETE → 204` and the row was deleted) — the guard now suppresses
+    `requestfailed` for any request that produced a response.
+
+Verification state after Milestone 18: **264 tests passing (fresh
 `assistant_test` DB), Ruff clean, `docker compose config` valid, full
-Playwright E2E suite 4/4 at 390x844, `scripts/public_smoke.sh` PASS,
-production-auth negative check 401 without `ASSISTANT_TEST_AUTH`, 6
-reference screenshots in gitignored `test-artifacts/screenshots/`
-(review-only — no visual-inspection claims), working tree clean, nothing
-pushed to any remote.**
+Playwright E2E suite 5/5 at 390x844 (a11y, 20-step scenario, per-screen
+audit, screenshots, theme), `scripts/public_smoke.sh` PASS locally and
+executed read-only against the public URL (FAILs only because the public
+server still runs a pre-deployment version), production-auth negative
+check 401 without `ASSISTANT_TEST_AUTH`, 6 reference screenshots in
+gitignored `test-artifacts/screenshots/` (review-only — no
+visual-inspection claims), working tree clean, nothing pushed to any
+remote.**
