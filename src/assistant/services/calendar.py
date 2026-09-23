@@ -275,6 +275,48 @@ async def list_overdue(
     return list(items)
 
 
+async def resolve_item(
+    session: AsyncSession, user: User, text: str
+) -> tuple[CalendarItem | None, list[CalendarItem]]:
+    """Deterministically resolve a free-text reference to a calendar item.
+
+    Matching is case-insensitive: exact title match wins over substring.
+    Only ``scheduled`` items are resolvable — the user no longer acts on
+    completed/cancelled rows. Returns ``(best, candidates)``:
+
+    - exactly one match: ``(item, [item])``
+    - several matches: ``(None, candidates)`` — ambiguous, let the user
+      choose; candidates ordered by anchor date then id (deterministic)
+    - no match: ``(None, [])``
+    """
+    query = text.strip().casefold()
+    if not query:
+        return None, []
+    rows = (
+        (
+            await session.execute(
+                select(CalendarItem).where(
+                    CalendarItem.user_id == user.id,
+                    CalendarItem.status == ItemStatus.scheduled.value,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    exact = [i for i in rows if i.title.casefold() == query]
+    if not exact:
+        exact = [i for i in rows if query in i.title.casefold()]
+    if len(exact) == 1:
+        return exact[0], exact
+
+    def _anchor(item: CalendarItem) -> tuple[datetime, int]:
+        return (item.starts_at or item.due_at or datetime.max.replace(tzinfo=UTC),
+                item.id)
+
+    return (None, sorted(exact, key=_anchor)) if exact else (None, [])
+
+
 async def list_today(
     session: AsyncSession, user: User
 ) -> list[CalendarItem]:

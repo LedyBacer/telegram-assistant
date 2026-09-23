@@ -200,19 +200,49 @@ async def run_read_tool(
     caller can render deterministic citations (SPEC §6.3).
     """
     if tool == "calendar":
+        resolve_lines: list[str] = []
+        if query:
+            best, candidates = await calendar_service.resolve_item(session, user, query)
+            if best is not None:
+                resolve_lines.append(f"match: {_item_line(best)}")
+            elif candidates:
+                resolve_lines.append(
+                    "ambiguous: "
+                    + "; ".join(f"id={i.id} {i.title}" for i in candidates)
+                )
+            else:
+                resolve_lines.append("match: none")
         today = (await calendar_service.list_today(session, user))[:limit]
         upcoming = (await calendar_service.list_upcoming(session, user))[:limit]
         lines = [
             f"today: {_item_line(i)}" for i in today
         ] + [f"upcoming: {_item_line(i)}" for i in upcoming]
+        lines = resolve_lines + lines
         return ("\n".join(lines) if lines else "(no data)", [])
     if tool == "reminders":
+        resolve_lines = []
+        if query:
+            best, candidates = await reminders_service.resolve_reminder(
+                session, user, query
+            )
+            if best is not None:
+                resolve_lines.append(
+                    f"match: id={best.id} {best.message} at {_fmt_dt(best.fire_at)}"
+                )
+            elif candidates:
+                resolve_lines.append(
+                    "ambiguous: "
+                    + "; ".join(f"id={r.id} {r.message}" for r in candidates)
+                )
+            else:
+                resolve_lines.append("match: none")
         reminders = await reminders_service.list_reminders(
             session, user, status=ReminderStatus.pending, limit=limit
         )
         lines = [
             f"id={r.id} {r.message} at {_fmt_dt(r.fire_at)}" for r in reminders
         ]
+        lines = resolve_lines + lines
         return ("\n".join(lines) if lines else "(no data)", [])
     if tool == "workouts":
         logs = await workouts_service.list_workouts(session, user, limit=limit)

@@ -188,6 +188,42 @@ async def list_reminders(
     return list((await session.scalars(stmt)).all())
 
 
+async def resolve_reminder(
+    session: AsyncSession, user: User, text: str
+) -> tuple[Reminder | None, list[Reminder]]:
+    """Deterministically resolve a free-text reference to a reminder.
+
+    Case-insensitive exact message match, then substring, over ``pending``
+    reminders only. Returns ``(best, candidates)`` with the same semantics
+    as :func:`assistant.services.calendar.resolve_item`: a unique match, an
+    ambiguous candidate list (ordered by fire time then id), or no match.
+    """
+    query = text.strip().casefold()
+    if not query:
+        return None, []
+    rows = (
+        (
+            await session.execute(
+                select(Reminder).where(
+                    Reminder.user_id == user.id,
+                    Reminder.status == ReminderStatus.pending.value,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    exact = [r for r in rows if r.message.casefold() == query]
+    if not exact:
+        exact = [r for r in rows if query in r.message.casefold()]
+    if len(exact) == 1:
+        return exact[0], exact
+    return (None, sorted(exact, key=lambda r: (r.fire_at, r.id))) if exact else (
+        None,
+        [],
+    )
+
+
 async def cancel_reminder(
     session: AsyncSession, user: User, reminder_id: int
 ) -> Reminder | None:

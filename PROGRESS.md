@@ -1,9 +1,34 @@
 # Progress
 
-Status: V3 PRIORITY 9 COMPLETE (lookup→mutation works within the bounded
-two-call architecture — the TOOL_FOLD second call is structured and can
-propose mutations using ids revealed by the read tools).
-Next: V3 Priority 10 (read tools + deterministic entity resolution).
+Status: V3 PRIORITY 10 COMPLETE (deterministic entity resolution: read
+tools answer name references like "move standup" with an unambiguous
+match/ambiguous/no-match line before the plain listings).
+Next: V3 Priority 11 (real recent-entity references).
+
+## V3 — Priority 10: read tools + deterministic entity resolution
+
+Previously the calendar/reminders read tools dumped listings and relied
+on the model to pick the entity the user referenced by name. Resolution
+is now deterministic in the service layer:
+
+- `calendar_service.resolve_item(session, user, text)`:
+  case-insensitive exact title match, then substring, over **scheduled**
+  items only. Returns `(best, candidates)`: unique match, ambiguous
+  candidate list (sorted by anchor date then id), or no match.
+- `reminders_service.resolve_reminder(...)`: same semantics over
+  **pending** reminder messages, candidates ordered by `fire_at` then id.
+- `run_read_tool` (calendar and reminders tools): when the model passes a
+  `query`, the output starts with a resolution line — `match: <entity
+  with id>`, `ambiguous: id=.., id=..`, or `match: none` — followed by the
+  usual listings, so the model gets exactly one unambiguous id to use.
+- `TURN_SYSTEM` / `TURN_FOLD_SYSTEM` prompts document the three line
+  forms: use the matched id, set `clarification` on `ambiguous:`, and
+  never guess.
+
+Tests (5 new): exact/substring/empty/no-match resolution, ambiguous
+candidate ordering, completed items excluded, pending-only reminder
+matching, and the rendered `match:`/`ambiguous:`/`match: none` lines in
+both read tools. Verified: 376 pytest pass, Ruff clean.
 
 ## V3 — Priority 9: lookup→mutation within the bounded two-call turn
 

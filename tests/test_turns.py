@@ -35,6 +35,7 @@ from assistant.services import actions as actions_service
 from assistant.services import calendar as calendar_service
 from assistant.services import facts as facts_service
 from assistant.services import files as files_service
+from assistant.services import reminders as reminders_service
 from assistant.services import turns as turns_service
 from assistant.services import workouts as workouts_service
 from assistant.services.turns import TurnState
@@ -322,6 +323,132 @@ async def test_read_tool_unknown_returns_placeholder(
     out, chunks = await turns_service.run_read_tool(session, user, tool="nope")
     assert out == "(unknown tool)"
     assert chunks == []
+
+
+# ---------------------------------------------------------------------------
+# Engine: deterministic entity resolution (P10)
+# ---------------------------------------------------------------------------
+
+
+async def _reminder(
+    session: AsyncSession, user: User, message: str, offset_minutes: int = 60
+):
+    reminder = await reminders_service.create_reminder(
+        session,
+        user,
+        fire_at=datetime.now(tz=UTC) + timedelta(minutes=offset_minutes),
+        message=message,
+    )
+    await session.commit()
+    return reminder
+
+
+async def test_resolve_item_exact_and_substring(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await calendar_service.create_item(
+        session, user, title="Standup", kind=ItemKind.event
+    )
+    await calendar_service.create_item(session, user, title="Lunch break")
+    await session.commit()
+
+    best, candidates = await calendar_service.resolve_item(session, user, "standup")
+    assert best is not None and best.id == item.id
+    assert [c.id for c in candidates] == [item.id]
+
+    # Substring match also resolves uniquely.
+    best, _ = await calendar_service.resolve_item(session, user, "stand")
+    assert best is not None and best.id == item.id
+
+    # Empty / no-match queries never invent an entity.
+    assert await calendar_service.resolve_item(session, user, "  ") == (None, [])
+    assert await calendar_service.resolve_item(session, user, "nope") == (None, [])
+
+
+async def test_resolve_item_ambiguous_lists_candidates(session: AsyncSession) -> None:
+    user = await _user(session)
+    await calendar_service.create_item(session, user, title="Gym session")
+    await calendar_service.create_item(session, user, title="Gym morning")
+    await session.commit()
+
+    best, candidates = await calendar_service.resolve_item(session, user, "gym")
+    assert best is None
+    assert [c.title for c in candidates] == ["Gym session", "Gym morning"]
+
+
+async def test_resolve_item_ignores_completed(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await calendar_service.create_item(session, user, title="Done task")
+    await calendar_service.complete_item(session, user, item.id)
+    await session.commit()
+
+    best, candidates = await calendar_service.resolve_item(session, user, "done")
+    assert best is None and candidates == []
+
+
+async def test_resolve_reminder_unique_and_ambiguous(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    await _reminder(session, user, "Call dentist", 60)
+    bank = await _reminder(session, user, "Call bank", 90)
+    await _reminder(session, user, "Call dentist again", 120)
+
+    best, candidates = await reminders_service.resolve_reminder(
+        session, user, "call bank"
+    )
+    assert best is not None and best.id == bank.id
+
+    best, candidates = await reminders_service.resolve_reminder(
+        session, user, "dentist"
+    )
+    assert best is None
+    assert [c.message for c in candidates] == [
+        "Call dentist",
+        "Call dentist again",
+    ]
+    assert await reminders_service.resolve_reminder(session, user, "nope") == (
+        None,
+        [],
+    )
+
+
+async def test_read_tools_render_resolution_line(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await calendar_service.create_item(
+        session, user, title="Standup", kind=ItemKind.event
+    )
+    gym_session = await calendar_service.create_item(
+        session, user, title="Gym session"
+    )
+    gym_morning = await calendar_service.create_item(
+        session, user, title="Gym morning"
+    )
+    reminder = await _reminder(session, user, "Water plants")
+    await session.commit()
+
+    out, _ = await turns_service.run_read_tool(
+        session, user, tool="calendar", query="standup"
+    )
+    first = out.splitlines()[0]
+    assert first.startswith(f"match: id={item.id} Standup")
+
+    out, _ = await turns_service.run_read_tool(
+        session, user, tool="calendar", query="gym"
+    )
+    assert out.splitlines()[0] == (
+        f"ambiguous: id={gym_session.id} Gym session; "
+        f"id={gym_morning.id} Gym morning"
+    )
+
+    out, _ = await turns_service.run_read_tool(
+        session, user, tool="calendar", query="nope"
+    )
+    assert out.splitlines()[0] == "match: none"
+
+    out, _ = await turns_service.run_read_tool(
+        session, user, tool="reminders", query="water"
+    )
+    assert out.splitlines()[0].startswith(f"match: id={reminder.id} Water plants")
 
 
 # ---------------------------------------------------------------------------
