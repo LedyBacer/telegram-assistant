@@ -68,7 +68,8 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
 
 @dataclass(slots=True)
 class TurnResult:
-    """The engine's outcome for one turn (flush only; caller commits)."""
+    """The engine's outcome for one turn (written in Phase C and committed
+    by :func:`run_turn`; the caller's final commit is a no-op)."""
 
     reply: str
     proposed_actions: list[PendingAction] = field(default_factory=list)
@@ -222,12 +223,26 @@ async def run_turn(
     *,
     provider: AIProvider | None = None,
 ) -> TurnResult:
-    """One bounded conversational turn (flush only; caller owns the commit).
+    """One bounded conversational turn (Phase A/B/C transaction layout).
+
+    No PostgreSQL transaction (and therefore no pooled connection) is held
+    while waiting on model or embedding network I/O — the same pattern the
+    worker job handlers use for Telegram sends:
+
+    - **Phase A** — short read transaction: build the bounded context, then
+      ``commit()`` to release the connection.
+    - **Phase B** — the structured model call, the bounded read tools, and
+      the optional second model call, with **no open transaction** (each
+      read tool's queries run in short transactions of their own; the
+      documents tool commits before its embedding call).
+    - **Phase C** — short write transaction: persist proposals, proposed
+      facts, and the chat messages, then ``commit()``.
 
     Persists the user message and the assistant reply. Raises
     :class:`LocalizableError` (``chat.empty_turn``) when the model produced
     no usable output, and re-raises ``AIProviderError`` so the caller can
-    apply its fallback.
+    apply its fallback; on both failure paths nothing from Phase C is
+    committed, leaving the caller's session clean for its own writes.
     """
     text = (text or "").strip()
     if not text:
@@ -236,6 +251,7 @@ async def run_turn(
     tz = _user_tz(user)
     lang = _user_lang(user)
 
+    # Phase A: short read transaction.
     ctx = await chat_service.build_context(session, user, text, provider=provider)
     history = [
         {"role": m.role, "content": m.content}
@@ -243,10 +259,13 @@ async def run_turn(
         if m.role in (ChatRole.user.value, ChatRole.assistant.value)
     ]
     history.append({"role": ChatRole.user.value, "content": text})
+    context_block = chat_service.render_context(ctx)
+    await session.commit()  # release the connection before any model I/O
 
+    # Phase B: model calls and read tools with no open transaction.
     turn = await provider.chat_structured(
         system=TURN_SYSTEM.format(
-            context=chat_service.render_context(ctx),
+            context=context_block,
             actions_doc=_actions_doc(),
             tools_doc=_tools_doc(),
             language=language_name(lang),
@@ -263,7 +282,7 @@ async def run_turn(
     if turn.data_requests and not reply:
         blocks = []
         for req in _dedupe_data_requests(turn.data_requests):
-            text, chunks = await run_read_tool(
+            tool_text, chunks = await run_read_tool(
                 session,
                 user,
                 tool=req.tool,
@@ -271,13 +290,14 @@ async def run_turn(
                 limit=req.limit,
                 provider=provider,
             )
-            blocks.append(f"[{req.tool}]\n{text}")
+            blocks.append(f"[{req.tool}]\n{tool_text}")
             for chunk in chunks:
                 if not any(
                     r.file_id == chunk.file_id and r.position == chunk.position
                     for r in retrieved
                 ):
                     retrieved.append(chunk)
+        await session.commit()  # release before the second model call
         reply = await provider.chat(
             system=TURN_FINAL_SYSTEM.format(
                 tool_results="\n\n".join(blocks) if blocks else "(none)",
@@ -287,6 +307,7 @@ async def run_turn(
         )
         model_calls = 2
 
+    # Phase C: short write transaction.
     proposed: list[PendingAction] = []
     skipped: list[ActionProposal] = []
     for proposal in turn.actions:
@@ -341,7 +362,7 @@ async def run_turn(
                 source="ai",
             )
         )
-    await session.flush()
+    await session.commit()
     return TurnResult(
         reply=final,
         proposed_actions=proposed,

@@ -719,3 +719,53 @@ async def test_documents_tool_is_user_scoped(session: AsyncSession) -> None:
     )
     assert out == "(no data)"
     assert chunks == []
+
+
+async def test_no_transaction_spans_provider_calls(session: AsyncSession) -> None:
+    """Phase A/B/C: no DB transaction is open during the structured model
+    call, the documents tool's embedding call, or the second model call."""
+    user = await _user(session)
+    await _indexed_file(
+        session, user, filename="warranty.txt",
+        texts=["the warranty covers repairs for two years"],
+    )
+    provider = _FakeProvider(
+        AssistantTurn(
+            data_requests=[
+                ReadToolRequest(tool="documents", query="warranty repairs")
+            ]
+        ),
+        reply="folded",
+    )
+    observed: dict[str, bool] = {}
+
+    orig_structured = provider.chat_structured
+    orig_chat = provider.chat
+    orig_embed = provider.embed_query
+
+    async def structured(*, system, messages, schema):
+        observed["structured"] = session.in_transaction()
+        return await orig_structured(
+            system=system, messages=messages, schema=schema
+        )
+
+    async def plain_chat(*, system, messages):
+        observed["chat"] = session.in_transaction()
+        return await orig_chat(system=system, messages=messages)
+
+    async def embed(**kwargs):
+        observed["embed"] = session.in_transaction()
+        return await orig_embed(**kwargs)
+
+    provider.chat_structured = structured
+    provider.chat = plain_chat
+    provider.embed_query = embed
+
+    result = await turns_service.run_turn(
+        session, user, "what about warranty repairs?", provider=provider
+    )
+    await session.commit()
+
+    assert observed == {"structured": False, "embed": False, "chat": False}
+    assert result.model_calls == 2
+    assert len(result.retrieved_chunks) == 1

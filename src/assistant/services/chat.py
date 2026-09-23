@@ -157,8 +157,11 @@ async def chat(
     *,
     provider: AIProvider | None = None,
 ) -> str:
-    """One conversational turn: build context, call the provider, and persist
-    both messages (flush only; the caller owns the transaction).
+    """One conversational turn (Phase A/B/C transaction layout).
+
+    Builds the context and ``commit()``s (Phase A) so no transaction spans
+    the model network call (Phase B), then persists both messages in a
+    short write transaction and ``commit()``s (Phase C).
 
     On provider failure nothing is persisted here and the AIProviderError is
     re-raised; the caller decides the fallback (e.g. persist the user message
@@ -182,13 +185,14 @@ async def chat(
         if user.settings is not None
         else DEFAULT_LANGUAGE
     )
-    reply = await provider.chat(
-        system=CHAT_SYSTEM.format(
-            context=render_context(ctx),
-            language=language_name(lang),
-        ),
-        messages=history,
+    system = CHAT_SYSTEM.format(
+        context=render_context(ctx),
+        language=language_name(lang),
     )
+    await session.commit()  # Phase A: release the connection before model I/O
+
+    reply = await provider.chat(system=system, messages=history)
+
     session.add(
         ChatMessage(
             user_id=user.id,
@@ -205,5 +209,5 @@ async def chat(
             source="ai",
         )
     )
-    await session.flush()
+    await session.commit()
     return reply

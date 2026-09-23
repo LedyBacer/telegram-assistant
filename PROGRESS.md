@@ -1,8 +1,45 @@
 # Progress
 
-Status: V3 PRIORITY 6 COMPLETE (honest delivery semantics — reminders and
-digests are durable at-least-once, nudges are at-most-once). Next: V3
-Priority 7 (remove long DB transactions around AI/network I/O).
+Status: V3 PRIORITY 7 COMPLETE (no DB transaction spans AI/network I/O —
+the bot turn lifecycle is now Phase A/B/C like the worker job handlers).
+Next: V3 Priority 8 (conversational engine V3 formal turn state machine).
+
+## V3 — Priority 7: remove long DB transactions around AI/network I/O
+
+Previously the bot middleware's per-update session stayed in ONE open
+PostgreSQL transaction across the whole turn: context reads, the structured
+model call, the read tools (including the documents tool's embedding call),
+the second model call, and the writes — a pooled connection held for the
+entire (potentially tens-of-seconds) AI round trip.
+
+Now the request lifecycle follows the same Phase A/B/C layout the worker
+job handlers already use (commit → network I/O with no tx → short final tx):
+
+- **`turns.run_turn`** (the bot's `on_text` path):
+  - Phase A — build the bounded context, then `commit()` to release the
+    connection before any model I/O.
+  - Phase B — `chat_structured`, the bounded read tools, and the optional
+    second `chat` all run with **no open transaction**; the tool loop is
+    followed by a `commit()` so the second model call also starts clean.
+  - Phase C — proposals, proposed facts, and the chat messages are written
+    and committed in one short transaction. On `AIProviderError` /
+    `LocalizableError` nothing from Phase C is committed, so the handler's
+    fallback (persist the user message + localized reply) works unchanged
+    and the middleware's final commit is a no-op.
+- **`files.retrieve_chunks`**: commits after the lexical candidate query,
+  so the embedding network call no longer runs inside the lexical read
+  transaction. All three call sites (documents read tool,
+  `build_context(retrieve=True)`, the API search route) are read-only at
+  that point, so the internal commit is safe.
+- **`chat.chat`** (legacy single-call path): same Phase A/B/C treatment —
+  context read + commit, model call, write + commit.
+- The file-ingestion pipeline (`files._run_pipeline`) was verified to
+  already commit before every external I/O (download/embed) — unchanged.
+
+New regression test: `test_no_transaction_spans_provider_calls` asserts
+`session.in_transaction()` is False inside the structured call, the
+documents tool's `embed_query`, and the second plain call.
+Verified: 361 pytest pass, Ruff clean.
 
 ## V3 — Priority 6: honest Telegram delivery semantics
 

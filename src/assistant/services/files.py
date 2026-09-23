@@ -704,6 +704,9 @@ async def retrieve_chunks(
         return []
 
     lexical = await _lexical_candidates(session, user, query)
+    # Phase A/B/C: release the read transaction before the embedding network
+    # call so no DB connection is held across provider I/O.
+    await session.commit()
     vector: list[tuple[FileChunk, str]] = []
     try:
         vector = await _vector_candidates(session, user, query, provider)
