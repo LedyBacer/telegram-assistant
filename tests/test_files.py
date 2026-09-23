@@ -70,12 +70,31 @@ def _marker_vector(marker: int) -> list[float]:
     return vec
 
 
+class _MultiLingualEmbedder:
+    """Embedder that treats EN/ES/RU 'coffee' terms as one shared semantic
+    concept (one-hot marker 1). Cross-language retrieval is therefore pure
+    vector closeness with no lexical overlap to fall back on."""
+
+    _COFFEE = {"coffee", "café", "кофе", "kaffee"}
+
+    async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
+        return [_marker_vector(self._marker(t)) for t in texts]
+
+    async def embed_query(self, *, query: str) -> list[float]:
+        return _marker_vector(self._marker(query))
+
+    @classmethod
+    def _marker(cls, text: str) -> int:
+        return 1 if {w for w in text.lower().split() if w in cls._COFFEE} else 2
+
+
 async def _indexed_file(
     session: AsyncSession,
     user: User,
     *,
     filename: str,
     texts: list[str],
+    marker_fn: Any = _FakeEmbedder._marker,
 ) -> UserFile:
     """Insert a file with pre-indexed chunks (bypasses the pipeline)."""
     file = UserFile(
@@ -96,7 +115,7 @@ async def _indexed_file(
                 position=position,
                 text=text,
                 char_count=len(text),
-                embedding=_marker_vector(_FakeEmbedder._marker(text)),
+                embedding=_marker_vector(marker_fn(text)),
             )
         )
     await session.commit()
@@ -437,8 +456,11 @@ async def test_cancelled_ingest_does_not_commit_chunks(
 # ---------------------------------------------------------------------------
 
 
-async def test_retrieval_is_user_scoped_and_fuses_hybrid(session) -> None:
+async def test_retrieval_is_user_scoped_and_fuses_hybrid(session, monkeypatch) -> None:
     """Scores are RRF scores; results never cross user boundaries (SPEC §6)."""
+    # The fusion demonstration needs the off-marker "coffee" chunk (cosine
+    # distance 1) to survive the vector arm, so widen the relevance bound.
+    monkeypatch.setattr(get_settings(), "retrieval_max_distance", 1.5)
     user = await _user(session, user_id=51)
     other = await _user(session, user_id=52)
 
@@ -476,8 +498,10 @@ async def test_no_lexical_overlap_still_runs_vector_arm(session) -> None:
     still embeds and can surface a semantically-nearest chunk via the vector
     arm (previously the lexical gate returned [] without any embedding call)."""
     user = await _user(session)
+    # Marker 2 (no "quantum"/"coffee"), sharing no words with the query, so it
+    # can only be reached by the vector arm. Same marker -> distance 0 < bound.
     await _indexed_file(
-        session, user, filename="quantum-notes.md", texts=["quantum entanglement basics"]
+        session, user, filename="journal.md", texts=["daily habits and reflection journal"]
     )
     embedder = _FakeEmbedder()
 
@@ -485,10 +509,57 @@ async def test_no_lexical_overlap_still_runs_vector_arm(session) -> None:
     # but the vector arm embeds and returns the only candidate.
     results = await files.retrieve_chunks(session, user, "good morning", provider=embedder)
 
-    assert [r.file_name for r in results] == ["quantum-notes.md"]
+    assert [r.file_name for r in results] == ["journal.md"]
     # Vector rank 1 only (no lexical contribution) -> 1/(RRF_K+1).
     assert results[0].score == pytest.approx(1 / (files.RRF_K + 1))
+    # Distance is tracked for the vector-recalled chunk.
+    assert results[0].distance == pytest.approx(0.0)
     assert embedder.query_calls == ["good morning"]
+
+
+async def test_offtopic_vector_candidate_dropped_by_distance_bound(session) -> None:
+    """Meaningful relevance bound (SPEC §17): the nearest-but-unrelated vector
+    candidate (cosine distance 1 > default 0.9) with no lexical overlap is
+    dropped, while the genuinely relevant chunk is kept."""
+    user = await _user(session)
+    # "coffee" chunk: off-topic (marker 1) for a "quantum" query -> distance 1,
+    # and it shares no words with the query (no lexical rescue).
+    await _indexed_file(session, user, filename="coffee.txt", texts=["coffee brewing guide"])
+    # Relevant chunk: marker 0, distance 0, and lexical overlap with "quantum".
+    await _indexed_file(
+        session, user, filename="quantum-notes.md", texts=["quantum entanglement basics"]
+    )
+    results = await files.retrieve_chunks(session, user, "quantum", provider=_FakeEmbedder())
+    assert [r.file_name for r in results] == ["quantum-notes.md"]
+
+
+async def test_cross_language_relevance_via_vector_arm(session) -> None:
+    """Multilingual relevance (SPEC §13, §17): a query in one language retrieves
+    an off-topic-free chunk in another language purely by vector closeness, with
+    no lexical overlap and no shared keywords across languages."""
+    user = await _user(session)
+    # "café" (ES) and "кофе" (RU) share no ASCII words with the EN query
+    # "coffee", but a multilingual embedding places them near it.
+    await _indexed_file(
+        session,
+        user,
+        filename="es-cafe.md",
+        texts=["cómo preparar café"],
+        marker_fn=_MultiLingualEmbedder._marker,
+    )
+    await _indexed_file(
+        session,
+        user,
+        filename="ru-kofe.md",
+        texts=["как приготовить кофе"],
+        marker_fn=_MultiLingualEmbedder._marker,
+    )
+
+    results = await files.retrieve_chunks(session, user, "coffee", provider=_MultiLingualEmbedder())
+    # Both chunks are semantically relevant (distance 0), no lexical match.
+    assert sorted(r.file_name for r in results) == ["es-cafe.md", "ru-kofe.md"]
+    for r in results:
+        assert r.distance == pytest.approx(0.0)
 
 
 async def test_no_match_on_either_arm_returns_empty(session) -> None:

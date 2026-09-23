@@ -1,12 +1,41 @@
 # Progress
 
-Status: V3 PRIORITY 17 COMPLETE (RAG V3 — removed the lexical prerequisite:
-the lexical full-text arm and the pgvector cosine arm now run independently
-and are fused with RRF, so a semantically-relevant chunk that shares no exact
-words with the query is no longer dropped; the result is empty only when both
-arms are empty, and an embedding outage degrades to lexical-only).
-Next: V3 Priority 18 (meaningful relevance filtering — track vector distance
-separately; configurable relevance policy; multilingual tests).
+Status: V3 PRIORITY 18 COMPLETE (RAG V3 — meaningful relevance filtering:
+the vector arm tracks each candidate's cosine distance and drops candidates
+beyond the configurable `retrieval_max_distance` bound (default 0.9), so a
+semantically off-topic search no longer returns its nearest-but-unrelated
+chunks; lexical keyword candidates are always kept; the fused result exposes
+the chunk's best vector distance; cross-language relevance is covered by a
+multilingual test).
+Next: V3 Priority 19 (improve lexical retrieval — OR-style / normalized terms,
+PostgreSQL-only).
+
+## V3 — Priority 18: meaningful relevance filtering
+
+A pure nearest-K vector recall returns its top-K even for a semantically
+off-topic query, which degrades answer quality (the "nearest" chunk can be
+unrelated). Retrieval now applies a configurable meaningful-relevance bound.
+
+- **Configurable policy**: `settings.retrieval_max_distance` (default 0.9,
+  0 = identical, 1 = orthogonal, 2 = opposite). The vector arm keeps only
+  candidates whose cosine distance to the query is `<= retrieval_max_distance`.
+  Lexical (keyword-overlap) candidates are always kept regardless of the bound.
+- **Distance tracked separately**: `RetrievedChunk.distance` records each
+  fused chunk's best (minimum) vector-arm cosine distance (`None` for a
+  lexical-only recall); `_vector_candidates` returns distance per candidate
+  and `_fuse` / `_merge_adjacent` preserve it through fusion and merging.
+- **Multilingual relevance**: cross-language recall works purely by vector
+  closeness (multilingual-e5-small), independent of the lexical arm.
+
+Tests (`test_files.py`): `test_offtopic_vector_candidate_dropped_by_distance_bound`
+(distance-1 vector-only candidate dropped, relevant chunk kept);
+`test_cross_language_relevance_via_vector_arm` (EN query retrieves ES/RU chunks
+by vector closeness with no lexical overlap, distance 0);
+`test_no_lexical_overlap_still_runs_vector_arm` now also asserts the tracked
+distance; `test_retrieval_is_user_scoped_and_fuses_hybrid` widens the bound to
+1.5 so the off-marker fusion demonstration still surfaces.
+Amended `docs/ASSUMPTIONS.md` #26 (configurable relevance policy).
+Verified: 404 pytest pass, Ruff clean.
 
 ## V3 — Priority 17: RAG — remove the lexical prerequisite
 

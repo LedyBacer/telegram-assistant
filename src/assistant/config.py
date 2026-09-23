@@ -94,6 +94,14 @@ class Settings(BaseSettings):
     file_storage_dir: str = "storage/files"
     embedding_batch_size: int = 64
 
+    # Retrieval relevance policy (SPEC §13, §17): a vector candidate is only
+    # "meaningfully relevant" when its cosine distance to the query is within
+    # this bound (0 = identical, 1 = orthogonal, 2 = opposite). Candidates
+    # beyond it are dropped, so a search that is semantically off-topic does
+    # not return its nearest-but-unrelated chunks. Lexical (keyword-overlap)
+    # candidates are always kept regardless of this bound.
+    retrieval_max_distance: float = Field(default=0.9, ge=0.0, le=2.0)
+
     # Contextual chat
     chat_history_messages: int = 10
 

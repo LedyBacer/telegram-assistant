@@ -61,13 +61,20 @@ class FileUploadError(ValueError):
 
 @dataclass(slots=True)
 class RetrievedChunk:
-    """A retrieved chunk plus the source file it came from (for citations)."""
+    """A retrieved chunk plus the source file it came from (for citations).
+
+    ``score`` is the fused RRF score (higher is better). ``distance`` is the
+    cosine distance of the chunk from the query in the vector arm (lower is
+    better); it is ``None`` for chunks that were recalled lexically only
+    (keyword overlap, no vector score).
+    """
 
     file_id: int
     file_name: str
     position: int
     text: str
     score: float
+    distance: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -581,14 +588,21 @@ async def _vector_candidates(
     user: User,
     query: str,
     provider: AIProvider,
-) -> list[tuple[FileChunk, str]]:
-    """User chunks nearest the query embedding (cosine distance asc)."""
+) -> list[tuple[FileChunk, str, float]]:
+    """User chunks nearest the query embedding, with their cosine distance.
+
+    Candidates are ranked by distance ascending and filtered to those within
+    ``settings.retrieval_max_distance`` (the meaningful-relevance bound,
+    SPEC §13, §17): a semantically off-topic chunk is never returned just
+    because it happens to be the nearest.
+    """
     query_vec = await provider.embed_query(query=query)
+    max_distance = get_settings().retrieval_max_distance
     distance = FileChunk.embedding.cosine_distance(query_vec).label("distance")
     rows = (
         (
             await session.execute(
-                select(FileChunk, UserFile.original_filename)
+                select(FileChunk, UserFile.original_filename, distance)
                 .join(UserFile, FileChunk.file_id == UserFile.id)
                 .where(
                     FileChunk.user_id == user.id,
@@ -600,17 +614,26 @@ async def _vector_candidates(
         )
         .all()
     )
-    return [(chunk, name) for chunk, name in rows]
+    return [
+        (chunk, name, float(dist))
+        for chunk, name, dist in rows
+        if dist is not None and float(dist) <= max_distance
+    ]
 
 
 def _fuse(
     lexical: list[tuple[FileChunk, str]],
-    vector: list[tuple[FileChunk, str]],
+    vector: list[tuple[FileChunk, str, float]],
 ) -> list[RetrievedChunk]:
-    """Reciprocal Rank Fusion of the two ranked candidate lists."""
+    """Reciprocal Rank Fusion of the two ranked candidate lists.
+
+    Each fused chunk records its best (minimum) vector-arm cosine distance so
+    the meaningful-relevance bound is observable downstream; a chunk recalled
+    lexically only keeps ``distance=None``.
+    """
     fused: dict[int, RetrievedChunk] = {}
 
-    def _add(chunk: FileChunk, name: str, rank: int) -> None:
+    def _add(chunk: FileChunk, name: str, rank: int, dist: float | None) -> None:
         entry = fused.get(chunk.id)
         if entry is None:
             entry = RetrievedChunk(
@@ -619,14 +642,17 @@ def _fuse(
                 position=chunk.position,
                 text=chunk.text,
                 score=0.0,
+                distance=dist,
             )
             fused[chunk.id] = entry
         entry.score += 1.0 / (RRF_K + rank)
+        if dist is not None and (entry.distance is None or dist < entry.distance):
+            entry.distance = dist
 
     for rank, (chunk, name) in enumerate(lexical, start=1):
-        _add(chunk, name, rank)
-    for rank, (chunk, name) in enumerate(vector, start=1):
-        _add(chunk, name, rank)
+        _add(chunk, name, rank, None)
+    for rank, (chunk, name, dist) in enumerate(vector, start=1):
+        _add(chunk, name, rank, dist)
 
     kept = [c for c in fused.values() if c.score >= RRF_MIN_SCORE]
     kept.sort(key=lambda c: (-c.score, c.file_name, c.position))
@@ -645,6 +671,10 @@ def _merge_adjacent(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
         ):
             prev.text = f"{prev.text} {chunk.text}"[:MERGED_TEXT_LIMIT]
             prev.score = max(prev.score, chunk.score)
+            if prev.distance is None or (
+                chunk.distance is not None and chunk.distance < prev.distance
+            ):
+                prev.distance = chunk.distance
         else:
             merged.append(
                 RetrievedChunk(
@@ -653,6 +683,7 @@ def _merge_adjacent(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
                     position=chunk.position,
                     text=chunk.text,
                     score=chunk.score,
+                    distance=chunk.distance,
                 )
             )
     return merged
@@ -694,7 +725,7 @@ async def retrieve_chunks(
     # Phase A/B/C: release the read transaction before the embedding network
     # call so no DB connection is held across provider I/O.
     await session.commit()
-    vector: list[tuple[FileChunk, str]] = []
+    vector: list[tuple[FileChunk, str, float]] = []
     try:
         vector = await _vector_candidates(session, user, query, provider)
     except AIProviderError:
