@@ -598,21 +598,18 @@ async def confirm_action(
     terminal for the bot and vice versa.
 
     Replaying confirmation on an already-executed action returns the stored
-    state (execution itself is idempotent, SPEC §3)."""
-    action = await actions_service.get_action(session, user, action_id)
-    if action is None:
+    state (execution itself is idempotent, SPEC §3). The confirm+execute runs
+    under a row lock (:func:`confirm_and_execute_action`), so concurrent
+    double-clicks cannot double-apply the mutation."""
+    pre = await actions_service.get_action(session, user, action_id)
+    if pre is None:
         raise _not_found()
-    if action.status in (ActionStatus.rejected.value, ActionStatus.expired.value):
-        raise HTTPException(status_code=400, detail=f"action is {action.status}")
     try:
-        if action.status == ActionStatus.proposed.value:
-            action = await actions_service.confirm_action(session, user, action_id)
-        if action.status == ActionStatus.confirmed.value:
-            action, _result = await actions_service.execute_action(
-                session, user, action_id
-            )
+        action, _result = await actions_service.confirm_and_execute_action(
+            session, user, action_id
+        )
     except ActionStaleError as exc:
-        # execute_action marked the action ``expired`` in this transaction;
+        # The service marked the action ``expired`` in this transaction;
         # persist it before raising, because the session dependency rolls
         # back uncommitted work when the handler exits with an exception
         # (the action would otherwise stay proposed forever).
@@ -621,7 +618,10 @@ async def confirm_action(
             status_code=409, detail="proposal no longer applies to current data"
         ) from exc
     except ValueError as exc:
-        # Same: a malformed payload expires the action in-transaction.
+        # Rejected/expired/no-longer-valid: persist any in-transaction expiry
+        # the service recorded, then 400. (Not-found is handled above via the
+        # pre-check; the service re-check only re-raises it in a delete race,
+        # which we treat as "unavailable".)
         await session.commit()
         raise _bad_request(exc) from exc
     await session.commit()

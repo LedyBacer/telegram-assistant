@@ -1,7 +1,33 @@
 # Progress
 
-Status: V3 PRIORITY 1 COMPLETE (worker transaction ownership). Next: V3
-Priority 2 (atomic PendingAction lifecycle + TTL/concurrency).
+Status: V3 PRIORITY 2 COMPLETE (atomic PendingAction lifecycle +
+concurrency). Next: V3 Priority 3 (expiry semantics — no secret mutation in
+read paths).
+
+## V3 — Priority 2: atomic PendingAction confirm + execute
+
+Confirm and execute are now one atomic, row-locked unit so a double-click
+(the same action confirmed from the Telegram bot and the Mini App, or two
+racing requests) cannot double-apply a non-idempotent mutation (SPEC §3):
+
+- `services/actions.confirm_and_execute_action()` loads the action row with
+  `session.get(..., with_for_update=True)` (a `SELECT ... FOR UPDATE`), then
+  lazily expires, idempotently returns a stored `last_result` for an
+  `executed` action, rejects terminal states, transitions
+  `proposed` → `confirmed`, and delegates to `execute_action` in the same
+  transaction. Two concurrent calls serialize on the row lock: the first
+  confirms + executes + commits; the second re-reads the terminal row and
+  returns the stored result without re-applying.
+- `api/routes.py` `POST /actions/{id}/confirm` and
+  `bot/handlers.py` `on_action` confirm branch both now use the atomic path.
+  `ActionStaleError` commits the in-transaction expiry then 409; `ValueError`
+  (rejected/expired/no-longer-valid) commits then 400.
+
+Tests (`tests/test_actions.py`): `test_confirm_and_execute_is_idempotent`
+(second call returns the stored result, item not re-moved) and
+`test_concurrent_confirm_executes_once` (two `asyncio.gather` sessions each on
+their own connection race a `create_item` action; the FOR UPDATE lock serializes
+them and the mutation lands exactly once). Verified: 356 pytest pass, Ruff clean.
 
 ## V3 — Priority 1: worker transaction ownership (commit this session)
 

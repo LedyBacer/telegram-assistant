@@ -217,6 +217,47 @@ async def execute_action(
     return action, result
 
 
+async def confirm_and_execute_action(
+    session: AsyncSession, user: User, action_id: int
+) -> tuple[PendingAction, dict | list | str | int | float | None]:
+    """Confirm (when proposed) and execute an action atomically under a row lock.
+
+    The action row is locked with ``SELECT ... FOR UPDATE`` for the whole
+    transaction, so two concurrent confirmations of the same action serialize:
+    the first confirms + executes + commits; the second blocks on the row lock,
+    then re-reads the now-terminal row and returns the stored result WITHOUT
+    re-applying the mutation. This makes confirm+execute concurrency-safe
+    (SPEC §3) — a double-click cannot create a duplicate mutation.
+
+    Raises ValueError when the action is missing, was rejected, expired, or is
+    no longer valid/stale (see :func:`execute_action`). Flushes only; the
+    caller commits.
+    """
+    # Lock the row for the duration of this transaction.
+    action = await session.get(PendingAction, action_id, with_for_update=True)
+    if action is None or action.user_id != user.id:
+        raise ValueError("Action not found.")
+    if _lazy_expire(action):
+        await session.flush()
+        raise ValueError(f"Action is {action.status}.")
+
+    # Idempotent: already executed -> return the stored result, do not re-apply.
+    if action.status == ActionStatus.executed.value:
+        return action, action.last_result
+    if action.status in (
+        ActionStatus.rejected.value,
+        ActionStatus.expired.value,
+    ):
+        raise ValueError(f"Action is {action.status}.")
+
+    if action.status == ActionStatus.proposed.value:
+        action.status = ActionStatus.confirmed.value
+        action.confirmed_at = _now()
+        await session.flush()
+
+    return await execute_action(session, user, action_id)
+
+
 async def expire_actions(session: AsyncSession) -> int:
     """Bulk-expire overdue proposed/confirmed actions (worker pass)."""
     now = _now()

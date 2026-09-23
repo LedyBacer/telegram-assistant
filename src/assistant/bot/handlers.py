@@ -728,11 +728,10 @@ async def on_action(
     lang = _user_lang(user)
     action_id = callback_data.action_id
     if callback_data.action == "confirm":
+        # Confirm + execute under a row lock so a double-tap cannot
+        # double-apply the mutation (SPEC §3).
         try:
-            action = await actions_service.confirm_action(
-                session, user, action_id
-            )
-            action, _result = await actions_service.execute_action(
+            action, _result = await actions_service.confirm_and_execute_action(
                 session, user, action_id
             )
             text = t(lang, "action.done", summary=action.summary)

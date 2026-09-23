@@ -8,12 +8,15 @@ entity state; a stale target expires the action).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.actions.calendar import ActionStaleError, UpdateItemPayload
+from assistant.models.calendar_items import CalendarItem
 from assistant.models.pending_actions import ActionStatus
 from assistant.models.users import User
 from assistant.services import actions as act
@@ -391,3 +394,70 @@ async def test_bulk_expire(session: AsyncSession) -> None:
     assert (await act.get_action(session, user, fresh.id)).status == (
         ActionStatus.proposed.value
     )
+
+
+# ---------------------------------------------------------------------------
+# Atomic confirm + execute (row-locked, double-click safe)
+# ---------------------------------------------------------------------------
+
+
+async def test_confirm_and_execute_is_idempotent(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await cal.create_item(session, user, title="P", starts_at=START)
+    action = await act.propose_action(
+        session,
+        user,
+        kind="update_item",
+        payload={"item_id": item.id, "starts_at": MOVED.isoformat()},
+        summary="s",
+    )
+    done, first = await act.confirm_and_execute_action(session, user, action.id)
+    await session.commit()
+    assert done.status == ActionStatus.executed.value
+    assert (await cal.get_item(session, user, item.id)).starts_at == MOVED
+
+    # A second confirm+execute returns the stored result, does NOT re-apply.
+    again, second = await act.confirm_and_execute_action(session, user, action.id)
+    assert again.status == ActionStatus.executed.value
+    assert second == first
+
+
+async def test_concurrent_confirm_executes_once(
+    session: AsyncSession, engine
+) -> None:
+    user = await _user(session)
+    action = await act.propose_action(
+        session,
+        user,
+        kind="create_item",
+        payload={"title": "Race", "starts_at": START.isoformat()},
+        summary="Create 'Race'",
+    )
+    await session.commit()
+    action_id = action.id
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _confirm() -> ActionStatus:
+        async with factory() as s:
+            done, _result = await act.confirm_and_execute_action(s, user, action_id)
+            await s.commit()
+            return done.status
+
+    # Both confirmations race on the same row; the FOR UPDATE lock serializes
+    # them so the (non-idempotent) create_item mutation is applied exactly once.
+    results = await asyncio.gather(_confirm(), _confirm())
+    assert all(r == ActionStatus.executed.value for r in results)
+
+    # Verify in a fresh session: the action is executed and the mutation
+    # (create_item) landed exactly once.
+    async with factory() as s:
+        fresh = await act.get_action(s, user, action_id)
+        assert fresh is not None
+        assert fresh.status == ActionStatus.executed.value
+        count = await s.scalar(
+            select(func.count())
+            .select_from(CalendarItem)
+            .where(CalendarItem.user_id == user.id)
+        )
+        assert count == 1
