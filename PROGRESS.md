@@ -1,8 +1,33 @@
 # Progress
 
-Status: V3 PRIORITY 5 COMPLETE (caller-transaction rollback hazards removed —
-digest scheduling no longer rolls back its caller's transaction). Next: V3
-Priority 6 (honest Telegram delivery semantics).
+Status: V3 PRIORITY 6 COMPLETE (honest delivery semantics — reminders and
+digests are durable at-least-once, nudges are at-most-once). Next: V3
+Priority 7 (remove long DB transactions around AI/network I/O).
+
+## V3 — Priority 6: honest Telegram delivery semantics
+
+Audited the three delivery channels and made the code match the semantics
+the docs promise:
+
+- **Reminders** (`reminder_send` job): already durable at-least-once —
+  `sent_at` is stamped only after a successful send, so a crash in between
+  re-sends (a visible duplicate) rather than losing the reminder; a send
+  failure re-queues with backoff (SPEC §8).
+- **Digests** (`digest_send` job): same at-least-once shape (Phase A read /
+  B send with no tx open / C re-fetch + stamp).
+- **Nudges** (proactivity): previously *de facto* at-least-once — the
+  `NudgeDelivery` dedupe row was only flushed and the per-user rollback on
+  send failure wiped it, so a failed nudge was re-sent next pass. Now the
+  dedupe row is **committed before the send** (at-most-once): a failed send
+  loses the nudge instead of duplicating it. `evaluate_user` /
+  `run_proactive_pass` docstrings state the semantics explicitly.
+- Docs aligned: `docs/ARCHITECTURE.md` (proactivity note) and
+  `docs/ASSUMPTIONS.md` #21 now say "committed before sending,
+  at-most-once".
+
+Test updated: `test_run_proactive_pass_isolates_user_failure` now asserts
+the failed user's dedupe row survives and the next pass sends nothing.
+Verified: 360 pytest pass, Ruff clean.
 
 ## V3 — Priority 5: caller-transaction rollback hazards
 

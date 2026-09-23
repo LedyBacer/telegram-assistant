@@ -114,8 +114,13 @@ async def evaluate_user(
     object in the session — any lazy attribute reload in async context
     would raise MissingGreenlet. All data is read via explicit SELECTs.
 
-    Returns the list of nudge kinds actually sent this call (flush only for
-    the delivery rows; the caller owns the transaction).
+    Delivery semantics: **at-most-once**. Each ``NudgeDelivery`` dedupe row
+    is committed BEFORE the send, so a failed send (bot API down, blocked
+    chat) loses that nudge instead of re-sending it on the next pass — a
+    nudge is a convenience, not a commitment (contrast the durable
+    at-least-once reminders/digests).
+
+    Returns the list of nudge kinds actually sent this call.
     """
     now = now or datetime.now(UTC)
     user_settings = await session.scalar(
@@ -184,7 +189,9 @@ async def evaluate_user(
                 sent_at=now,
             )
         )
-        await session.flush()
+        # Commit the dedupe row BEFORE the send (at-most-once): if the send
+        # fails, this nudge is lost, not re-sent next pass.
+        await session.commit()
         await send(user_id, t(language, NUDGE_TEXT_KEYS[NudgeKind.weekly_review]))
         sent.append(NudgeKind.weekly_review)
 
@@ -214,7 +221,8 @@ async def evaluate_user(
                     sent_at=now,
                 )
             )
-            await session.flush()
+            # Commit the dedupe row BEFORE the send (at-most-once).
+            await session.commit()
             await send(user_id, t(language, NUDGE_TEXT_KEYS[NudgeKind.workout]))
             sent.append(NudgeKind.workout)
 
@@ -251,7 +259,9 @@ async def run_proactive_pass(
 
     Returns ``{"nudges_sent": N, "actions_expired": M}``. Each user is
     evaluated in its own short transaction so a send failure (e.g. bot API
-    down) rolls back only that user's delivery rows and retries next pass.
+    down) affects only that user. Nudge delivery is at-most-once: the
+    dedupe rows are committed before the sends, so a failed send is NOT
+    retried on the next pass (the nudge is lost, not duplicated).
     """
     now = now or datetime.now(UTC)
     users = (

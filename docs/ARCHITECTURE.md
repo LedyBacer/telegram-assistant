@@ -73,8 +73,10 @@ worker ─────────────────────> durable 
   `superseded_by`) and stores the new value as a distinct `proposed` fact.
 9. **Proactivity is deterministic and deduped.** Nudges derive from stored
   state only (no AI), run through per-user anti-spam gates (enabled → quiet
-  hours → daily cap → min interval), and write a durable `NudgeDelivery`
-  dedupe row *before* sending, so a crash between write and send can never
+  hours → daily cap → min interval), and **commit** the `NudgeDelivery`
+  dedupe row *before* sending: nudge delivery is **at-most-once** (contrast
+  the at-least-once job handlers below) — a send failure loses that nudge
+  rather than re-sending it, and a crash between commit and send can never
   double-nudge.
 
 ## Job delivery semantics (durable, at-least-once, §5.6)

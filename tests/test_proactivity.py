@@ -395,17 +395,18 @@ async def test_run_proactive_pass_isolates_user_failure(
     result = await pro.run_proactive_pass(session, now=TUE, send=send)
     await session.commit()
 
-    # B's nudges landed; A's were rolled back (will retry next pass).
+    # B's nudges landed; A's send failed.
     assert result["nudges_sent"] == 1
     assert result["actions_expired"] == 0
     assert {c[0] for c in calls} == {b_id}
-    assert await _kinds(session, a_id) == []
     assert NudgeKind.workout in await _kinds(session, b_id)
 
-    # A's failed send leaves no delivery row, so the next pass retries.
+    # At-most-once: A's dedupe row was committed BEFORE the (failed) send,
+    # so it is lost — the next pass must NOT re-send it (a nudge is a
+    # convenience, not a commitment like a reminder or digest).
+    assert NudgeKind.workout in await _kinds(session, a_id)
     send2, calls2 = _fake_send()
     result2 = await pro.run_proactive_pass(session, now=TUE, send=send2)
     await session.commit()
-    assert result2["nudges_sent"] == 1
-    assert {c[0] for c in calls2} == {a_id}
-    assert NudgeKind.workout in await _kinds(session, a_id)
+    assert result2["nudges_sent"] == 0
+    assert calls2 == []
