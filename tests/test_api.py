@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -467,17 +468,22 @@ async def test_settings_invalid_timezone_is_422(client: httpx.AsyncClient) -> No
 
 
 async def test_today_uses_user_timezone(client: httpx.AsyncClient) -> None:
-    """A UTC noon timestamp lands in the user's local 'today' window."""
+    """An item at Berlin noon lands in the user's local 'today' window.
+
+    The anchor is computed in the user's own timezone, not UTC: after
+    22:00 UTC the Berlin date has already rolled over, so a UTC-noon anchor
+    would land in Berlin's *previous* day and the assertion would flake.
+    """
     await client.patch(
         "/api/v1/settings", headers=HEADERS, json={"timezone": "Europe/Berlin"}
     )
-    # 02:00 Berlin == 00:00 UTC (winter time), so noon UTC is 14:00 Berlin.
+    berlin_noon = datetime.now(tz=ZoneInfo("Europe/Berlin")).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
     res = await client.post(
         "/api/v1/items",
         headers=HEADERS,
-        json={"title": "Local", "starts_at": datetime.now(tz=UTC).replace(
-            hour=12, minute=0, second=0, microsecond=0
-        ).isoformat()},
+        json={"title": "Local", "starts_at": berlin_noon.isoformat()},
     )
     assert res.status_code == 201
     today = await client.get("/api/v1/calendar/today", headers=HEADERS)

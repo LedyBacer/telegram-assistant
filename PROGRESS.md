@@ -1,13 +1,51 @@
 # Progress
 
-Status: V3 PRIORITY 27 COMPLETE (Mini App stale-render race fixed —
-render-generation token + per-render AbortController; every view commits
-DOM only if it is the active generation; console guard tolerates
-controlled `net::ERR_ABORTED` cancellations; Playwright regression test).
-P26 (do-not-redesign constraint) is carried by every change in this
-Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 28 (timezone-correct display via
-state.me.settings.timezone).
+Status: V3 PRIORITY 28 COMPLETE (Mini App renders every date/time in the
+user's configured timezone via Intl.DateTimeFormat; user-TZ day boundaries
+for the calendar; naive user-TZ wall-clock values in pickers/forms;
+Playwright cross-zone regression test). P26 (do-not-redesign constraint)
+is carried by every change in this Mini App block: styles/components/
+navigation preserved, no framework.
+Next: V3 Priority 29 (workout logging datetime — store and submit
+started_at from the picker).
+
+## V3 — Priority 28: User-timezone date/time display in the Mini App
+
+All dates/times in the Mini App now follow `state.me.settings.timezone`,
+never the browser's zone (contract: instants travel as ISO-with-offset;
+user-TZ wall values are naive "YYYY-MM-DD[THH:MM]" strings, which the
+backend interprets in the user's timezone).
+
+- `miniapp/js/time.js` (new): user-TZ helpers built on cached
+  `Intl.DateTimeFormat(..., {timeZone})` — `userTZ`, `wallParts`,
+  `dateKeyTZ`, `todayKey`, two-pass DST-safe `dayStartUTC`/`dayEndUTC`,
+  `monthStartUTC(y, m)` (out-of-range month normalizes; `monthStartUTC(y,
+  m+1)` is exactly a month's end), `isoToWall`, `userWallAsBrowserDate`
+  (seeds flatpickr, which renders browser-local, so its "Y-m-d H:i"
+  output is the naive user-TZ wall clock), `fmtDT` (aware ISO instants),
+  `fmtWall` (naive wall strings).
+- `miniapp/app.js`: Today/month view computes the month range with
+  `monthStartUTC` in the user's zone and fetches
+  `GET /items?start&end` on it; calendar cells, "today", and selected-day
+  grouping use user-TZ date keys; day header and item times format in the
+  user's zone (`fmtDT`); new-item and schedule forms store/submit the
+  picker's naive user-TZ wall value.
+- `miniapp/js/ui.js`: `pickDateTime` seeds from the instant's user-TZ
+  wall clock and resolves the naive user-TZ wall string.
+- `e2e/tests/timezone.e2e.ts` (new): browser pinned to Europe/Amsterdam
+  with a frozen clock where Moscow's and Amsterdam's calendar days differ;
+  user tz = Europe/Moscow via `PATCH /settings`; asserts "today" is the
+  Moscow day, the item dot lands on the Moscow day, the item lists with
+  Moscow wall time (00:30, not 23:30), and the day header shows the
+  Moscow date. Restores tz to UTC at the end so later tests (which assume
+  UTC) don't inherit Moscow day boundaries.
+- `tests/test_api.py::test_today_uses_user_timezone`: fixed a latent
+  flake — the item anchor was "noon UTC", which falls in Berlin's
+  previous day once the clock passes 22:00 UTC; now anchored at Berlin
+  noon (always inside the user's own "today" window).
+
+Verified: full E2E suite 8 passed (incl. the new cross-zone test);
+`uv run pytest -q` 446 passed on a fresh DB; `uv run ruff check .` clean.
 
 ## V3 — Priority 27: Mini App stale-render race
 

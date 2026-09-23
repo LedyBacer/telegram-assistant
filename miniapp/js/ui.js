@@ -9,6 +9,9 @@
 
 import { localeCode, S } from "./state.js";
 import { haptic } from "./telegram.js";
+import { fmtDT, userWallAsBrowserDate } from "./time.js";
+
+export { fmtDT };
 
 /* ------------------------------------------------------------------ */
 /* Safe DOM builder                                                    */
@@ -285,7 +288,11 @@ export function pickDateTime(initialISO = null) {
         allowInput: false,
         dateFormat: "Y-m-d H:i",
         locale: flatpickrLocale(),
-        defaultDate: initialISO ? new Date(initialISO) : new Date(),
+        // Seed the (browser-local) picker with the USER-TZ wall clock of
+        // the instant, so a user in a foreign browser zone still sees and
+        // edits their own wall time. The onClose "Y-m-d H:i" string is then
+        // exactly the naive user-TZ wall clock the backend expects.
+        defaultDate: initialISO ? (userWallAsBrowserDate(initialISO) || new Date()) : new Date(),
         onClose: (dates, str) => {
           // Defer destroy(): onClose fires from inside flatpickr's own
           // close(), which keeps referencing calendarContainer after we
@@ -298,7 +305,8 @@ export function pickDateTime(initialISO = null) {
             }
           }, 0);
           holder.remove();
-          resolve(str ? new Date(str).toISOString() : null);
+          // Naive "YYYY-MM-DD HH:MM" in the user's timezone (no offset).
+          resolve(str ? str.replace(" ", "T") : null);
         },
       });
     } catch {
@@ -366,22 +374,6 @@ export function pickTime(initial = null) {
 /* ------------------------------------------------------------------ */
 /* Formatting helpers                                                  */
 /* ------------------------------------------------------------------ */
-
-export function fmtDT(iso) {
-  if (!iso) return "";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  try {
-    return new Intl.DateTimeFormat(localeCode(), {
-      day: "numeric",
-      month: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(date);
-  } catch {
-    return date.toLocaleString();
-  }
-}
 
 export function fmtBytes(n) {
   if (!Number.isFinite(n)) return "";

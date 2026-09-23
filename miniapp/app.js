@@ -32,9 +32,16 @@ import {
   confirmDialog,
   pickDateTime,
   pickTime,
-  fmtDT,
   fmtBytes,
 } from "./js/ui.js";
+import {
+  wallParts,
+  dateKeyTZ,
+  todayKey,
+  monthStartUTC,
+  fmtDT,
+  fmtWall,
+} from "./js/time.js";
 
 const viewEl = document.getElementById("view");
 const navEl = document.getElementById("nav");
@@ -227,21 +234,26 @@ function itemCard(item) {
 /* ------------------------------------------------------------------ */
 
 const pad2 = (n) => String(n).padStart(2, "0");
-const dateKey = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+// Pure calendar-day key (no timezone involved): the month grid already
+// works in the user's local calendar, so keys are "YYYY-MM-DD" strings.
+const dayKey = (y, m, d) => `${y}-${pad2(m + 1)}-${pad2(d)}`;
 
 function ensureCalendarState() {
   if (!state.month) {
-    const now = new Date();
-    state.month = { y: now.getFullYear(), m: now.getMonth() };
+    const now = wallParts(new Date());
+    state.month = { y: now.y, m: now.m - 1 };
   }
-  if (!state.selectedDate) state.selectedDate = dateKey(new Date());
+  if (!state.selectedDate) state.selectedDate = todayKey();
 }
 
 async function viewToday(view, gen, signal) {
   ensureCalendarState();
   const { y, m } = state.month;
-  const start = new Date(y, m, 1, 0, 0, 0, 0);
-  const end = new Date(y, m + 1, 0, 23, 59, 59, 999);
+  // Month range in the USER's timezone: [midnight of day 1, midnight of
+  // the first day of the next month) — exactly the API's [start, end)
+  // semantics, so no item on the boundary is lost or duplicated.
+  const start = monthStartUTC(y, m);
+  const end = monthStartUTC(y, m + 1);
   const items = await api(
     `/api/v1/items?start=${start.toISOString()}&end=${end.toISOString()}`,
     "GET",
@@ -256,17 +268,18 @@ async function viewToday(view, gen, signal) {
     if (!anchor) continue;
     const d = new Date(anchor);
     if (Number.isNaN(d.getTime())) continue;
-    const key = dateKey(d);
+    const key = dateKeyTZ(d);
     if (!byDay.has(key)) byDay.set(key, []);
     byDay.get(key).push(item);
   }
 
   const grid = buildMonthGrid(y, m, byDay);
   const dayItems = byDay.get(state.selectedDate) || [];
+  const [hy, hm, hd] = state.selectedDate.split("-").map(Number);
   const dayHeader = el("h2", { class: "view-subtitle" },
     new Intl.DateTimeFormat(localeCode(), {
       weekday: "long", day: "numeric", month: "long",
-    }).format(new Date(`${state.selectedDate}T00:00:00`))
+    }).format(new Date(hy, hm - 1, hd))
   );
 
   view.replaceChildren(
@@ -282,7 +295,8 @@ function buildMonthGrid(y, m, byDay) {
   const first = new Date(y, m, 1);
   const firstWeekday = (first.getDay() + 6) % 7; // Monday-based
   const daysInMonth = new Date(y, m + 1, 0).getDate();
-  const todayKey = dateKey(new Date());
+  // "Today" in the USER's timezone (the browser may be in another zone).
+  const nowKey = todayKey();
 
   const weekdays = [...Array(7).keys()].map((i) =>
     el("span", { class: "cal-weekday", "aria-hidden": "true" },
@@ -294,7 +308,7 @@ function buildMonthGrid(y, m, byDay) {
     cells.push(el("span", { class: "cal-day is-out", "aria-hidden": "true" }));
   }
   for (let day = 1; day <= daysInMonth; day++) {
-    const key = dateKey(new Date(y, m, day));
+    const key = dayKey(y, m, day);
     cells.push(
       el(
         "button",
@@ -302,7 +316,7 @@ function buildMonthGrid(y, m, byDay) {
           type: "button",
           class: [
             "cal-day",
-            key === todayKey ? "is-today" : "",
+            key === nowKey ? "is-today" : "",
             key === state.selectedDate ? "is-selected" : "",
             byDay.has(key) ? "has-events" : "",
           ].filter(Boolean).join(" "),
@@ -334,9 +348,9 @@ function buildMonthGrid(y, m, byDay) {
       el("span", { class: "cal-month" }, monthLabel),
       btn("›", () => shift(1), { variant: "ghost", ariaLabel: S("miniapp.cal_next") }),
       btn(S("miniapp.cal_today"), () => {
-        const now = new Date();
-        state.month = { y: now.getFullYear(), m: now.getMonth() };
-        state.selectedDate = dateKey(now);
+        const now = wallParts(new Date());
+        state.month = { y: now.y, m: now.m - 1 };
+        state.selectedDate = todayKey();
         haptic();
         render();
       }, { variant: "ghost" })
@@ -504,18 +518,20 @@ async function viewNew(view) {
       priorityBtn.querySelector(".picker-value").textContent = S(PRIORITY_LABELS[chosen]);
     }
   });
+  // pickDateTime resolves a NAIVE user-TZ wall clock ("YYYY-MM-DDTHH:MM"),
+  // which is exactly what the backend expects (naive == user's timezone).
   const startsBtn = pickerBtn(S("miniapp.new_starts"), S("miniapp.not_set"), async () => {
-    const iso = await pickDateTime(formState.startsAt);
-    if (iso) {
-      formState.startsAt = iso;
-      startsBtn.querySelector(".picker-value").textContent = fmtDT(iso);
+    const wall = await pickDateTime(formState.startsAt);
+    if (wall) {
+      formState.startsAt = wall;
+      startsBtn.querySelector(".picker-value").textContent = fmtWall(wall);
     }
   });
   const dueBtn = pickerBtn(S("miniapp.new_due"), S("miniapp.not_set"), async () => {
-    const iso = await pickDateTime(formState.dueAt);
-    if (iso) {
-      formState.dueAt = iso;
-      dueBtn.querySelector(".picker-value").textContent = fmtDT(iso);
+    const wall = await pickDateTime(formState.dueAt);
+    if (wall) {
+      formState.dueAt = wall;
+      dueBtn.querySelector(".picker-value").textContent = fmtWall(wall);
     }
   });
 
@@ -619,8 +635,8 @@ async function viewWorkouts(view, gen, signal) {
     inputmode: "numeric",
   });
   const whenBtn = pickerBtn(S("miniapp.when"), S("miniapp.now"), async () => {
-    const iso = await pickDateTime(null);
-    if (iso) whenBtn.querySelector(".picker-value").textContent = fmtDT(iso);
+    const wall = await pickDateTime(null);
+    if (wall) whenBtn.querySelector(".picker-value").textContent = fmtWall(wall);
   });
   const effortBtn = pickerBtn(S("miniapp.effort"), S("miniapp.not_set"), async () => {
     const chosen = await openSheet({
@@ -680,10 +696,10 @@ async function viewWorkouts(view, gen, signal) {
   });
   let schedStart = null;
   const schedStartBtn = pickerBtn(S("miniapp.when"), S("miniapp.not_set"), async () => {
-    const iso = await pickDateTime(schedStart);
-    if (iso) {
-      schedStart = iso;
-      schedStartBtn.querySelector(".picker-value").textContent = fmtDT(iso);
+    const wall = await pickDateTime(schedStart);
+    if (wall) {
+      schedStart = wall;
+      schedStartBtn.querySelector(".picker-value").textContent = fmtWall(wall);
     }
   });
   const schedMinutesInput = input({
