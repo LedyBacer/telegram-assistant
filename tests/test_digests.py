@@ -216,7 +216,7 @@ async def _run_digest_job(session: AsyncSession, sender: AsyncMock) -> Backgroun
     handler = registry.handlers[digests.DIGEST_JOB_TYPE]
     await handler(session, job)
     await session.commit()
-    await jobs_service.complete_job(session, job.id, worker_id="test-worker")
+    await jobs_service.complete_job(session, job.id, owner_token=job.locked_by)
     await session.commit()
     return job
 
@@ -345,11 +345,14 @@ async def test_reminder_send_failure_requeues(session: AsyncSession, monkeypatch
     job = await session.get(BackgroundJob, reminder.job_id)
     job.status = JobStatus.running.value
     job.locked_by = "test-worker"
+    job.lease_until = datetime.now(UTC) + timedelta(minutes=5)
     await session.commit()
     with pytest.raises(RuntimeError, match="telegram down"):
         await registry.handlers[reminders_service.REMINDER_SEND_JOB_TYPE](session, job)
     await session.rollback()
-    await jobs_service.fail_job(session, job.id, worker_id="test-worker", error="telegram down")
+    await jobs_service.fail_job(
+        session, job.id, owner_token="test-worker", error="telegram down"
+    )
     await session.commit()
 
     job = await session.get(BackgroundJob, job.id)

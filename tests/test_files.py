@@ -15,7 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.bot.handlers import on_document
@@ -303,7 +303,7 @@ async def test_ingest_failure_is_visible_and_retryable(
         await files.handle_files_ingest(session, job)
 
     # The visible failure state survived the pipeline transaction rollback.
-    file = await session.get(UserFile, file_id)
+    file = await session.get(UserFile, file_id, populate_existing=True)
     assert file.state == FileState.failed.value
     assert "download blew up" in (file.error or "")
 
@@ -342,7 +342,7 @@ async def test_ingest_extraction_failure_is_visible(session, monkeypatch, tmp_pa
     with pytest.raises(files.FileUploadError, match="Could not read PDF"):
         await files.handle_files_ingest(session, job)
 
-    file = await session.get(UserFile, file_id)
+    file = await session.get(UserFile, file_id, populate_existing=True)
     assert file.state == FileState.failed.value
     assert "Could not read PDF" in (file.error or "")
 
@@ -383,6 +383,52 @@ async def test_ingest_missing_file_is_noop(session) -> None:
         status=JobStatus.running.value,
     )
     await files.handle_files_ingest(session, job)  # must not raise
+
+
+async def test_cancelled_ingest_does_not_commit_chunks(
+    session, monkeypatch, tmp_path
+) -> None:
+    """§5.5: a job cancelled mid-ingest must not store stale chunks."""
+    from assistant.db import get_session_factory
+
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+    monkeypatch.setattr(files, "get_ai_provider", lambda: _FakeEmbedder())
+    monkeypatch.setattr(
+        files, "_download_telegram_file", _fake_download(b"cancellable text")
+    )
+
+    user = await _user(session)
+    file = await files.register_upload(
+        session,
+        user,
+        original_filename="cancel.txt",
+        mime_type="text/plain",
+        size_bytes=15,
+        telegram_file_id="tg-cancel",
+    )
+    await session.commit()
+
+    job = await _claim_file_job(session, worker_id="w-test")
+    job_id = job.id
+    file_id = file.id
+
+    # A concurrent API request cancels the job in a separate session.
+    async with get_session_factory()() as cancel_session:
+        await jobs_service.cancel_job(cancel_session, job_id)
+        await cancel_session.commit()
+
+    # The handler runs to completion but must skip the chunk-writing commit.
+    await files.handle_files_ingest(session, job)
+    await session.commit()
+
+    refreshed = await session.get(UserFile, file_id, populate_existing=True)
+    assert refreshed is not None
+    assert refreshed.state != FileState.indexed.value
+    # Exactly zero rows: the cancelled run never committed any chunks.
+    count = await session.scalar(
+        select(func.count()).select_from(FileChunk).where(FileChunk.file_id == file_id)
+    )
+    assert count == 0
 
 
 # ---------------------------------------------------------------------------

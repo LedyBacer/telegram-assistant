@@ -54,7 +54,14 @@ class BackgroundJob(Base):
     locked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # Lease owner token (the worker that claimed the job) and the lease
+    # expiry. A running job is considered abandoned ONLY when its lease has
+    # expired (lease_until < now()); the owner renews the lease via heartbeat
+    # while the job runs. Only the current owner may complete/fail/renew.
     locked_by: Mapped[str | None] = mapped_column(String(128), default=None)
+    lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
     extra: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(

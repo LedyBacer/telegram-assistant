@@ -31,9 +31,6 @@ from assistant.worker import (
 
 logger = logging.getLogger("assistant.worker")
 
-# A running job whose lock is older than this is treated as abandoned.
-LOCK_TTL_SECONDS = 600.0
-
 
 def _new_worker_id() -> str:
     return f"{platform.node()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -62,15 +59,34 @@ class JobWorker:
             await session.commit()
         if not jobs:
             return 0
-        task_args = [(j.id, j.type) for j in jobs]
-        await asyncio.gather(*(self._run_job(job_id, job_type) for job_id, job_type in task_args))
+        # Each claimed job carries its owner token in locked_by; pass it
+        # through so only this claim may renew/complete/fail the job.
+        task_args = [(j.id, j.type, j.locked_by) for j in jobs]
+        await asyncio.gather(
+            *(
+                self._run_job(job_id, job_type, owner_token)
+                for job_id, job_type, owner_token in task_args
+            )
+        )
         return len(task_args)
 
-    async def _run_job(self, job_id: int, job_type: str) -> None:
+    async def _heartbeat(self, job_id: int, owner_token: str) -> None:
+        """Renew the lease on a cadence well inside LEASE_SECONDS while the job
+        runs, so a healthy long-running job is never treated as abandoned."""
+        while True:
+            await asyncio.sleep(jobs_service.LEASE_SECONDS / 2)
+            async with self._session_factory() as session:
+                alive = await jobs_service.renew_lease(session, job_id, owner_token=owner_token)
+                await session.commit()
+            if not alive:
+                return
+
+    async def _run_job(self, job_id: int, job_type: str, owner_token: str) -> None:
         handler = registry.handlers.get(job_type)
         if handler is None:
-            await self._fail(job_id, f"no handler registered for job type {job_type!r}")
+            await self._fail(job_id, owner_token, f"no handler registered for job type {job_type!r}")
             return
+        heartbeat = asyncio.create_task(self._heartbeat(job_id, owner_token))
         try:
             async with self._session_factory() as session, session.begin():
                 job = await session.get(BackgroundJob, job_id)
@@ -78,28 +94,35 @@ class JobWorker:
                     return
                 await handler(session, job)
         except asyncio.CancelledError:
-            # Leave the job running; abandoned-lock recovery re-queues it.
+            # Leave the job running; lease expiry + recovery re-queue it.
             raise
         except Exception as exc:
             logger.exception("job %s (%s) failed", job_id, job_type)
-            await self._fail(job_id, str(exc) or exc.__class__.__name__)
+            await self._fail(job_id, owner_token, str(exc) or exc.__class__.__name__)
         else:
-            await self._complete(job_id)
+            await self._complete(job_id, owner_token)
+        finally:
+            heartbeat.cancel()
 
-    async def _complete(self, job_id: int) -> None:
-        async with self._session_factory() as session:
-            await jobs_service.complete_job(session, job_id, worker_id=self.worker_id)
-            await session.commit()
-
-    async def _fail(self, job_id: int, error: str) -> None:
+    async def _complete(self, job_id: int, owner_token: str) -> None:
         async with self._session_factory() as session:
             try:
-                await jobs_service.fail_job(session, job_id, worker_id=self.worker_id, error=error)
+                await jobs_service.complete_job(session, job_id, owner_token=owner_token)
+                await session.commit()
+            except ValueError:
+                # Lease already expired / recovered by another worker.
+                await session.rollback()
+                logger.warning("job %s no longer owned, skipping complete", job_id)
+
+    async def _fail(self, job_id: int, owner_token: str, error: str) -> None:
+        async with self._session_factory() as session:
+            try:
+                await jobs_service.fail_job(session, job_id, owner_token=owner_token, error=error)
                 await session.commit()
             except ValueError:
                 # Job was recovered by another worker in the meantime.
                 await session.rollback()
-                logger.warning("job %s no longer owned by %s, skipping fail", job_id, self.worker_id)
+                logger.warning("job %s no longer owned, skipping fail", job_id)
 
     async def schedule_digests(self) -> None:
         """One idempotent pass ensuring every user has today's digest queued."""
@@ -118,9 +141,7 @@ class JobWorker:
                 started = loop.time()
                 try:
                     async with self._session_factory() as session:
-                        recovered = await jobs_service.recover_abandoned_locks(
-                            session, ttl_seconds=LOCK_TTL_SECONDS
-                        )
+                        recovered = await jobs_service.recover_abandoned(session)
                         if recovered:
                             logger.info("recovered %d abandoned job(s)", recovered)
                         await session.commit()

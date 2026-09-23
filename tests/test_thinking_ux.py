@@ -63,8 +63,10 @@ def test_settings_chat_timeout_default_is_180_seconds() -> None:
     assert _settings().chat_timeout_seconds == 180.0
 
 
-def test_settings_chat_thinking_default_is_enabled() -> None:
-    assert _settings().chat_thinking_enabled is True
+def test_settings_chat_thinking_default_is_disabled() -> None:
+    # §2: fast, non-thinking is the default; a deployment opts in via
+    # CHAT_THINKING_ENABLED=true (and optionally CHAT_REASONING_EFFORT).
+    assert _settings().chat_thinking_enabled is False
 
 
 def test_settings_rejects_unsensible_chat_timeout() -> None:

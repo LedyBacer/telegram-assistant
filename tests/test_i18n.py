@@ -369,7 +369,7 @@ async def test_digest_uses_language_at_execution(
     assert job is not None and job.type == digests.DIGEST_JOB_TYPE
     await registry.handlers[digests.DIGEST_JOB_TYPE](session, job)
     await session.commit()
-    await jobs_service.complete_job(session, job.id, worker_id=worker)
+    await jobs_service.complete_job(session, job.id, owner_token=job.locked_by)
     await session.commit()
 
     assert sender.await_args.args[0] == user.id

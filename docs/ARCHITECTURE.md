@@ -24,8 +24,10 @@ worker ─────────────────────> durable 
   assets. Read/write parity with the bot for calendar/tasks/reminders/workouts.
 - **worker** (`python -m assistant.worker.main`) — single loop: claim pending
   jobs (`SELECT ... FOR UPDATE SKIP LOCKED`), execute by `type`, record
-  outcome; retry with backoff up to `JOB_MAX_ATTEMPTS`; requeue abandoned
-  `running` jobs older than the lock TTL. Job types: file ingestion
+  outcome; retry with exponential backoff up to `JOB_MAX_ATTEMPTS`; re-queue
+  abandoned `running` jobs only when their lease expires. Each claim carries a
+  unique owner token and a lease that a heartbeat renews; only the current
+  owner with a live lease may complete/fail/renew. Job types: file ingestion
   (download → extract → chunk → embed → store), morning digest generation
   (idempotent per user/day), reminder firing.
 - **postgres** — single state store: relational tables, the `jobs` queue, and
@@ -52,6 +54,46 @@ worker ─────────────────────> durable 
   default `ru`). There is no global/env-var language. Russian is the
   fallback for unknown languages and missing keys, and a key missing from
   Russian returns the key itself (never an exception).
+
+## Job delivery semantics (durable, at-least-once, §5.6)
+
+The `background_jobs` table is the **only** background-work store. Its delivery
+guarantee is **durable at-least-once**, *not* exactly-once — and every handler
+is written so that re-execution is safe:
+
+- **Durability.** A job is a committed row before the ack that triggered it is
+  returned to the client (file upload, reminder create, digest schedule). A
+  process crash therefore never loses a job: it simply stays `pending` and is
+  claimed later.
+- **No double-claim.** Claiming is `UPDATE ... WHERE id IN (SELECT ... FOR
+  UPDATE SKIP LOCKED)`, so concurrent workers can never claim the same job.
+  The claimed row carries a unique **owner token** (`{worker_id}:{uuid}`) and a
+  **lease** (`lease_until`).
+- **Lease + heartbeat.** The owner renews the lease on a heartbeat
+  (`LEASE_SECONDS / 2`). A job is treated as abandoned **only** when
+  `lease_until < now()` — a slow-but-alive worker keeps its lease and is never
+  re-claimed.
+- **Bounded retries (no infinite loop).** Each failure/abandonment consumes one
+  attempt and re-queues with exponential backoff (`30s, 60s, 120s, …`). When
+  `attempts` reaches `max_attempts` the job is marked `failed` (with
+  `last_error`) and stops. A poison job cannot retry forever.
+- **Deduplication.** Handlers idempotency-key their side effects where a
+  re-run would otherwise duplicate: reminder sends are keyed on the reminder
+  (a sent reminder is never re-sent), digest delivery is keyed on
+  (user, day), and file re-ingestion replaces prior chunks before inserting.
+  Idempotent job *creation* (`ON CONFLICT (idempotency_key) DO NOTHING`) is a
+  database-level no-op and never aborts the caller's transaction (§5.4).
+- **Crash window.** The narrow window where at-least-once matters is between a
+  handler doing external I/O and the owning worker recording completion. If the
+  worker dies in that window, the lease lapses, `recover_abandoned` re-queues
+  the job (consuming an attempt), and the idempotent handler runs again without
+  duplicating user-visible effects.
+- **No long transactions around external I/O (§5.5).** The ingestion handler
+  commits each state transition *before* the network call that follows
+  (Telegram download, embedding-model call), so no PostgreSQL transaction —
+  and no held connection — spans external I/O. The chunk rows are written in a
+  single short final transaction that is skipped if the job was cancelled
+  mid-run, so a cancelled ingestion can never commit stale chunks.
 
 ## Internationalization (i18n)
 

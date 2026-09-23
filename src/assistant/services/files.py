@@ -28,7 +28,7 @@ from assistant.config import get_settings
 from assistant.db import get_session_factory
 from assistant.i18n import LocalizableError
 from assistant.models.files import FileChunk, FileState, UserFile
-from assistant.models.jobs import BackgroundJob
+from assistant.models.jobs import BackgroundJob, JobStatus
 from assistant.models.users import User
 from assistant.services.jobs import cancel_job, create_job
 
@@ -344,15 +344,27 @@ async def _set_file_state(
     await session.flush()
 
 
-async def _run_pipeline(session: AsyncSession, file: UserFile) -> None:
-    """Run download → extract → chunk → embed → store (flush only)."""
+async def _run_pipeline(
+    session: AsyncSession, file: UserFile, job: BackgroundJob
+) -> None:
+    """Run download → extract → chunk → embed → store.
+
+    §5.5: no PostgreSQL transaction is held across external I/O. Each state
+    transition is committed before the (potentially slow) network call that
+    follows, so the connection is released during the Telegram download and
+    the embedding model call. Chunks are written in a single short final
+    transaction, and that commit is skipped if the job was cancelled while
+    ingesting — a cancelled run can therefore never commit stale chunks.
+    """
     settings = get_settings()
     provider = get_ai_provider()
 
     destination = _storage_path(file.storage_key)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    # Download (external I/O) — commit the state first so no tx is held.
     await _set_file_state(session, file, FileState.downloading)
+    await session.commit()
     if file.telegram_file_id is None:
         # Mini App upload: the bytes were already written to ``destination`` by
         # ``register_local_upload``; skip the Telegram download.
@@ -361,16 +373,22 @@ async def _run_pipeline(session: AsyncSession, file: UserFile) -> None:
     else:
         await _download_telegram_file(file.telegram_file_id, destination)
 
+    # Extract (CPU, local).
     await _set_file_state(session, file, FileState.extracting)
+    await session.commit()
     data = destination.read_bytes()
     text = extract_text(data, file.mime_type)
 
+    # Chunk (CPU, local).
     await _set_file_state(session, file, FileState.chunking)
+    await session.commit()
     chunks = chunk_text(text, settings.chunk_size, settings.chunk_overlap)
 
+    # Embed (external I/O) — commit before so no tx spans the model call.
     vectors: list[list[float]] = []
     if chunks:
         await _set_file_state(session, file, FileState.embedding)
+        await session.commit()
         for i in range(0, len(chunks), settings.embedding_batch_size):
             # The provider applies the E5 document prefix; chunks are stored
             # in their original form.
@@ -384,7 +402,16 @@ async def _run_pipeline(session: AsyncSession, file: UserFile) -> None:
                 f"expected {len(chunks)} embeddings, got {len(vectors)}"
             )
 
-    # Re-ingestion is idempotent: replace any chunks from a previous run.
+    # Cancellation check immediately before the only chunk-writing commit: a
+    # job cancelled while downloading/embedding must not store stale chunks.
+    # populate_existing re-reads from the DB (the job was loaded as "running"
+    # at claim time; a concurrent API cancel commits in a different session).
+    refreshed = await session.get(BackgroundJob, job.id, populate_existing=True)
+    if refreshed is not None and refreshed.status == JobStatus.cancelled.value:
+        await session.rollback()
+        return
+
+    # Final short transaction: replace any chunks from a previous run.
     await session.execute(delete(FileChunk).where(FileChunk.file_id == file.id))
     for position, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True)):
         session.add(
@@ -402,7 +429,7 @@ async def _run_pipeline(session: AsyncSession, file: UserFile) -> None:
     file.indexed_at = datetime.now(UTC)
     file.error = None
     file.extra = {**file.extra, "char_count": sum(len(c) for c in chunks)}
-    await session.flush()
+    await session.commit()
 
 
 async def _record_failure(file_id: int, error: str) -> None:
@@ -430,7 +457,7 @@ async def handle_files_ingest(session: AsyncSession, job: BackgroundJob) -> None
         # Idempotent: a retried/restarted job on an indexed file is a no-op.
         return
     try:
-        await _run_pipeline(session, file)
+        await _run_pipeline(session, file, job)
     except Exception as exc:
         # Discard the failed pipeline work and release the row lock before
         # recording the visible failure state from a second connection.
