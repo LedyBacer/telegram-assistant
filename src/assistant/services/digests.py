@@ -196,12 +196,21 @@ async def ensure_digest_jobs(session: AsyncSession) -> int:
 
 
 async def _handle_digest_send(session: AsyncSession, job: BackgroundJob) -> None:
-    """Deliver the digest for this job exactly once (flush only)."""
+    """Deliver the digest for this job (durable at-least-once, SPEC §6.1).
+
+    The ``sent_at`` stamp is written only AFTER the send succeeds, so a crash
+    between the two re-sends the digest (a duplicate) rather than losing it.
+    No database transaction is held while waiting on the Telegram network
+    call (SPEC §6.3). The handler owns its transaction boundaries (SPEC §5):
+    a short read transaction builds the content, a send runs with no
+    transaction open, and a short final transaction stamps ``sent_at``.
+    """
     if job.status != JobStatus.running.value:
         return
     digest_id = job.payload.get("digest_id")
     if digest_id is None:
         raise ValueError("digest_send job payload is missing digest_id")
+    # Phase A — short read transaction.
     delivery = await session.get(DigestDelivery, digest_id)
     if delivery is None:
         # User (and with it the delivery) was deleted after the job queued.
@@ -217,10 +226,19 @@ async def _handle_digest_send(session: AsyncSession, job: BackgroundJob) -> None
     if user is None:
         return
     content = await build_digest(session, user)
-    await notifications.send_text(user.id, content)
-    delivery.content = content
-    delivery.sent_at = datetime.now(UTC)
-    await session.flush()
+    chat_id = user.id
+    await session.commit()  # release the connection before the network call
+
+    # Phase B — Telegram send, with no transaction held.
+    await notifications.send_text(chat_id, content)
+
+    # Phase C — short transaction; stamp sent exactly once (re-fetch so a
+    # concurrent change between A and C is not clobbered).
+    delivery = await session.get(DigestDelivery, digest_id, populate_existing=True)
+    if delivery is not None and delivery.sent_at is None:
+        delivery.content = content
+        delivery.sent_at = datetime.now(UTC)
+        await session.commit()
 
 
 def _register_handler() -> None:

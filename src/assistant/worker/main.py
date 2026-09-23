@@ -84,25 +84,49 @@ class JobWorker:
                 return
 
     async def _run_job(self, job_id: int, job_type: str, owner_token: str) -> None:
+        """Run one already-claimed job.
+
+        Transaction-ownership contract (SPEC §5):
+        * The worker owns job CLAIMING (``poll_once``) and the FINAL job state
+          (``_complete`` / ``_fail``, each in their own short transaction).
+        * Each handler owns its domain transaction boundaries and commits its
+          own units of work. A handler that needs intermediate commits (file
+          ingestion: download → extract → embed → chunk-write) is therefore
+          NOT wrapped in an outer worker transaction — doing so would let a
+          single long transaction span external I/O and make the intermediate
+          ``commit()`` calls ambiguous.
+        """
         handler = registry.handlers.get(job_type)
         if handler is None:
             await self._fail(job_id, owner_token, f"no handler registered for job type {job_type!r}")
             return
         heartbeat = asyncio.create_task(self._heartbeat(job_id, owner_token))
         try:
-            async with self._session_factory() as session, session.begin():
-                job = await session.get(BackgroundJob, job_id)
-                if job is None:
-                    return
-                await handler(session, job)
+            async with self._session_factory() as session:
+                # Short read transaction to load the job row. The handler owns
+                # its own transactions from here on; the worker does not keep
+                # a transaction open across the handler's (potentially long)
+                # external I/O.
+                async with session.begin():
+                    job = await session.get(BackgroundJob, job_id)
+                    if job is None:
+                        return
+                try:
+                    await handler(session, job)
+                except Exception:
+                    # Release any in-flight handler transaction; the failure
+                    # record is written by _fail in a fresh session, so this
+                    # cleanup cannot disturb it.
+                    if session.in_transaction():
+                        await session.rollback()
+                    raise
+            await self._complete(job_id, owner_token)
         except asyncio.CancelledError:
             # Leave the job running; lease expiry + recovery re-queue it.
             raise
         except Exception as exc:
             logger.exception("job %s (%s) failed", job_id, job_type)
             await self._fail(job_id, owner_token, str(exc) or exc.__class__.__name__)
-        else:
-            await self._complete(job_id, owner_token)
         finally:
             heartbeat.cancel()
 

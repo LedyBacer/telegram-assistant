@@ -234,14 +234,26 @@ async def cancel_item_reminders(
 async def _handle_reminder_send(
     session: AsyncSession, job: BackgroundJob
 ) -> None:
-    """Deliver a reminder through the Bot API and mark it sent exactly once
-    (flush only). If the send fails the exception propagates so the job is
-    re-queued with backoff and the reminder stays ``pending``."""
+    """Deliver a reminder through the Bot API, then mark it sent.
+
+    Delivery semantics (SPEC §6.1, §6.3): **durable at-least-once**. The
+    ``sent_at`` stamp is written only AFTER the send succeeds, so a crash
+    between the two re-sends the reminder (a duplicate the user may see)
+    rather than losing it. No database transaction is held while waiting on
+    the Telegram network call.
+
+    The handler owns its transaction boundaries (SPEC §5): a short read
+    transaction to load the reminder, a send with no transaction open, and a
+    short final transaction to stamp ``sent_at``. If the send fails the
+    exception propagates so the job re-queues with backoff and the reminder
+    stays ``pending``.
+    """
     if job.status != JobStatus.running.value:
         return
     reminder_id = job.payload.get("reminder_id")
     if reminder_id is None:
         raise ValueError("reminder_send job payload is missing reminder_id")
+    # Phase A — short read transaction.
     reminder = await session.get(Reminder, reminder_id)
     if reminder is None:
         # Item (and with it the reminder) was deleted after the job was
@@ -258,16 +270,22 @@ async def _handle_reminder_send(
     # The wrapper is localized at execution time so a later language change
     # takes effect; the user's own reminder text is sent unchanged.
     language = (
-        user.settings.language
-        if user.settings is not None
-        else DEFAULT_LANGUAGE
+        user.settings.language if user.settings is not None else DEFAULT_LANGUAGE
     )
-    await notifications.send_text(
-        user.id, t(language, "reminders.notification", message=reminder.message)
-    )
-    reminder.status = ReminderStatus.sent.value
-    reminder.sent_at = datetime.now(UTC)
-    await session.flush()
+    chat_id = user.id
+    message = t(language, "reminders.notification", message=reminder.message)
+    await session.commit()  # release the connection before the network call
+
+    # Phase B — Telegram send, with no transaction held.
+    await notifications.send_text(chat_id, message)
+
+    # Phase C — short transaction; stamp sent exactly once (re-fetch so a
+    # concurrent cancel between A and C is not clobbered).
+    reminder = await session.get(Reminder, reminder_id, populate_existing=True)
+    if reminder is not None and reminder.status == ReminderStatus.pending.value:
+        reminder.status = ReminderStatus.sent.value
+        reminder.sent_at = datetime.now(UTC)
+        await session.commit()
 
 
 def _register_handler() -> None:

@@ -22,6 +22,16 @@ DB_URL = os.environ.get(
     "postgresql+asyncpg://assistant:assistant@localhost:5432/assistant",
 )
 
+# The app code resolves its database via the cached ``get_settings().database_url``.
+# Tests must always hit the test database (``TEST_DATABASE_URL``), never the
+# ``DATABASE_URL`` exported in the developer's shell (the Docker hostname), or
+# app-side ``get_session_factory()`` calls (e.g. ``files._record_failure``) fail
+# to connect. Force it here so the suite is order-independent, matching the
+# convention in ``test_api.py`` / ``test_minapp_shell.py``. ``get_settings()``
+# is only called lazily (in ``get_engine``), after module import, so this
+# assignment takes effect before the first settings read.
+os.environ["DATABASE_URL"] = DB_URL
+
 
 @pytest_asyncio.fixture(scope="session")
 async def engine() -> AsyncIterator[AsyncEngine]:
