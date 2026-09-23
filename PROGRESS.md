@@ -1,8 +1,34 @@
 # Progress
 
-Status: V3 PRIORITY 3 COMPLETE (PendingAction expiry semantics — read paths
-no longer mutate). Next: V3 Priority 4 (optimistic stale-data protection for
-mutations).
+Status: V3 PRIORITY 4 COMPLETE (optimistic stale-data protection for
+pending-action mutations). Next: V3 Priority 5 (caller-transaction rollback
+hazards).
+
+## V3 — Priority 4: optimistic stale-data protection
+
+A confirmed proposal can outlive the data it previewed: the user taps
+Confirm a minute after the preview, and the executor would clobber
+concurrent changes. The pending-action path is now guarded:
+
+- `ActionKind` gained an optional `baseline` hook (registry,
+  `src/assistant/actions/__init__.py`); `propose_action` merges its output
+  into the stored payload at proposal time.
+- `update_item` / `complete_item` / `cancel_item` / `delete_item` register
+  `_item_baseline`, which stores the target's `updated_at` as
+  `expected_updated_at` (internal payload field, excluded from the service
+  kwargs in `exec_update_item`).
+- Executors run `_assert_not_drifted` after re-loading the item: a
+  mismatch raises `ActionStaleError` → the action is expired with
+  `last_error` (no mutation applied).
+- `session.refresh(item)` in `_require_item` / `_item_baseline` re-reads the
+  committed row in the async context (a lazy refresh of an expired
+  identity-mapped attribute raised `MissingGreenlet`).
+- Scoping (ASSUMPTIONS #24): the guard covers the AI-proposed mutation
+  surface only; direct Mini App API writes have no proposal gap.
+
+New test: `test_drifted_entity_expires_action` (drift after proposal →
+`ActionStaleError`, action expired, item untouched).
+Verified: 359 pytest pass, Ruff clean.
 
 ## V3 — Priority 3: expiry without secret mutation on read
 

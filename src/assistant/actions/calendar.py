@@ -66,7 +66,11 @@ class CreateItemPayload(BaseModel):
 
 class UpdateItemPayload(BaseModel):
     """Partial update: only fields present in the dict are applied; an
-    explicit null clears the value (SPEC §4.3)."""
+    explicit null clears the value (SPEC §4.3).
+
+    ``expected_updated_at`` is internal: it is captured at proposal time
+    (the kind's baseline) and re-checked at execution to reject a mutation
+    whose target drifted since the preview (optimistic guard, SPEC §3)."""
 
     item_id: int
     title: str | None = None
@@ -75,18 +79,22 @@ class UpdateItemPayload(BaseModel):
     ends_at: datetime | None = None
     due_at: datetime | None = None
     priority: ItemPriority | None = None
+    expected_updated_at: datetime | None = None
 
 
 class CompleteItemPayload(BaseModel):
     item_id: int
+    expected_updated_at: datetime | None = None
 
 
 class CancelItemPayload(BaseModel):
     item_id: int
+    expected_updated_at: datetime | None = None
 
 
 class DeleteItemPayload(BaseModel):
     item_id: int
+    expected_updated_at: datetime | None = None
 
 
 class CreateReminderPayload(BaseModel):
@@ -109,7 +117,35 @@ async def _require_item(
     item = await calendar_service.get_item(session, user, item_id)
     if item is None:
         raise ActionStaleError("calendar item no longer exists")
+    # Load current state in the async context (avoids a lazy refresh on an
+    # expired identity-mapped instance) so the stale + drift checks see the
+    # real, committed row.
+    await session.refresh(item)
     return item
+
+
+async def _item_baseline(
+    session: AsyncSession, user: User, payload: Any
+) -> dict[str, object]:
+    """Proposal-time capture of the target item's ``updated_at`` so the
+    executor can detect drift (optimistic staleness guard, SPEC §3). A missing
+    item is left empty — the executor will raise stale on it anyway."""
+    item_id = getattr(payload, "item_id", None)
+    if item_id is None:
+        return {}
+    item = await calendar_service.get_item(session, user, item_id)
+    if item is None:
+        return {}
+    # Re-read in the async context so ``updated_at`` is loaded (not lazily
+    # refreshed, which would raise MissingGreenlet on an expired instance).
+    await session.refresh(item)
+    return {"expected_updated_at": item.updated_at.isoformat()}
+
+
+def _assert_not_drifted(item: Any, expected_updated_at: datetime | None) -> None:
+    """Reject a mutation whose target changed since the proposal was made."""
+    if expected_updated_at is not None and item.updated_at != expected_updated_at:
+        raise ActionStaleError("calendar item changed since the proposal")
 
 
 async def exec_create_item(
@@ -140,12 +176,13 @@ async def exec_update_item(
     session: AsyncSession, user: User, payload: UpdateItemPayload
 ) -> dict:
     item = await _require_item(session, user, payload.item_id)
+    _assert_not_drifted(item, payload.expected_updated_at)
     if item.status not in (
         ItemStatus.scheduled.value,
         ItemStatus.completed.value,
     ):
         raise ActionStaleError(f"item is {item.status}, not updatable")
-    fields = payload.model_dump(exclude={"item_id"})
+    fields = payload.model_dump(exclude={"item_id", "expected_updated_at"})
     present = payload.model_fields_set
     update_kwargs = {}
     for name, value in fields.items():
@@ -167,6 +204,7 @@ async def exec_complete_item(
     session: AsyncSession, user: User, payload: CompleteItemPayload
 ) -> dict:
     item = await _require_item(session, user, payload.item_id)
+    _assert_not_drifted(item, payload.expected_updated_at)
     if item.status != ItemStatus.scheduled.value:
         raise ActionStaleError(f"item is {item.status}, not schedulable")
     completed = await calendar_service.complete_item(session, user, item.id)
@@ -178,6 +216,7 @@ async def exec_cancel_item(
     session: AsyncSession, user: User, payload: CancelItemPayload
 ) -> dict:
     item = await _require_item(session, user, payload.item_id)
+    _assert_not_drifted(item, payload.expected_updated_at)
     if item.status != ItemStatus.scheduled.value:
         raise ActionStaleError(f"item is {item.status}, not cancellable")
     cancelled = await calendar_service.cancel_item(session, user, item.id)
@@ -189,6 +228,7 @@ async def exec_delete_item(
     session: AsyncSession, user: User, payload: DeleteItemPayload
 ) -> dict:
     item = await _require_item(session, user, payload.item_id)
+    _assert_not_drifted(item, payload.expected_updated_at)
     deleted = await calendar_service.delete_item(session, user, item.id)
     if not deleted:
         raise ActionStaleError("calendar item no longer exists")
@@ -224,16 +264,28 @@ register_action_kind(
     "create_item", payload_schema=CreateItemPayload, executor=exec_create_item
 )
 register_action_kind(
-    "update_item", payload_schema=UpdateItemPayload, executor=exec_update_item
+    "update_item",
+    payload_schema=UpdateItemPayload,
+    executor=exec_update_item,
+    baseline=_item_baseline,
 )
 register_action_kind(
-    "complete_item", payload_schema=CompleteItemPayload, executor=exec_complete_item
+    "complete_item",
+    payload_schema=CompleteItemPayload,
+    executor=exec_complete_item,
+    baseline=_item_baseline,
 )
 register_action_kind(
-    "cancel_item", payload_schema=CancelItemPayload, executor=exec_cancel_item
+    "cancel_item",
+    payload_schema=CancelItemPayload,
+    executor=exec_cancel_item,
+    baseline=_item_baseline,
 )
 register_action_kind(
-    "delete_item", payload_schema=DeleteItemPayload, executor=exec_delete_item
+    "delete_item",
+    payload_schema=DeleteItemPayload,
+    executor=exec_delete_item,
+    baseline=_item_baseline,
 )
 register_action_kind(
     "create_reminder",

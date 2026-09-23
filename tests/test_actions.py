@@ -290,6 +290,35 @@ async def test_stale_state_expires_action(session: AsyncSession) -> None:
     assert fresh is not None and fresh.status == ActionStatus.expired.value
 
 
+async def test_drifted_entity_expires_action(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await cal.create_item(session, user, title="Stable", starts_at=START)
+    action = await act.propose_action(
+        session,
+        user,
+        kind="update_item",
+        payload={"item_id": item.id, "starts_at": MOVED.isoformat()},
+        summary="s",
+    )
+    await act.confirm_action(session, user, action.id)
+    await session.commit()
+
+    # The target drifts AFTER the proposal (the baseline captured the pre-drift
+    # updated_at). The executor must treat it as stale, not clobber the change.
+    await cal.update_item(session, user, item.id, title="Changed")
+    await session.commit()
+
+    with pytest.raises(ActionStaleError):
+        await act.execute_action(session, user, action.id)
+    await session.commit()
+    fresh = await act.get_action(session, user, action.id)
+    assert fresh is not None
+    assert fresh.status == ActionStatus.expired.value
+    assert fresh.last_error is not None
+    # The proposed mutation was NOT applied on top of the newer state.
+    assert (await cal.get_item(session, user, item.id)).starts_at == START
+
+
 async def test_corrupted_payload_expires_action(session: AsyncSession) -> None:
     user = await _user(session)
     item = await cal.create_item(session, user, title="P")

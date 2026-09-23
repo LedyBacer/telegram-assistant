@@ -11,7 +11,7 @@ for a kind, and it must re-validate ownership and entity state itself
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,12 +25,19 @@ Executor = Callable[
     [AsyncSession, User, BaseModel], Awaitable[dict | list | str | int | float | None]
 ]
 
+# Baseline: called at PROPOSAL time with the parsed payload; returns extra
+# JSON-serializable payload fields capturing the target entity's state at that
+# moment (e.g. its updated_at), so the executor can detect drift (SPEC §3).
+Baseline = Callable[[AsyncSession, User, BaseModel], Awaitable[dict[str, object]]]
+
 
 @dataclass(frozen=True)
 class ActionKind:
     kind: str
     payload_schema: type[BaseModel]
     executor: Executor
+    # Optional proposal-time baseline capture (optimistic staleness guard).
+    baseline: Baseline | None = field(default=None)
 
 
 _REGISTRY: dict[str, ActionKind] = {}
@@ -41,9 +48,12 @@ def register_action_kind(
     *,
     payload_schema: type[BaseModel],
     executor: Executor,
+    baseline: Baseline | None = None,
 ) -> ActionKind:
     """Register (or replace) an action kind. Idempotent for the same spec."""
-    spec = ActionKind(kind=kind, payload_schema=payload_schema, executor=executor)
+    spec = ActionKind(
+        kind=kind, payload_schema=payload_schema, executor=executor, baseline=baseline
+    )
     _REGISTRY[kind] = spec
     return spec
 

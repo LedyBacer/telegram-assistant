@@ -103,12 +103,17 @@ async def propose_action(
         if isinstance(payload, dict)
         else payload
     )
+    # Only explicitly set fields are stored, so the tri-state semantics
+    # (omitted vs. explicit null, SPEC §4.3) survive the round trip.
+    stored = parsed.model_dump(mode="json", exclude_unset=True)
+    # Capture the target entity's state at proposal time (optimistic
+    # staleness guard, SPEC §3) so the executor can detect drift.
+    if spec.baseline is not None:
+        stored.update(await spec.baseline(session, user, parsed))
     action = PendingAction(
         user_id=user.id,
         kind=kind,
-        # Only explicitly set fields are stored, so the tri-state semantics
-        # (omitted vs. explicit null, SPEC §4.3) survive the round trip.
-        payload=parsed.model_dump(mode="json", exclude_unset=True),
+        payload=stored,
         summary=summary.strip()[:2000],
         status=ActionStatus.proposed.value,
         expires_at=_now() + (expires_in if expires_in is not None else DEFAULT_ACTION_TTL),
