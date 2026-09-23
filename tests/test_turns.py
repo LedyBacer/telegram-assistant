@@ -19,6 +19,7 @@ from assistant.ai import AIProviderError
 from assistant.ai.schemas import (
     ActionProposal,
     AssistantTurn,
+    FactProposal,
     ReadToolRequest,
 )
 from assistant.bot import callbacks
@@ -26,11 +27,13 @@ from assistant.bot.handlers import on_action
 from assistant.i18n import LocalizableError
 from assistant.models.calendar_items import CalendarItem, ItemKind
 from assistant.models.chat_messages import ChatMessage, ChatRole
+from assistant.models.facts import FactStatus, UserFact
 from assistant.models.files import EMBEDDING_DIMENSIONS
 from assistant.models.pending_actions import ActionStatus, PendingAction
 from assistant.models.users import User
 from assistant.services import actions as actions_service
 from assistant.services import calendar as calendar_service
+from assistant.services import facts as facts_service
 from assistant.services import turns as turns_service
 from assistant.services import workouts as workouts_service
 from assistant.services.users import upsert_user
@@ -480,3 +483,109 @@ async def test_on_action_other_user_cannot_touch(session: AsyncSession) -> None:
     # The (RU, default-locale) "unavailable" message is shown to the foreign
     # user, not an exception.
     assert "недоступно" in callback.message.edit_text.await_args.args[0]
+
+
+# ---------------------------------------------------------------------------
+# Automatic memory proposals (SPEC §14)
+# ---------------------------------------------------------------------------
+
+
+async def test_fact_proposal_creates_proposed_not_confirmed(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    turn = AssistantTurn(
+        reply="Noted.",
+        facts=[FactProposal(value="I prefer tea over coffee")],
+    )
+    result = await turns_service.run_turn(
+        session, user, "by the way I prefer tea over coffee", provider=_FakeProvider(turn)
+    )
+    await session.commit()
+
+    assert len(result.proposed_facts) == 1
+    fact = result.proposed_facts[0]
+    assert fact.status == FactStatus.proposed.value
+    assert fact.value == "I prefer tea over coffee"
+    # It is NOT used as trusted context until confirmed.
+    assert await facts_service.confirmed_lines(session, user) == []
+
+
+async def test_fact_dedupes_when_already_live(session: AsyncSession) -> None:
+    user = await _user(session)
+    turn = AssistantTurn(reply="ok", facts=[FactProposal(value="I am an engineer")])
+    provider = _FakeProvider(turn)
+
+    first = await turns_service.run_turn(
+        session, user, "remember I am an engineer", provider=provider
+    )
+    await session.commit()
+    assert len(first.proposed_facts) == 1
+
+    # Same fact again -> deduped, no duplicate row created.
+    second = await turns_service.run_turn(
+        session, user, "I am an engineer, remember", provider=provider
+    )
+    await session.commit()
+    assert second.proposed_facts == []
+    assert len((await session.scalars(select(UserFact))).all()) == 1
+
+
+async def test_fact_dedupes_rejected(session: AsyncSession) -> None:
+    user = await _user(session)
+    existing = await facts_service.propose_fact(
+        session, user, value="I live in Berlin"
+    )
+    await facts_service.reject_fact(session, user, existing.id)
+    await session.commit()
+
+    # A rejected fact must not be re-proposed.
+    result = await turns_service.run_turn(
+        session,
+        user,
+        "I live in Berlin",
+        provider=_FakeProvider(
+            AssistantTurn(reply="ok", facts=[FactProposal(value="I live in Berlin")])
+        ),
+    )
+    await session.commit()
+    assert result.proposed_facts == []
+    assert len((await session.scalars(select(UserFact))).all()) == 1
+
+
+async def test_fact_superseded_allows_reproposal(session: AsyncSession) -> None:
+    user = await _user(session)
+    old = await facts_service.propose_fact(
+        session, user, value="I drink tea"
+    )
+    replaced = await facts_service.supersede_fact(
+        session, user, old.id, value="I drink green tea"
+    )
+    assert replaced is not None
+    # Force the old "I drink tea" key to a superseded state so a fresh
+    # proposal on the same key is allowed again.
+    old.status = FactStatus.superseded.value
+    await session.commit()
+
+    result = await turns_service.run_turn(
+        session,
+        user,
+        "update: I drink tea",
+        provider=_FakeProvider(
+            AssistantTurn(reply="ok", facts=[FactProposal(value="I drink tea")])
+        ),
+    )
+    await session.commit()
+    assert len(result.proposed_facts) == 1
+
+
+async def test_facts_only_turn_does_not_raise(session: AsyncSession) -> None:
+    user = await _user(session)
+    turn = AssistantTurn(facts=[FactProposal(value="I like running")])
+    result = await turns_service.run_turn(
+        session, user, "I like running", provider=_FakeProvider(turn)
+    )
+    await session.commit()
+    # No reply text, but a fact was proposed -> no empty-turn error.
+    assert result.reply == ""
+    assert len(result.proposed_facts) == 1

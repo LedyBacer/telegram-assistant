@@ -54,6 +54,48 @@ async def propose_fact(
     return fact
 
 
+async def propose_if_absent(
+    session: AsyncSession,
+    user: User,
+    *,
+    value: str,
+    category: str = "general",
+    provenance: str | None = None,
+) -> UserFact | None:
+    """Propose a fact for automatic memory capture (SPEC §14).
+
+    Returns a new ``proposed`` fact, or ``None`` when the user already has a
+    fact with the same normalized key in a live state (``proposed``,
+    ``confirmed`` or ``rejected``) — so the assistant never re-asks about a
+    fact the user already settled. A ``superseded`` fact does not block a
+    fresh proposal (it allows updating a previously replaced fact).
+    """
+    value = (value or "").strip()
+    if not value or len(value) > MAX_FACT_LENGTH:
+        return None
+    key = _fact_key(value)
+    existing = (
+        await session.scalars(
+            select(UserFact).where(UserFact.user_id == user.id, UserFact.key == key)
+        )
+    ).all()
+    live_states = (
+        FactStatus.proposed.value,
+        FactStatus.confirmed.value,
+        FactStatus.rejected.value,
+    )
+    for fact in existing:
+        if fact.status in live_states:
+            return None
+    return await propose_fact(
+        session,
+        user,
+        value=value,
+        category=category,
+        provenance=provenance,
+    )
+
+
 async def get_fact(
     session: AsyncSession, user: User, fact_id: int
 ) -> UserFact | None:

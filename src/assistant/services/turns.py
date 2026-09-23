@@ -30,10 +30,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from assistant.actions import get_action_kind, registered_kinds
 from assistant.ai import AIProvider, get_ai_provider
 from assistant.ai.prompts import TURN_FINAL_SYSTEM, TURN_SYSTEM
-from assistant.ai.schemas import ActionProposal, AssistantTurn, ReadToolRequest
+from assistant.ai.schemas import (
+    ActionProposal,
+    AssistantTurn,
+    ReadToolRequest,
+)
 from assistant.i18n import DEFAULT_LANGUAGE, LocalizableError, language_name
 from assistant.models.calendar_items import CalendarItem
 from assistant.models.chat_messages import ChatMessage, ChatRole
+from assistant.models.facts import UserFact
 from assistant.models.files import UserFile
 from assistant.models.pending_actions import PendingAction
 from assistant.models.reminders import ReminderStatus
@@ -66,6 +71,8 @@ class TurnResult:
     # Proposals that failed re-validation and were NOT stored, with a short
     # machine reason (localized by the caller).
     skipped_actions: list[ActionProposal] = field(default_factory=list)
+    # New proposed (not yet confirmed) memory facts, deduped (SPEC §14).
+    proposed_facts: list[UserFact] = field(default_factory=list)
     model_calls: int = 0
 
 
@@ -262,9 +269,24 @@ async def run_turn(
             )
         )
 
+    proposed_facts: list[UserFact] = []
+    for fact in turn.facts:
+        created = await facts_service.propose_if_absent(
+            session,
+            user,
+            value=fact.value,
+            category=fact.category,
+            provenance="assistant",
+        )
+        if created is not None:
+            proposed_facts.append(created)
+
     final = reply if reply and reply.strip() else turn.clarification
     if final is None:
-        raise LocalizableError("chat.empty_turn")
+        if proposed_facts or proposed:
+            final = ""
+        else:
+            raise LocalizableError("chat.empty_turn")
 
     session.add(
         ChatMessage(
@@ -274,18 +296,20 @@ async def run_turn(
             source="telegram",
         )
     )
-    session.add(
-        ChatMessage(
-            user_id=user.id,
-            role=ChatRole.assistant.value,
-            content=final,
-            source="ai",
+    if final:
+        session.add(
+            ChatMessage(
+                user_id=user.id,
+                role=ChatRole.assistant.value,
+                content=final,
+                source="ai",
+            )
         )
-    )
     await session.flush()
     return TurnResult(
         reply=final,
         proposed_actions=proposed,
         skipped_actions=skipped,
+        proposed_facts=proposed_facts,
         model_calls=model_calls,
     )

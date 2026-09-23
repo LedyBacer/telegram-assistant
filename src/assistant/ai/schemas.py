@@ -63,6 +63,20 @@ class ActionProposal(BaseModel):
     summary: str = Field(min_length=1, max_length=200)
 
 
+class FactProposal(BaseModel):
+    """A candidate long-term memory fact the user must confirm (SPEC §14).
+
+    Never stored as trusted context until confirmed; the engine dedupes
+    against the user's existing facts (including rejected ones) before
+    persisting a ``proposed`` row.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(min_length=1, max_length=2000)
+    category: str = Field(default="general", max_length=64)
+
+
 class AssistantTurn(BaseModel):
     """The typed assistant-turn protocol (SPEC §3, §11).
 
@@ -79,4 +93,5 @@ class AssistantTurn(BaseModel):
     reply: str | None = Field(default=None, max_length=4000)
     data_requests: list[ReadToolRequest] = Field(default_factory=list, max_length=4)
     actions: list[ActionProposal] = Field(default_factory=list, max_length=3)
+    facts: list[FactProposal] = Field(default_factory=list, max_length=3)
     clarification: str | None = Field(default=None, max_length=1000)

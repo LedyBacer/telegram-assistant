@@ -987,11 +987,17 @@ async def on_text(
             )
             return
         await _delete_thinking(thinking_status)
-        await message.answer(result.reply, reply_markup=main_menu_kb(lang))
+        if result.reply:
+            await message.answer(result.reply, reply_markup=main_menu_kb(lang))
         for action in result.proposed_actions:
             await message.answer(
                 t(lang, "action.propose", summary=action.summary),
                 reply_markup=action_kb(action.id, lang),
+            )
+        for fact in result.proposed_facts:
+            await message.answer(
+                t(lang, "facts.proposed", value=fact.value),
+                reply_markup=fact_kb(fact.id, confirmable=True, language=lang),
             )
         if result.skipped_actions:
             await message.answer(t(lang, "action.skipped"))
