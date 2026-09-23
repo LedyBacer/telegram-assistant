@@ -48,6 +48,9 @@ class User(Base):
     facts: Mapped[list["UserFact"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    pending_actions: Mapped[list["PendingAction"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<User id={self.id} username={self.username!r}>"
@@ -90,5 +93,6 @@ from assistant.models.calendar_items import CalendarItem  # noqa: E402
 from assistant.models.chat_messages import ChatMessage  # noqa: E402
 from assistant.models.facts import UserFact  # noqa: E402
 from assistant.models.files import UserFile  # noqa: E402
+from assistant.models.pending_actions import PendingAction  # noqa: E402
 from assistant.models.reminders import Reminder  # noqa: E402
 from assistant.models.workout_logs import WorkoutLog  # noqa: E402

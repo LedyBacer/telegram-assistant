@@ -41,6 +41,7 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 
 
 _ALL_TABLES = (
+    "pending_actions",
     "digests",
     "file_chunks",
     "user_files",

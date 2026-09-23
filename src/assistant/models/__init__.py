@@ -16,6 +16,7 @@ from assistant.models.digests import DigestDelivery
 from assistant.models.facts import UserFact
 from assistant.models.files import FileChunk, UserFile
 from assistant.models.jobs import BackgroundJob
+from assistant.models.pending_actions import ActionStatus, PendingAction
 from assistant.models.reminders import Reminder
 from assistant.models.users import User, UserSettings
 from assistant.models.workout_logs import WorkoutLog
@@ -30,7 +31,9 @@ __all__ = [
     "ItemKind",
     "ItemPriority",
     "ItemStatus",
+    "PendingAction",
     "Reminder",
+    "ActionStatus",
     "User",
     "UserFact",
     "UserFile",
