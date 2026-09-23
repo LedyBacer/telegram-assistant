@@ -177,12 +177,14 @@ class OpenAIChatProvider:
         model: str = "qwen3.5-9b-64k",
         max_attempts: int = 2,
         timeout: float = 180.0,
-        thinking_enabled: bool = True,
+        thinking_enabled: bool = False,
+        reasoning_effort: str | None = None,
     ) -> None:
         self._model = model
         self._max_attempts = max_attempts
         self._timeout = timeout
         self._thinking_enabled = thinking_enabled
+        self._reasoning_effort = reasoning_effort
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -200,12 +202,16 @@ class OpenAIChatProvider:
         extension for the Jinja chat template; ``enable_thinking`` toggles
         Qwen reasoning. It is sent explicitly in both directions so the mode
         never relies on a server-side default. Embeddings never use it.
+
+        ``reasoning_effort`` is an OPTIONAL profile knob. It is only forwarded
+        (to servers that understand it) when thinking is enabled AND an
+        explicit effort is configured; otherwise the fast/no-think path sends
+        nothing extra so a plain llama.cpp deployment is unaffected.
         """
-        return {
-            "extra_body": {
-                "chat_template_kwargs": {"enable_thinking": self._thinking_enabled}
-            }
-        }
+        template_kwargs: dict = {"enable_thinking": self._thinking_enabled}
+        if self._thinking_enabled and self._reasoning_effort:
+            template_kwargs["reasoning_effort"] = self._reasoning_effort
+        return {"extra_body": {"chat_template_kwargs": template_kwargs}}
 
     async def chat(self, *, system: str, messages: list[Message]) -> str:
         try:

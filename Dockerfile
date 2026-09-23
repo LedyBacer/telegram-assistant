@@ -19,7 +19,7 @@ RUN useradd --create-home appuser \
     && chown -R appuser:appuser /app /data
 USER appuser
 ENV HOME=/home/appuser \
-    STORAGE_DIR=/data/storage
+    FILE_STORAGE_DIR=/data/storage/files
 
 EXPOSE 8000
 

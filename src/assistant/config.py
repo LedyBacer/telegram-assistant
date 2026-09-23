@@ -56,7 +56,13 @@ class Settings(BaseSettings):
     # Qwen thinking (reasoning) mode for the chat provider: sent explicitly
     # to the llama.cpp server as chat_template_kwargs.enable_thinking.
     # Applies to chat + structured generation only, never to embeddings.
-    chat_thinking_enabled: bool = True
+    #
+    # Default is FAST / NO-THINK. Reasoning is an OPTIONAL profile, opt-in
+    # per deployment via CHAT_THINKING_ENABLED / CHAT_REASONING_EFFORT, so a
+    # production llama.cpp deployment does not enable thinking by surprise.
+    # The app must work fully without it.
+    chat_thinking_enabled: bool = False
+    chat_reasoning_effort: str | None = None  # "low" | "medium" | "high" | None
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str = "multilingual-e5-small"

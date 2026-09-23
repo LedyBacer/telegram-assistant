@@ -7,7 +7,6 @@ services:
       POSTGRES_DB: assistant
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./storage:/data/storage
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U assistant -d assistant"]
       interval: 5s
