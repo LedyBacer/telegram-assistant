@@ -30,6 +30,12 @@ Executor = Callable[
 # moment (e.g. its updated_at), so the executor can detect drift (SPEC §3).
 Baseline = Callable[[AsyncSession, User, BaseModel], Awaitable[dict[str, object]]]
 
+# Preview: called at PROPOSAL time with the parsed payload; returns a concise,
+# deterministic, human-readable description of the mutation derived from the
+# typed data (datetimes shown in the user's timezone). It is stored as the
+# action's summary so the confirm/done text is exact and consistent (SPEC §3).
+Preview = Callable[[AsyncSession, User, BaseModel], Awaitable[str]]
+
 
 @dataclass(frozen=True)
 class ActionKind:
@@ -38,6 +44,8 @@ class ActionKind:
     executor: Executor
     # Optional proposal-time baseline capture (optimistic staleness guard).
     baseline: Baseline | None = field(default=None)
+    # Optional typed-data preview builder (deterministic user-facing summary).
+    preview: Preview | None = field(default=None)
 
 
 _REGISTRY: dict[str, ActionKind] = {}
@@ -49,10 +57,15 @@ def register_action_kind(
     payload_schema: type[BaseModel],
     executor: Executor,
     baseline: Baseline | None = None,
+    preview: Preview | None = None,
 ) -> ActionKind:
     """Register (or replace) an action kind. Idempotent for the same spec."""
     spec = ActionKind(
-        kind=kind, payload_schema=payload_schema, executor=executor, baseline=baseline
+        kind=kind,
+        payload_schema=payload_schema,
+        executor=executor,
+        baseline=baseline,
+        preview=preview,
     )
     _REGISTRY[kind] = spec
     return spec

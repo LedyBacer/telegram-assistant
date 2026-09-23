@@ -148,6 +148,91 @@ def _assert_not_drifted(item: Any, expected_updated_at: datetime | None) -> None
         raise ActionStaleError("calendar item changed since the proposal")
 
 
+# ---------------------------------------------------------------------------
+# Typed-data previews (deterministic user-facing summaries, SPEC §3)
+# ---------------------------------------------------------------------------
+
+
+def _fmt(value: datetime | None, user: User) -> str | None:
+    """Format a datetime in the user's timezone, or None when unset."""
+    if value is None:
+        return None
+    tz = _user_tz(user)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=tz)
+    return value.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+
+
+async def _item_title(session: AsyncSession, user: User, item_id: int) -> str:
+    item = await calendar_service.get_item(session, user, item_id)
+    if item is None:
+        return f"#{item_id}"
+    await session.refresh(item)
+    return item.title
+
+
+async def _preview_create_item(
+    session: AsyncSession, user: User, payload: CreateItemPayload
+) -> str:
+    parts = [f"Create {payload.kind.value} '{payload.title}'"]
+    starts = _fmt(payload.starts_at, user)
+    if starts:
+        parts.append(f"at {starts}")
+    due = _fmt(payload.due_at, user)
+    if due:
+        parts.append(f"due {due}")
+    if payload.remind_offsets_minutes:
+        offsets = ", ".join(str(o) for o in payload.remind_offsets_minutes)
+        parts.append(f"reminder(s) at {offsets} min")
+    return " ".join(parts)
+
+
+async def _preview_update_item(
+    session: AsyncSession, user: User, payload: UpdateItemPayload
+) -> str:
+    title = await _item_title(session, user, payload.item_id)
+    present = payload.model_fields_set - {"item_id", "expected_updated_at"}
+    fields = ("title", "starts_at", "ends_at", "due_at", "priority", "description")
+    changed = [name for name in fields if name in present]
+    summary = ", ".join(changed) if changed else "(no fields)"
+    return f"Update item '{title}': {summary}"
+
+
+async def _preview_complete_item(
+    session: AsyncSession, user: User, payload: CompleteItemPayload
+) -> str:
+    return f"Complete item '{await _item_title(session, user, payload.item_id)}'"
+
+
+async def _preview_cancel_item(
+    session: AsyncSession, user: User, payload: CancelItemPayload
+) -> str:
+    return f"Cancel item '{await _item_title(session, user, payload.item_id)}'"
+
+
+async def _preview_delete_item(
+    session: AsyncSession, user: User, payload: DeleteItemPayload
+) -> str:
+    return f"Delete item '{await _item_title(session, user, payload.item_id)}'"
+
+
+async def _preview_create_reminder(
+    session: AsyncSession, user: User, payload: CreateReminderPayload
+) -> str:
+    return f"Remind me '{payload.message}' at {_fmt(payload.fire_at, user)}"
+
+
+async def _preview_cancel_reminder(
+    session: AsyncSession, user: User, payload: CancelReminderPayload
+) -> str:
+    from assistant.models.reminders import Reminder
+
+    reminder = await session.get(Reminder, payload.reminder_id)
+    if reminder is None or reminder.user_id != user.id:
+        return f"Cancel reminder #{payload.reminder_id}"
+    return f"Cancel reminder '{reminder.message}'"
+
+
 async def exec_create_item(
     session: AsyncSession, user: User, payload: CreateItemPayload
 ) -> dict:
@@ -261,39 +346,48 @@ async def exec_cancel_reminder(
 
 
 register_action_kind(
-    "create_item", payload_schema=CreateItemPayload, executor=exec_create_item
+    "create_item",
+    payload_schema=CreateItemPayload,
+    executor=exec_create_item,
+    preview=_preview_create_item,
 )
 register_action_kind(
     "update_item",
     payload_schema=UpdateItemPayload,
     executor=exec_update_item,
     baseline=_item_baseline,
+    preview=_preview_update_item,
 )
 register_action_kind(
     "complete_item",
     payload_schema=CompleteItemPayload,
     executor=exec_complete_item,
     baseline=_item_baseline,
+    preview=_preview_complete_item,
 )
 register_action_kind(
     "cancel_item",
     payload_schema=CancelItemPayload,
     executor=exec_cancel_item,
     baseline=_item_baseline,
+    preview=_preview_cancel_item,
 )
 register_action_kind(
     "delete_item",
     payload_schema=DeleteItemPayload,
     executor=exec_delete_item,
     baseline=_item_baseline,
+    preview=_preview_delete_item,
 )
 register_action_kind(
     "create_reminder",
     payload_schema=CreateReminderPayload,
     executor=exec_create_reminder,
+    preview=_preview_create_reminder,
 )
 register_action_kind(
     "cancel_reminder",
     payload_schema=CancelReminderPayload,
     executor=exec_cancel_reminder,
+    preview=_preview_cancel_reminder,
 )

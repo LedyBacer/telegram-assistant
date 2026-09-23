@@ -615,3 +615,101 @@ async def test_execute_schedule_workout_creates_item_and_reminder(
     )
     assert len(rows) == 1
     assert rows[0].status == "pending"
+
+
+# ---------------------------------------------------------------------------
+# Mutation previews derived from typed data (P13)
+# ---------------------------------------------------------------------------
+
+
+async def test_preview_create_item_from_typed_data(session: AsyncSession) -> None:
+    user = await _user(session)
+    action = await act.propose_action(
+        session,
+        user,
+        kind="create_item",
+        payload={
+            "title": "Call Alex",
+            "starts_at": MOVED.isoformat(),
+            "remind_offsets_minutes": [15],
+        },
+        summary="model phrasing should be ignored",
+    )
+    assert action.summary == (
+        "Create task 'Call Alex' at 2026-10-01 14:00 reminder(s) at 15 min"
+    )
+
+
+async def test_preview_create_item_respects_user_timezone(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    user.settings.timezone = "Europe/Berlin"
+    await session.flush()
+    # 12:00 UTC == 14:00 Europe/Berlin (CEST, UTC+2 in October).
+    action = await act.propose_action(
+        session,
+        user,
+        kind="create_item",
+        payload={"title": "Standup", "starts_at": START.isoformat()},
+        summary="s",
+    )
+    assert action.summary == "Create task 'Standup' at 2026-10-01 14:00"
+
+
+async def test_preview_update_item_lists_changed_fields(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await cal.create_item(session, user, title="Move me", starts_at=START)
+    action = await act.propose_action(
+        session,
+        user,
+        kind="update_item",
+        payload={"item_id": item.id, "starts_at": MOVED.isoformat()},
+        summary="s",
+    )
+    assert action.summary == "Update item 'Move me': starts_at"
+
+
+async def test_preview_complete_item_uses_current_title(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await cal.create_item(session, user, title="Standup", starts_at=START)
+    action = await act.propose_action(
+        session, user, kind="complete_item", payload={"item_id": item.id}, summary="s"
+    )
+    assert action.summary == "Complete item 'Standup'"
+
+
+async def test_preview_create_reminder(session: AsyncSession) -> None:
+    user = await _user(session)
+    action = await act.propose_action(
+        session,
+        user,
+        kind="create_reminder",
+        payload={"message": "Buy milk", "fire_at": MOVED.isoformat()},
+        summary="s",
+    )
+    assert action.summary == "Remind me 'Buy milk' at 2026-10-01 14:00"
+
+
+async def test_preview_workouts(session: AsyncSession) -> None:
+    user = await _user(session)
+    log_action = await act.propose_action(
+        session,
+        user,
+        kind="log_workout",
+        payload={"name": "Push", "duration_minutes": 40, "perceived_effort": 7},
+        summary="s",
+    )
+    assert log_action.summary == "Log workout 'Push' 40 min effort 7"
+    sched_action = await act.propose_action(
+        session,
+        user,
+        kind="schedule_workout",
+        payload={
+            "name": "Run",
+            "starts_at": MOVED.isoformat(),
+            "duration_minutes": 30,
+        },
+        summary="s",
+    )
+    assert sched_action.summary == "Schedule workout 'Run' at 2026-10-01 14:00 (30 min)"

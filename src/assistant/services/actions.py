@@ -110,6 +110,11 @@ async def propose_action(
     # staleness guard, SPEC §3) so the executor can detect drift.
     if spec.baseline is not None:
         stored.update(await spec.baseline(session, user, parsed))
+    # The user-facing preview is derived from the typed payload when the kind
+    # provides a preview builder, so confirm/done text is exact and consistent
+    # (SPEC §3); otherwise fall back to the model-supplied summary.
+    if spec.preview is not None:
+        summary = (await spec.preview(session, user, parsed)).strip() or summary
     action = PendingAction(
         user_id=user.id,
         kind=kind,

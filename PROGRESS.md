@@ -1,10 +1,38 @@
 # Progress
 
-Status: V3 PRIORITY 12 COMPLETE (conversational workout mutations: the
-model can now log a workout that just happened and schedule a future
-one through the typed pending-action flow, with the same service-layer
-validation as every other surface).
-Next: V3 Priority 13 (mutation previews from typed data).
+Status: V3 PRIORITY 13 COMPLETE (typed-data mutation previews: the
+user-facing confirm/done text for every mutation kind is now derived
+deterministically from the validated payload — datetimes rendered in the
+user's timezone — instead of trusting the model's free-text summary).
+Next: V3 Priority 14 (calendar/reminder domain hardening).
+
+## V3 — Priority 13: mutation previews from typed data
+
+The confirm/done message used the model-supplied `summary` (free text,
+≤200 chars), so what the user was asked to confirm was whatever the model
+phrased — not necessarily what would actually be written.
+
+- `ActionKind` gains an optional `preview` builder
+  (`(session, user, parsed) -> str`), registered alongside `executor` and
+  `baseline` in `register_action_kind`.
+- `actions.propose_action` calls the kind's preview (if present) at
+  proposal time and stores the result as the action's `summary`, falling
+  back to the model summary when a kind has no builder. The preview reads
+  only the typed payload + user (its timezone), so it is exact.
+- Calendar kinds (`create_item`, `update_item`, `complete_item`,
+  `cancel_item`, `delete_item`, `create_reminder`, `cancel_reminder`) and
+  workout kinds (`log_workout`, `schedule_workout`) each register a
+  preview. Datetimes are shown as `YYYY-MM-DD HH:MM` in the user's zone
+  (`_fmt`); item-scoped previews look up the current title (`_item_title`)
+  and degrade to `#id` when the target is gone.
+- No migration: `preview` reuses the existing `summary` Text column.
+
+Tests (`tests/test_actions.py`, "Mutation previews derived from typed data
+(P13)" section): create_item (fields + reminder offsets, model summary
+overridden), create_item in a non-UTC user timezone (12:00 UTC → 14:00
+Berlin), update_item lists only the changed fields, complete_item uses the
+current title, create_reminder, and both workout kinds.
+Verified: 386 pytest pass, Ruff clean.
 
 ## V3 — Priority 12: expand conversational mutation coverage (workouts)
 
