@@ -1,11 +1,43 @@
 # Progress
 
-Status: V3 PRIORITY 22 COMPLETE (file lifecycle consistency — delete removes
-the disk artifact only after the DB commit survives; a bounded worker pass
-reaps artifacts of terminally failed, re-sourcable ingests; a missing local
-upload artifact now fails visibly).
-Next: V3 Priority 23 (Telegram output safe by default — plain text /
-escaped HTML).
+Status: V3 PRIORITY 23 COMPLETE (Telegram output safe by default — plain
+text everywhere: no parse_mode on either outbound bot, so user content with
+<, >, & or HTML-like strings is always verbatim and can never be misrendered
+or rejected as bad HTML).
+Next: V3 Priority 24 (Telegram message-length limits — central split
+helper, paragraph-boundary preferred).
+
+## V3 — Priority 23: Telegram output safe by default (plain text)
+
+Both outbound bots (the bot process and the worker's notification bot) were
+constructed with a global `DefaultBotProperties(parse_mode=ParseMode.HTML)`.
+With HTML parsing on, *any* unescaped `<` in the outgoing text — a filename
+like `report <draft>.pdf`, an AI answer containing a URL with `&`, a task
+title with markup-looking characters — produced a broken render or an
+`aiogram.exceptions.TelegramBadRequest` from the Bot API. Safety depended on
+every future send site remembering to escape, and none of them did.
+
+P23 makes plain text the only mode:
+
+- `src/assistant/bot/main.py`: new `create_bot()` builds
+  `Bot(token=settings.telegram_bot_token)` with **no** `DefaultBotProperties`
+  at all; `_run()` uses it. Removed the `DefaultBotProperties`/`ParseMode`
+  imports.
+- `src/assistant/services/notifications.py`: `_get_bot()` builds the worker's
+  `Bot` the same way (no parse mode); `send_text` now documents itself as
+  plain text. Removed the imports.
+
+With `parse_mode` unset, aiogram sends every message as plain text: user
+content is shown verbatim and can never be interpreted as markup. All i18n
+locale strings are already plain (no HTML tags anywhere in `locales/*.json`),
+so no visible output changes for any existing flow.
+
+Verified: `TestPlainTextOutput` in `tests/test_bot_foundation.py` — the bot
+process bot and the notification bot both expose `default.parse_mode is
+None`, and `send_text` forwards six markup/URL/`&`-laden payloads byte-for-
+byte with no `parse_mode` kwarg (the test .env token is a placeholder, so the
+tests monkeypatch a syntactically valid fake token before constructing the
+bots). Full suite: 424 passed, Ruff clean.
 
 ## V3 — Priority 22: file lifecycle consistency (fs vs DB)
 

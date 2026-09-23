@@ -149,6 +149,73 @@ class TestParseDraft:
             _parse(f"title: ok\ndescription: {'x' * 4001}")
 
 
+class TestPlainTextOutput:
+    """P23: Telegram output is safe by default — plain text, never HTML."""
+
+    _FAKE_TOKEN = "42:TEST-TOKEN"
+
+    def test_bot_process_bot_has_no_parse_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from assistant.bot.main import create_bot
+        from assistant.config import get_settings
+
+        monkeypatch.setattr(get_settings(), "telegram_bot_token", self._FAKE_TOKEN)
+        bot = create_bot()
+        assert bot.default is not None
+        assert bot.default.parse_mode is None
+
+    def test_notification_bot_has_no_parse_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from assistant.config import get_settings
+        from assistant.services import notifications
+
+        monkeypatch.setattr(get_settings(), "telegram_bot_token", self._FAKE_TOKEN)
+        monkeypatch.setattr(notifications, "_bot", None)
+        try:
+            bot = notifications._get_bot()
+        finally:
+            monkeypatch.setattr(notifications, "_bot", None)
+        assert bot.default is not None
+        assert bot.default.parse_mode is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "plain",
+            "<b>bold?</b>",
+            "<script>alert('x')</script>",
+            "Tom & Jerry's <note> \"quoted\"",
+            "5 < 6 and 6 > 5",
+            "https://example.com/a?b=1&c=2",
+        ],
+    )
+    async def test_send_text_sends_verbatim_without_markup(
+        self, monkeypatch: pytest.MonkeyPatch, payload: str
+    ) -> None:
+        """send_text must forward the exact text with no parse_mode override:
+        with plain-text delivery, markup-looking user content is inert."""
+        from assistant.config import get_settings
+        from assistant.services import notifications
+
+        monkeypatch.setattr(get_settings(), "telegram_bot_token", self._FAKE_TOKEN)
+        sent: list[tuple[str, dict]] = []
+
+        async def _capture(chat_id: int, text: str, **kwargs: object) -> None:
+            sent.append((text, kwargs))
+
+        bot = notifications._get_bot()
+        monkeypatch.setattr(notifications, "_bot", bot)
+        monkeypatch.setattr(bot, "send_message", _capture)
+        try:
+            await notifications.send_text(1, payload)
+        finally:
+            monkeypatch.setattr(notifications, "_bot", None)
+
+        assert sent == [(payload, {})]
+
+
 def _fake_tg_user(user_id: int = 1) -> SimpleNamespace:
     return SimpleNamespace(
         id=user_id, first_name="Al", last_name="Tester", username="al", is_bot=False

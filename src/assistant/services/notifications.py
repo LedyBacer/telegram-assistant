@@ -10,8 +10,6 @@ from __future__ import annotations
 import logging
 
 from aiogram import Bot
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 
 from assistant.config import get_settings
 
@@ -24,16 +22,15 @@ def _get_bot() -> Bot:
     global _bot
     if _bot is None:
         settings = get_settings()
-        _bot = Bot(
-            token=settings.telegram_bot_token,
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-        )
+        # No parse_mode (P23): reminder/digest text is plain, so user content
+        # with <, >, & or HTML-like strings is never misrendered or rejected.
+        _bot = Bot(token=settings.telegram_bot_token)
     return _bot
 
 
 async def send_text(chat_id: int, text: str) -> None:
-    """Send a plain/HTML text message to a chat. Raises on failure so the
-    caller (job handler) can re-queue with backoff."""
+    """Send a plain-text message to a chat. Raises on failure so the caller
+    (job handler) can re-queue with backoff."""
     await _get_bot().send_message(chat_id, text)
 
 
