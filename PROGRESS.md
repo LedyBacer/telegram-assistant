@@ -1,11 +1,44 @@
 # Progress
 
-Status: V3 PRIORITY 23 COMPLETE (Telegram output safe by default — plain
-text everywhere: no parse_mode on either outbound bot, so user content with
-<, >, & or HTML-like strings is always verbatim and can never be misrendered
-or rejected as bad HTML).
-Next: V3 Priority 24 (Telegram message-length limits — central split
-helper, paragraph-boundary preferred).
+Status: V3 PRIORITY 24 COMPLETE (Telegram message-length limits — one
+central splitter bounds every outbound text to 4096 chars, splitting at
+paragraph then line boundaries; AI replies, digests, reminders and nudges
+all route through it, keyboard attached to the final segment).
+Next: V3 Priority 25 (restrict the bot to private chats).
+
+## V3 — Priority 24: Telegram message-length limits
+
+Telegram rejects any message over 4096 characters, and the unbounded
+outputs (an AI reply with long citations, a busy day's digest) previously
+failed the whole send with a Bot API 400 — the user saw nothing.
+
+P24 adds one central delivery helper and routes the large-output paths
+through it:
+
+- `src/assistant/services/tg_text.py` (new):
+  - `split_for_telegram(text, limit=4096)` — greedy, lossless split:
+    prefers a `\n\n` paragraph break, then a `\n` line break (a boundary
+    must sit at least 1/3 into the window to avoid degenerate fragments),
+    then a hard cut at the limit. Segments concatenate back to the
+    original text; empty input yields no segments.
+  - `answer_long(message, text, reply_markup=...)` — sends each segment
+    as a new message, attaching the inline keyboard to the *last* segment
+    only, so it stays with the end of the content.
+  - `send_long(bot, chat_id, text)` — the worker-side variant; raises on
+    the first failed segment so the job handler re-queues as before.
+- `src/assistant/services/notifications.py`: `send_text` now goes through
+  `send_long`, covering reminders, digests and proactive nudges.
+- `src/assistant/bot/handlers.py`: the conversational AI reply (including
+  its appended citations) is sent via `answer_long`.
+
+Verified: `tests/test_tg_text.py` (17 tests) — short/empty/exactly-at-limit
+text passes through untouched; >4096-char text splits into bounded,
+lossless segments; paragraph and line boundaries win over hard cuts;
+`send_long` delivers multi-segment messages and propagates failures;
+`answer_long` puts the keyboard only on the final segment and omits the
+`reply_markup` kwarg when there is none; `notifications.send_text`
+integration: an 80-line digest splits across multiple <=4096-char
+messages with no content lost. Full suite: 441 passed, Ruff clean.
 
 ## V3 — Priority 23: Telegram output safe by default (plain text)
 

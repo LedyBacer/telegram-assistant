@@ -12,6 +12,7 @@ import logging
 from aiogram import Bot
 
 from assistant.config import get_settings
+from assistant.services.tg_text import send_long
 
 logger = logging.getLogger("assistant.notifications")
 
@@ -29,9 +30,10 @@ def _get_bot() -> Bot:
 
 
 async def send_text(chat_id: int, text: str) -> None:
-    """Send a plain-text message to a chat. Raises on failure so the caller
-    (job handler) can re-queue with backoff."""
-    await _get_bot().send_message(chat_id, text)
+    """Send plain text to a chat, split into <=4096-char segments when it
+    is longer (P24). Raises on failure so the caller (job handler) can
+    re-queue with backoff."""
+    await send_long(_get_bot(), chat_id, text)
 
 
 async def close() -> None:

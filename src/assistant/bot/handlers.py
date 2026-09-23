@@ -62,6 +62,7 @@ from assistant.services import files as files_service
 from assistant.services import reminders as reminders_service
 from assistant.services import turns as turns_service
 from assistant.services import workouts as workouts_service
+from assistant.services.tg_text import answer_long
 from assistant.services.users import upsert_user
 
 router = Router(name="bot")
@@ -994,7 +995,9 @@ async def on_text(
                 citations = files_service.format_citations(result.retrieved_chunks)
                 if citations:
                     text = f"{text}\n\n{citations}"
-            await message.answer(text, reply_markup=main_menu_kb(lang))
+            # Long model replies are split at paragraph/line boundaries so
+            # the 4096-char Telegram limit never fails the turn (V3 P24).
+            await answer_long(message, text, reply_markup=main_menu_kb(lang))
         for action in result.proposed_actions:
             await message.answer(
                 t(lang, "action.propose", summary=action.summary),
