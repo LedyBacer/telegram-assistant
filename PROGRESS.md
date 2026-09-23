@@ -1,6 +1,40 @@
 # Progress
 
-Status: PRIORITY 12 COMPLETE (tests/acceptance for the V2 features).
+Status: PRIORITY 13 COMPLETE (final docs/report/cleanup).
+
+## P13 — Final documentation and report (this session)
+
+- **`docs/ASSUMPTIONS.md`**: entries 20–23 (bounded typed conversational
+  actions with the closed `kind` registry — built-ins `create_item` /
+  `cancel_item`; deterministic deduped proactivity; lexical-gated RRF
+  hybrid retrieval, K=60; automatic memory proposals that stay
+  `proposed` until confirmed).
+- **`docs/ARCHITECTURE.md`**: invariants 7–9 (bounded typed actions with
+  commit-before-409/400; facts never auto-confirmed, `supersede_fact`
+  semantics; deterministic deduped proactivity), worker paragraph now
+  covers the proactive pass, code layout updated (`actions/` registry,
+  proactivity service, 351 tests, 6 E2E specs, full migration chain).
+- **`README.md`**: new "V2 features" section (conversational actions,
+  long-term memory, proactivity, lexical-gated hybrid search, workout
+  scheduling, file ingestion retry); E2E paragraph updated to 6 specs
+  incl. the V2 spec via the `e2e/helpers/seed.ts` asyncpg seed helper.
+- **`REPORT.md`**: header brought current (all 20 milestones complete);
+  §1/§2/§3/§4 updated with milestones 18–20 (commits `38bc65e`…`a33fb9d`,
+  `9a2e7e5`…`124a54c`, `6324766`…`82ea1d5`) and current verification
+  numbers (351 pytest, 6/6 Playwright, 264/264 locale parity, acceptance
+  13/13 green on 2026-09-23); new "## 10. Milestone 19 — V2 core" and
+  "## 11. Milestone 20 — V2 surface, acceptance coverage, and final docs"
+  sections with the final verification state.
+- Every documentation claim was verified against tool results in this
+  session (migration chain grepped in `alembic/versions`, action registry
+  grepped in `src/assistant/actions/`, RRF/lexical gate read in
+  `services/files.py`, locale parity computed, test counts from this
+  session's pytest/Playwright/Ruff runs).
+- `scripts/acceptance.sh` intentionally left unchanged: a SPEC grep found
+  no acceptance/E2E mandate there, and all 13 production-like checks pass.
+
+## P12 — Tests/acceptance for the V2 features
+
 New E2E spec `e2e/tests/v2-features.e2e.ts` (single full-flow test) covers
 the five V2 features against the real API + DB: (1) Actions inbox — three
 seeded proposed actions: confirm → "Сохранено." + badge "выполнено" +

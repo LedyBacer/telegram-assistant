@@ -1,7 +1,10 @@
 # Final Report — Smart Personal Assistant / Motivator
 
-Date: 2026-09-22
-Status: all 18 milestones complete; SPEC §31 Definition of Done verified;
+Date: 2026-09-23
+Status: all 20 milestones complete, including the Personal Assistant V2
+feature set (reliability, bounded conversational actions, long-term memory,
+proactivity, lexical-gated hybrid RAG, and the V2 Mini App) with expanded
+pytest/E2E acceptance coverage; SPEC §31 Definition of Done verified;
 Mini App production-hardening pass (vanilla ES-module frontend,
 `[object HTMLDivElement]` root-cause fix, Telegram-native theming, Flatpickr,
 bottom sheet, full UI states, Playwright E2E harness, read-only public smoke
@@ -46,10 +49,40 @@ Features implemented (SPEC §1–§30):
 - **Morning digest** — per-(user, local date) idempotent scheduling with a
   daily pass in the worker; deterministic state-derived motivation line;
   real Telegram delivery with re-queue on failure.
-- **Mini App** — vanilla-JS ES-module Mini App (today/upcoming/new/workouts/
-  files/facts/settings views; no framework, no build step; Telegram-native
-  `--tg-theme-*` theming, Flatpickr date/time, bottom-sheet selects;
-  verified by a Playwright E2E harness — see Milestone 18) served
+- **Conversational actions (V2)** — model-proposed mutations are *typed*
+  `PendingAction` rows (closed kind registry, per-kind Pydantic payload,
+  TTL) with nothing executed without an explicit Confirm in the bot or the
+  Mini App Actions inbox; stale targets expire the action in-transaction
+  and the API persists that expiry before answering 409/400; Reject and
+  timeout are terminal.
+- **Long-term memory (V2)** — the chat turn engine can propose salient
+  facts automatically (deduped against existing values); every fact
+  stays `proposed` until a user confirm; replacing a fact marks the old
+  value `superseded` (with `superseded_by` provenance) and proposes the new
+  one.
+- **Proactivity (V2)** — bounded, deterministic worker pass (no AI calls):
+  weekly review nudge on the user's local Monday, workout nudge after 48 h
+  without a workout; per-user `ProactiveSettings` (enabled, quiet hours,
+  max nudges/day, min interval) with durable `NudgeDelivery` dedupe written
+  before sending.
+- **Hybrid retrieval (V2 upgrade)** — lexical-gated: tsvector full-text arm
+  must match before the embedding provider is called; lexical + vector
+  ranked lists fused with RRF (K=60, minimum fused score); embedding
+  outages degrade to lexical-only; deterministic citations from the fused
+  ranking.
+- **Job reliability (V2)** — durable queue hardened with real leases:
+  owner tokens, lease TTL + heartbeat, abandoned-recovery only on lease
+  expiry, `a1b2c3d4e5f6` migration.
+- **Workout scheduling + file retry (V2)** — `POST /api/v1/workouts/schedule`
+  (calendar item + start-time reminder) and `POST /api/v1/files/{id}/retry`
+  (failed-only, fresh idempotency key, old job cancelled).
+- **Mini App** — vanilla-JS ES-module Mini App (today/upcoming/new/**actions**/
+  workouts/files/facts/settings views; no framework, no build step;
+  Telegram-native `--tg-theme-*` theming, Flatpickr date/time, bottom-sheet
+  selects; V2 screens: Actions inbox with confirm/reject, workout
+  scheduling, file-retry button, inline fact replacement, proactive
+  settings card; verified by a Playwright E2E harness — see Milestones 18
+  and 20) served
   statically; auth by Telegram initData
   HMAC verified with the bot token (constant-time compare, `auth_date`
   freshness with future-skew tolerance, strict user validation, bots
@@ -99,17 +132,23 @@ src/assistant/
               prompts, schemas
   i18n/       language registry (SupportedLanguage), t() translator,
               locales/{ru,en}.json
-  models/     SQLAlchemy 2 async ORM (11 tables, pgvector HNSW index)
-  services/   calendar, reminders, workouts, files, facts, chat, digests,
-              motivation, notifications, jobs (queue), users
-  worker/     durable job loop, handler registry, digest scheduler
+  models/     SQLAlchemy 2 async ORM (14 tables, pgvector HNSW index)
+  services/   calendar, reminders, workouts, files, facts, chat, turns,
+              actions, proactivity, digests, motivation, notifications,
+              jobs (queue), users
+  actions/    action-kind registry (kind → payload schema + executor)
+  worker/     durable job loop (lease + heartbeat), handler registry,
+              digest scheduler, proactive pass
   db/         async engine, session, Base
   config.py   pydantic-settings (env-driven)
-miniapp/      index.html + app.js SPA (all UI strings from backend locales)
-alembic/      async migration env + initial schema (c390315de59f) +
-              embedding 1536→384 (7b492f548c86) + user_settings.language
-              (e8a2c41b7f05)
-tests/        16 test modules, 257 tests, real PostgreSQL
+miniapp/      index.html + app.js + js/{api,telegram,ui,state}.js SPA
+              (all UI strings from backend locales)
+alembic/      async migration env + chain: initial schema (c390315de59f) →
+              embedding 1536→384 (7b492f548c86) → user_settings.language
+              (e8a2c41b7f05) → job leases (a1b2c3d4e5f6) →
+              pending_actions (f7a8b9c0d1e2) → proactivity (9c8d7e6f5a4b)
+tests/        21 test modules, 351 tests, real PostgreSQL
+e2e/          Playwright Mini App browser E2E (6 specs, isolated assistant_e2e DB)
 scripts/      acceptance.sh — production-like end-to-end verification run
 docs/         ARCHITECTURE.md, ASSUMPTIONS.md, RESEARCH.md
 ```
@@ -139,10 +178,14 @@ FastAPI 0.141.1, SQLAlchemy 2.0.54, asyncpg, Alembic 1.20.0, Pydantic
 | 15 | `c378f71` | Per-user internationalization (ru/en): registry + `t()`, `user_settings.language` migration, bot/Mini App/API language selection, execution-time job localization, AI language instruction, 30 i18n tests |
 | 16 | `8c3425b`, `965f760`, `f4f0529`, `35e6b35`, `8954951` | Production runtime-hardening pass: MissingGreenlet fix in digest worker + regression tests; onboarding/FSM i18n completion + localized validation errors; llama.cpp-compatible structured NL parsing for Qwen3.5; loopback-only API bind; `scripts/acceptance.sh` production-like verification run; 235 tests |
 | 17 | `af62178` | Configurable chat timeout (`CHAT_TIMEOUT_SECONDS`) + explicit Qwen thinking mode (`CHAT_THINKING_ENABLED` → `chat_template_kwargs.enable_thinking`), narrow `AITimeoutError` with no-retry timeout vs retriable malformed response, and a localized temporary "Думаю…" / "Thinking…" status UX; 257 tests |
+| 18 | `38bc65e`, `07f5ff8`, `1f88366`, `71923e5`, `ffd3e56`, `da857bf`, `a33fb9d` | Mini App production-hardening pass (vanilla ES modules, theming, Flatpickr, bottom sheet, Playwright harness) + per-screen audit spec |
+| 19 | `9a2e7e5`, `fea8049`, `62e4dc2`, `a3dabd7`, `caee60f`, `631ca52`, `124a54c` | V2 core: job leases; calendar/reminder invariants; durable `PendingAction` engine (typed kinds, confirm flow, TTL expiry); automatic memory proposals with dedupe/supersede; lexical-gated hybrid RAG (RRF); bounded deterministic proactivity with anti-spam gates + nudge dedupe |
+| 20 | `6324766`, `eee632f`, `c0e94e7`, `82ea1d5` | V2 surface + acceptance: Mini App API extension (actions inbox, proactive settings, fact supersede, file retry, workout schedule); Mini App V2 screens; commit-before-409/400 expiry fix; V2 E2E spec + seed helper; 351 pytest tests, 6/6 Playwright specs |
 
 ## 4. Verification (SPEC §31 + QWEN.md)
 
-All checks executed on 2026-09-22:
+All checks executed on 2026-09-23 (V2 final state; V1 checks re-verified
+inside the same run):
 
 | Check | Result |
 |-------|--------|
@@ -151,31 +194,34 @@ All checks executed on 2026-09-22:
 | Network exposure (M16) | `docker-compose.yml` publishes the API as `127.0.0.1:8000:8000` (loopback-only); PostgreSQL has **no** published port; `scripts/acceptance.sh` fails the run on any non-loopback published port |
 | Application image builds | `docker compose build` — api, bot, worker images built |
 | PostgreSQL healthy | `ta-pgvector` up (PostgreSQL 17.11 + pgvector 0.8.6) |
-| Migrations from empty database | recreated the `assistant` DB and `alembic upgrade head` applied cleanly (initial schema + `7b492f548c86` 1536→384 + `e8a2c41b7f05` user_settings.language); also covered in-suite by `tests/test_migrations.py` (throwaway DB: head stamp, exact table set vs `Base.metadata`, pgvector extension, HNSW index) |
-| Full pytest suite | **257 passed** (235 on the fresh migrated DB in `scripts/acceptance.sh`, then +22 `tests/test_thinking_ux.py` in Milestone 17); earlier states verified at 176, then 206, then 235 |
+| Migrations from empty database | fresh `assistant` + `assistant_e2e` databases, `alembic upgrade head` applied the full chain cleanly (initial schema → `7b492f548c86` 1536→384 → `e8a2c41b7f05` user_settings.language → `a1b2c3d4e5f6` job leases → `f7a8b9c0d1e2` pending_actions → `9c8d7e6f5a4b` proactivity); also covered in-suite by `tests/test_migrations.py` (throwaway DB: head stamp, exact table set vs `Base.metadata`, pgvector extension, HNSW index) |
+| Full pytest suite | **351 passed** (351 also on the fresh migrated DB inside `scripts/acceptance.sh`); earlier states verified at 176 → 206 → 235 → 257, then +94 V2 tests (actions, turns/memory, proactivity, hybrid retrieval, lease hardening, API V2, Mini App shell) |
+| Mini App browser E2E (M18–M20) | `npm run test:e2e` — **6/6 specs passed** (a11y, miniapp 20-step scenario, per-screen audit, screenshots, theme, v2-features) against an isolated `assistant_e2e` DB + API on port 8123; the V2 spec exercised the five new features end-to-end and caught a real rollback bug in the confirm route (fixed in `c0e94e7`) |
 | Ruff | `ruff check .` — all checks passed (`ruff format` is not a project gate; pre-existing files are unformatted) |
 | Chat timeout + thinking (M17) | `tests/test_thinking_ux.py` (22): settings defaults + positive/bounded validation; configured timeout reaches the chat client `Timeout.read` (connect/pool 10 s); embedding client stays on its own 60 s float timeout; `chat_template_kwargs.enable_thinking` present and correct on both chat and structured calls; `APITimeoutError` → `AITimeoutError` (subclass of `AIProviderError`) after exactly one provider call (no second long inference); RU/EN "Думаю…" / "Thinking…" status sent in the user's language and deleted on success, provider error, and timeout; a failing status delete does not break the flow; no status when thinking is disabled |
 | `.env.example` loads (M17) | `.env.example` values instantiate `Settings` cleanly: `chat_timeout_seconds=180.0`, `chat_thinking_enabled=True` |
-| Production-like acceptance run (M16) | `bash scripts/acceptance.sh` — 13 checks, all passed: fresh Docker PostgreSQL, `alembic upgrade head`, API start + `/healthz`, worker running digest-scheduling iterations against users with and without `UserSettings` rows with **no `MissingGreenlet`** and 2 digests persisted, bot dispatcher wiring with Telegram mocked, RU/EN onboarding tests, Qwen-style NL task-draft tests, full 235-test pytest suite on the fresh database, Ruff, compose config, loopback-only port audit |
+| Production-like acceptance run (M16) | `bash scripts/acceptance.sh` — 13 checks, all passed on 2026-09-23: fresh Docker PostgreSQL, `alembic upgrade head` (full V2 chain), API start + `/healthz`, worker running digest-scheduling iterations against users with and without `UserSettings` rows with **no `MissingGreenlet`** and 2 digests persisted, bot dispatcher wiring with Telegram mocked, RU/EN onboarding tests, Qwen-style NL task-draft tests, full **351**-test pytest suite on the fresh database, Ruff, compose config, loopback-only port audit |
 | FastAPI application imports | OK (routes serve; FastAPI 0.141 materializes included routers lazily) |
 | Bot application imports | OK (`assistant.bot.main`) |
 | Worker smoke path | `python -m assistant.worker.main` started, polled an empty queue for 15 s, stopped cleanly (exit 0) |
 | Concurrency test (PostgreSQL locking) | `tests/test_jobs.py` — concurrent claimers, no double-claim via `FOR UPDATE SKIP LOCKED`, against real PostgreSQL |
 | Mini App auth tests | `tests/test_init_data.py` — 17 unit tests (valid/wrong-token/tampered/stale/future/missing/malformed payloads) + 4 authed-API 401 tests in `tests/test_api.py` |
-| Real-PostgreSQL flows | items CRUD + reminders, workout stats, file search, facts lifecycle, digest scheduling, bot draft flows — all in the 235-test suite against a real PG 17 |
+| Real-PostgreSQL flows | items CRUD + reminders, workout stats + scheduling, file search (hybrid, lexical-gated), facts lifecycle incl. supersede, digest scheduling, bot draft flows, pending actions, nudge dedupe — all in the 351-test suite against a real PG 17 |
 | i18n: column + default | `user_settings.language` VARCHAR(16) NOT NULL, column default `'ru'`; new users default `ru`; existing rows migrated to `ru` (asserted in `tests/test_i18n.py`) |
-| i18n: ru/en parity | identical key sets in `locales/ru.json` / `locales/en.json` (enforced by `test_locale_key_parity_ru_en`); two users in two languages verified end-to-end (bot start, reminders, digest, API) |
+| i18n: ru/en parity | identical key sets in `locales/ru.json` / `locales/en.json` — **264 keys each** (enforced by `test_locale_key_parity_ru_en`); two users in two languages verified end-to-end (bot start, reminders, digest, API) |
 | pgvector column + index | `file_chunks.embedding` is `vector(384)` (atttypmod 384) and `ix_file_chunks_embedding_hnsw` (hnsw, cosine) present in the catalog after `alembic upgrade head` |
 | No TODO/stub/placeholder | grep of `src/` and `miniapp/` — none (only HTML `placeholder` input attributes) |
 | README/docs | README.md + docs/ARCHITECTURE.md + docs/ASSUMPTIONS.md + docs/RESEARCH.md |
 | Git working tree clean | `git status` clean after each milestone commit; nothing pushed to any remote |
 
-Test-suite breakdown (collected): `test_i18n` (30), `test_ai` (30),
-`test_bot_foundation` (25), `test_thinking_ux` (22), `test_api` (20),
-`test_files` (17), `test_init_data` (17), `test_onboarding_i18n` (16),
-`test_facts` (14), `test_reminders` (14), `test_digests` (13),
-`test_jobs` (11), `test_chat` (10), `test_calendar` (9),
-`test_workouts` (7), `test_migrations` (2) = 257.
+Test-suite breakdown (collected, 351): `test_api` (33), `test_i18n` (30),
+`test_ai` (30), `test_turns` (27), `test_bot_foundation` (25),
+`test_thinking_ux` (23), `test_files` (22), `test_jobs` (18),
+`test_init_data` (17), `test_onboarding_i18n` (16), `test_actions` (15),
+`test_reminders` (14), `test_facts` (14), `test_calendar` (14),
+`test_digests` (13), `test_chat` (12), `test_proactivity` (11),
+`test_workouts` (7), `test_minapp_shell` (6), `test_storage_shared` (2),
+`test_migrations` (2).
 
 External AI/Telegram HTTP calls are mocked in tests (fake providers,
 sender stubs, locally signed initData); production integration code is
@@ -440,3 +486,109 @@ check 401 without `ASSISTANT_TEST_AUTH`, 6 reference screenshots in
 gitignored `test-artifacts/screenshots/` (review-only — no
 visual-inspection claims), working tree clean, nothing pushed to any
 remote.**
+
+## 10. Milestone 19 — V2 core: reliability, actions, memory, RAG, proactivity (2026-09-23)
+
+The Personal Assistant V2 feature set, implemented as focused, bounded
+changes to the existing modular monolith (no new infrastructure, no new
+runtime processes).
+
+1. **Durable job hardening (`9a2e7e5`, `fea8049`).** The SKIP LOCKED queue
+   gained real leases: each claim carries a unique owner token and a
+   `lease_until`; a heartbeat renews it, and a job is treated as abandoned
+   *only* when its lease lapses — a slow-but-alive worker is never
+   re-claimed. Migration `a1b2c3d4e5f6` (lease columns). Calendar/reminder
+   invariants tightened (one item per identity, reminder ownership and
+   offset rules).
+2. **Bounded conversational actions (`62e4dc2`, `a3dabd7`).** New
+   `pending_actions` table (migration `f7a8b9c0d1e2`): `kind` (closed
+   registry, built-ins `create_item` / `cancel_item` in
+   `src/assistant/actions/`), per-kind Pydantic payload, summary, TTL.
+   `services/actions.py`: `propose_action` / `confirm_action` /
+   `reject_action` / `execute_action` / `expire_actions`. Confirm executes
+   the kind's executor in the same transaction; a stale target (item
+   missing/already cancelled) expires the action *and* re-raises
+   `ActionStaleError`; a malformed payload expires it with `ValueError`.
+   The bot surfaces proposals as inline confirm/reject buttons; the turn
+   engine (`services/turns.py`) is the only proposer, so the model can
+   never write directly.
+3. **Automatic long-term memory (`caee60f`).** The chat turn engine may
+   extract salient facts and store them as `proposed` user facts, deduped
+   against existing values; they enter the existing
+   proposed/confirmed/rejected/superseded lifecycle and only reach chat
+   context after an explicit user confirm. `supersede_fact` replaces a
+   value by marking the old fact `superseded` (with `superseded_by`) and
+   storing the new one as a distinct proposed fact.
+4. **Lexical-gated hybrid RAG (`631ca52`).** `services/files.py` search now
+   runs a tsvector full-text arm (language-neutral `simple` config,
+   `ts_rank`) as a *gate*: the embedding provider is called only when the
+   lexical arm matches. Lexical and vector ranked lists are fused with RRF
+   (K=60); a minimum fused score drops tail candidates; an embedding outage
+   degrades to lexical-only results. Citations are derived
+   deterministically from the fused ranking; user-scope isolation is
+   unchanged.
+5. **Bounded proactivity (`124a54c`).** New `proactive_settings` +
+   `nudge_deliveries` tables (migration `9c8d7e6f5a4b`).
+   `services/proactivity.py` runs a deterministic pass (no AI): weekly
+   review on the user's local Monday (once per ISO week) and a workout
+   nudge when the last workout is older than 48 h (once per local day).
+   Anti-spam gates in order: enabled → quiet hours (user timezone) → daily
+   cap → min interval. The `NudgeDelivery` dedupe row is flushed *before*
+   sending, so a crash between write and send can never double-nudge. The
+   worker runs the pass between polling iterations (digest cadence) and
+   expires stale proposed actions; per-user commit/rollback isolation means
+   one failed nudge never poisons the rest of the pass. All data access
+   uses explicit SELECTs (no ORM instance state — `Session.rollback`
+   expires objects and async lazy reload raises `MissingGreenlet`).
+
+## 11. Milestone 20 — V2 surface, acceptance coverage, and final docs (2026-09-23)
+
+1. **Mini App API extension (`6324766`).** New `/api/v1` endpoints:
+   `GET /actions?status=&limit=` (proposed-first, newest),
+   `POST /actions/{id}/confirm` (404 unknown, 400 terminal, 409 stale,
+   idempotent replay of an executed action), `POST /actions/{id}/reject`;
+   `POST /facts/{id}/supersede` (proposes the new value, 404 cross-user);
+   `GET/PATCH /proactive-settings` (auto-created row, partial PATCH,
+   pydantic bounds → 422); `POST /files/{id}/retry` (only `failed`;
+   fresh `file:{id}:retry:{n}` idempotency key, old job cancelled);
+   `POST /workouts/schedule` (calendar item `Workout: <name>` + start-time
+   reminder).
+2. **Mini App V2 screens (`eee632f`).** New ⏳ Actions tab (inbox with
+   confirm/reject, status badges, localized stale toast), workout
+   scheduling card (Flatpickr datetime + validation), file-retry button on
+   failed file cards, inline fact "Replace" form (one open at a time,
+   survives re-renders), and the proactive-settings card in Settings
+   (switches + quiet-hours pickers + option sheets, isolated fetch
+   failure). 21 new i18n keys per language.
+3. **Rollback bug caught by the new E2E (`c0e94e7`).** The V2 E2E spec
+   failed on the first run with `Expected: "истекло", Received:
+   "ожидает"`: the confirm route raised 409/400 *before* committing, so
+   the session dependency rolled back the in-transaction `expired`
+   marking and the stale action stayed `proposed` forever (would replay on
+   retry). The pytest suite masked it because `tests/test_api.py`
+   overrides `get_session` with the raw shared fixture session, which never
+   rolls back — the real server did. Fix: commit inside both exception
+   branches before re-raising.
+4. **V2 E2E acceptance (`82ea1d5`).** `e2e/tests/v2-features.e2e.ts`
+   exercises the five V2 features end-to-end against the real API + DB
+   (seeded via `e2e/helpers/seed.ts` asyncpg helper against the isolated
+   `assistant_e2e` DB; `global-setup.ts` now also truncates the three V2
+   tables): actions confirm/stale-409/reject, workout scheduling
+   (missing-time validation, Flatpickr 23:50 pick), file retry of a
+   DB-seeded `failed` file, fact supersede (new "предложен" / old
+   "заменён" — new `miniapp.fact_superseded` locale key, ru/en parity now
+   264/264), proactive-settings defaults (weekly on, 22:00→08:00, max 3,
+   120 min) + PATCH + restore. The controlled 409 is allowed through the
+   console guard (`guard.allow`).
+5. **Docs.** README gains the "V2 features" section and updated E2E
+   description; `docs/ARCHITECTURE.md` gains invariants 7–9, the worker
+   proactive pass, and the updated layout; `docs/ASSUMPTIONS.md` gains
+   entries 20–23 (typed action registry, deterministic proactivity,
+   lexical-gated RRF retrieval, automatic memory proposals).
+
+Verification state after Milestone 20 (all executed 2026-09-23): **351
+pytest tests passing (incl. the fresh-database run inside
+`scripts/acceptance.sh`), full Playwright suite 6/6, `uv run ruff check`
+clean, ru/en locale parity 264/264, `bash scripts/acceptance.sh` all 13
+checks green (fresh Docker PostgreSQL + full migration chain), working
+tree clean, nothing pushed to any remote.**

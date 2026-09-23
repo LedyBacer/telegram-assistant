@@ -29,7 +29,12 @@ worker ─────────────────────> durable 
   unique owner token and a lease that a heartbeat renews; only the current
   owner with a live lease may complete/fail/renew. Job types: file ingestion
   (download → extract → chunk → embed → store), morning digest generation
-  (idempotent per user/day), reminder firing.
+  (idempotent per user/day), reminder firing. Between polling iterations the
+  worker also runs a **proactive pass** (same cadence as digest scheduling):
+  deterministic, state-derived nudges (weekly review on local Monday, workout
+  nudge after 48 h without a workout) gated by per-user `ProactiveSettings`
+  (enabled, quiet hours, daily cap, min interval), deduped by durable
+  `NudgeDelivery` rows, plus expiry of stale proposed/confirmed actions.
 - **postgres** — single state store: relational tables, the `jobs` queue, and
   `Vector(384)` columns with HNSW cosine indexes for hybrid retrieval.
 
@@ -54,6 +59,23 @@ worker ─────────────────────> durable 
   default `ru`). There is no global/env-var language. Russian is the
   fallback for unknown languages and missing keys, and a key missing from
   Russian returns the key itself (never an exception).
+7. **Bounded typed conversational actions.** Model-proposed mutations are
+  `PendingAction` rows with a fixed `kind` (closed registry; built-ins:
+  `create_item`, `cancel_item`), a kind-validated JSON payload, and a TTL;
+  execution happens only on explicit user Confirm (bot inline button or
+  Mini App). A stale target expires the action *and re-raises* inside the
+  transaction; every API path persists that expiry (commit before the 409/400
+  is raised) so an expired action can never replay.
+8. **Facts are never auto-confirmed.** Whether proposed via `/remember`,
+  the Mini App, or the chat turn engine, a fact enters `proposed` and only a
+  user Confirm promotes it to `confirmed`; replacing a fact
+  (`supersede_fact`) marks the old fact `superseded` (with provenance via
+  `superseded_by`) and stores the new value as a distinct `proposed` fact.
+9. **Proactivity is deterministic and deduped.** Nudges derive from stored
+  state only (no AI), run through per-user anti-spam gates (enabled → quiet
+  hours → daily cap → min interval), and write a durable `NudgeDelivery`
+  dedupe row *before* sending, so a crash between write and send can never
+  double-nudge.
 
 ## Job delivery semantics (durable, at-least-once, §5.6)
 
@@ -140,14 +162,19 @@ src/assistant/
 ├── ai/                # OpenAI-compatible providers: independent chat and
 │                      # embedding clients (separate servers/keys/models)
 ├── i18n/              # language registry + t() + locales/{ru,en}.json
-├── services/          # calendar, tasks, reminders, workouts, files, facts,
-│                      # retrieval, digest, queue — shared by bot/api/worker
+├── services/          # calendar, reminders, workouts, files, facts, chat,
+│                      # turns, actions, proactivity, digests, motivation,
+│                      # notifications, jobs (queue), users — shared by
+│                      # bot/api/worker
+├── actions/           # action-kind registry (kind → payload schema + executor)
 ├── bot/               # aiogram routers, callbacks, FSM, keyboards
 ├── api/               # FastAPI app, routers, schemas, miniapp auth
-├── worker/            # job loop + handlers
-└── miniapp/           # static Mini App (vanilla JS + Tailwind)
-alembic/               # async migrations
-tests/                 # pytest + real PostgreSQL 17 + pgvector
+├── worker/            # job loop + handlers + proactive pass
+└── miniapp/           # static Mini App (vanilla JS ES modules)
+alembic/               # async migrations (initial → vector 384 → language
+                       # → job leases → pending actions → proactivity)
+tests/                 # pytest + real PostgreSQL 17 + pgvector (351 tests)
+e2e/                   # Playwright Mini App browser E2E (6 specs)
 ```
 
 ## Migration strategy

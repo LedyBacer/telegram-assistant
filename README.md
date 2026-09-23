@@ -14,6 +14,37 @@ task drafting and document embeddings (pgvector).
 | `worker` | `python -m assistant.worker.main` | Durable background jobs (SKIP LOCKED queue)    |
 | `postgres` | PostgreSQL 17 + pgvector      | State, jobs, and vector search                 |
 
+## V2 features
+
+On top of the calendar/reminders/workouts/files/facts/chat core:
+
+- **Conversational actions (confirm-before-write).** When chat implies a
+  mutation (create/cancel a calendar item), the model proposes a *typed*
+  `PendingAction` (closed kind registry, validated JSON payload, TTL) instead
+  of writing. The proposal appears in the bot (inline buttons) and in the
+  Mini App ⏳ Actions tab; only an explicit Confirm executes it. A stale
+  target (e.g. the item was already gone) expires the proposal with a
+  localized "no longer applies" message, and Reject/timeout are terminal.
+- **Long-term memory.** Salient facts can also be proposed automatically by
+  the chat turn engine; every fact — wherever it comes from — stays
+  `proposed` until the user confirms it, and only `confirmed` facts reach the
+  chat context. Replacing a fact (`/remember`, Mini App "Replace") marks the
+  old value `superseded` (with provenance) and proposes the new one.
+- **Proactivity.** The worker runs a bounded, deterministic pass (no AI):
+  a weekly review nudge on the user's local Monday and a workout nudge after
+  48 h without a workout, gated by per-user settings (enabled, quiet hours,
+  max nudges/day, min interval) and deduped durably — all adjustable in
+  Mini App Settings ("Проактивные уведомления").
+- **Hybrid file search (lexical-gated).** File search always runs a full-text
+  (tsvector) arm; the vector arm is queried only when the lexical arm
+  matches, and the two ranked lists are fused with RRF. An embedding outage
+  degrades to lexical-only results instead of failing.
+- **Workout scheduling.** Mini App "Schedule a workout" creates a calendar
+  item + a start-time reminder (`POST /api/v1/workouts/schedule`).
+- **File ingestion retry.** A failed file can be re-queued for indexing
+  from the Mini App (`POST /api/v1/files/{id}/retry`); the old job is
+  cancelled and a new one carries a fresh idempotency key.
+
 ## Quick start (Docker)
 
 ```bash
@@ -265,14 +296,19 @@ from outside. The Telegram WebApp client itself is stubbed in the browser via
 `themeParams`, `ready()/expand()`, BackButton, HapticFeedback, and runtime
 theme switching; the real `telegram.org` script is blocked in tests.
 
-The specs verify rendering (including the `[object HTMLDivElement]`
+The specs (6) verify rendering (including the `[object HTMLDivElement]`
 regression), themes via computed styles (light/dark/custom), layout (no
-horizontal overflow, ≥44 px touch targets), a11y basics, the full 20-step
-user scenario (fact, file upload, task + calendar, bottom sheet, ru→en,
-reload persistence, controlled API error), and browser-console health
-(uncaught exceptions and unexpected failed same-origin requests fail the
-test). Reference screenshots (for human review only) are written to the
-gitignored `test-artifacts/screenshots/` directory.
+horizontal overflow, ≥44 px touch targets), a11y basics, a per-screen audit
+(states, user content, task lifecycle), the full 20-step user scenario
+(fact, file upload, task + calendar, bottom sheet, ru→en, reload
+persistence, controlled API error), and the five V2 features end-to-end
+against the real API + DB (actions confirm/stale-409/reject, workout
+scheduling, file retry, fact supersede, proactive-settings defaults +
+PATCH) via a small asyncpg seed helper (`e2e/helpers/seed.ts`). Every spec
+also asserts browser-console health (uncaught exceptions and unexpected
+failed same-origin requests fail the test). Reference screenshots (for
+human review only) are written to the gitignored
+`test-artifacts/screenshots/` directory.
 
 After a manual deploy, verify the public URL read-only:
 
