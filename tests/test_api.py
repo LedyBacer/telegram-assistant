@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 os.environ["DATABASE_URL"] = os.environ.get(
@@ -26,7 +27,9 @@ os.environ["OPENAI_API_KEY"] = "test-key"
 from assistant.api.main import create_app  # noqa: E402
 from assistant.db import get_session  # noqa: E402
 from assistant.models.files import FileChunk, FileState, UserFile  # noqa: E402
+from assistant.models.jobs import BackgroundJob  # noqa: E402
 from assistant.models.users import User  # noqa: E402
+from assistant.services import actions as actions_service  # noqa: E402
 from assistant.services import files  # noqa: E402
 from test_init_data import make_init_data  # noqa: E402
 
@@ -479,3 +482,322 @@ async def test_today_uses_user_timezone(client: httpx.AsyncClient) -> None:
     assert res.status_code == 201
     today = await client.get("/api/v1/calendar/today", headers=HEADERS)
     assert [i["title"] for i in today.json()] == ["Local"]
+
+
+# ---------------------------------------------------------------------------
+# Assistant Inbox — pending actions (SPEC §3)
+# ---------------------------------------------------------------------------
+
+
+async def _propose_create_item(client: httpx.AsyncClient, session: AsyncSession) -> int:
+    await client.get("/api/v1/me", headers=HEADERS)  # upsert user 777
+    user = await session.get(User, 777)
+    assert user is not None
+    action = await actions_service.propose_action(
+        session,
+        user,
+        kind="create_item",
+        payload={"title": "Proposed task", "starts_at": TODAY_NOON},
+        summary="create 'Proposed task'",
+    )
+    await session.commit()
+    return action.id
+
+
+async def test_action_confirm_executes_exactly_once(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    action_id = await _propose_create_item(client, session)
+
+    listed = await client.get("/api/v1/actions", headers=HEADERS)
+    assert listed.status_code == 200
+    assert [a["status"] for a in listed.json()] == ["proposed"]
+    assert listed.json()[0]["kind"] == "create_item"
+
+    res = await client.post(f"/api/v1/actions/{action_id}/confirm", headers=HEADERS)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "executed"
+    assert body["executed_at"] is not None
+    assert body["last_result"] is not None
+
+    # The mutation happened exactly once.
+    today = await client.get("/api/v1/calendar/today", headers=HEADERS)
+    assert [i["title"] for i in today.json()] == ["Proposed task"]
+
+    # Replay is safe: stored state returned, no second item.
+    res = await client.post(f"/api/v1/actions/{action_id}/confirm", headers=HEADERS)
+    assert res.status_code == 200
+    assert res.json()["status"] == "executed"
+    today = await client.get("/api/v1/calendar/today", headers=HEADERS)
+    assert len(today.json()) == 1
+
+
+async def test_action_reject_and_terminal_states(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    action_id = await _propose_create_item(client, session)
+    res = await client.post(f"/api/v1/actions/{action_id}/reject", headers=HEADERS)
+    assert res.status_code == 200
+    assert res.json()["status"] == "rejected"
+
+    # Rejected actions cannot be confirmed; rejecting again is a 400.
+    assert (
+        await client.post(f"/api/v1/actions/{action_id}/confirm", headers=HEADERS)
+    ).status_code == 400
+    assert (
+        await client.post(f"/api/v1/actions/{action_id}/reject", headers=HEADERS)
+    ).status_code == 400
+
+    # Nothing was mutated.
+    assert (await client.get("/api/v1/calendar/today", headers=HEADERS)).json() == []
+
+
+async def test_action_confirm_stale_target_is_409(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    item_id = (
+        await client.post(
+            "/api/v1/items", headers=HEADERS, json={"title": "Gone", "starts_at": TODAY_NOON}
+        )
+    ).json()["id"]
+    user = await session.get(User, 777)
+    assert user is not None
+    action = await actions_service.propose_action(
+        session,
+        user,
+        kind="cancel_item",
+        payload={"item_id": item_id},
+        summary="cancel 'Gone'",
+    )
+    await session.commit()
+    action_id = action.id
+
+    # The target disappears before confirmation.
+    await client.delete(f"/api/v1/items/{item_id}", headers=HEADERS)
+
+    res = await client.post(f"/api/v1/actions/{action_id}/confirm", headers=HEADERS)
+    assert res.status_code == 409
+    # The proposal expired rather than executing.
+    listed = await client.get("/api/v1/actions", headers=HEADERS)
+    assert [a["status"] for a in listed.json()] == ["expired"]
+
+
+async def test_actions_are_user_scoped(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    action_id = await _propose_create_item(client, session)
+    # The other user sees an empty inbox and cannot touch the action.
+    assert (await client.get("/api/v1/actions", headers=HEADERS_OTHER)).json() == []
+    assert (
+        await client.post(f"/api/v1/actions/{action_id}/confirm", headers=HEADERS_OTHER)
+    ).status_code == 404
+    assert (
+        await client.post(f"/api/v1/actions/{action_id}/reject", headers=HEADERS_OTHER)
+    ).status_code == 404
+
+
+async def test_action_list_status_filter(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    action_id = await _propose_create_item(client, session)
+    await client.post(f"/api/v1/actions/{action_id}/reject", headers=HEADERS)
+    assert (
+        await client.get("/api/v1/actions", headers=HEADERS, params={"status": "proposed"})
+    ).json() == []
+    rejected = await client.get(
+        "/api/v1/actions", headers=HEADERS, params={"status": "rejected"}
+    )
+    assert [a["id"] for a in rejected.json()] == [action_id]
+
+
+# ---------------------------------------------------------------------------
+# Proactivity settings (SPEC §11)
+# ---------------------------------------------------------------------------
+
+
+async def test_proactive_settings_api(client: httpx.AsyncClient) -> None:
+    res = await client.get("/api/v1/proactive-settings", headers=HEADERS)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["enabled"] is True
+    assert body["weekly_review_enabled"] is True
+    assert body["workout_nudge_enabled"] is True
+    assert body["quiet_hours_start"] == "22:00:00"
+    assert body["quiet_hours_end"] == "08:00:00"
+    assert body["max_nudges_per_day"] == 3
+    assert body["min_interval_minutes"] == 120
+
+    res = await client.patch(
+        "/api/v1/proactive-settings",
+        headers=HEADERS,
+        json={"enabled": False, "quiet_hours_start": "23:00:00", "max_nudges_per_day": 2},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["enabled"] is False
+    assert body["quiet_hours_start"] == "23:00:00"
+    assert body["max_nudges_per_day"] == 2
+    # Untouched fields keep their values.
+    assert body["weekly_review_enabled"] is True
+    assert body["quiet_hours_end"] == "08:00:00"
+    assert (await client.get("/api/v1/proactive-settings", headers=HEADERS)).json() == body
+
+
+async def test_proactive_settings_validation_is_422(client: httpx.AsyncClient) -> None:
+    assert (
+        await client.patch(
+            "/api/v1/proactive-settings", headers=HEADERS, json={"max_nudges_per_day": 0}
+        )
+    ).status_code == 422
+    assert (
+        await client.patch(
+            "/api/v1/proactive-settings", headers=HEADERS, json={"min_interval_minutes": 5000}
+        )
+    ).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Fact supersede (SPEC §14)
+# ---------------------------------------------------------------------------
+
+
+async def test_fact_supersede_flow(client: httpx.AsyncClient) -> None:
+    fact_id = (
+        await client.post("/api/v1/facts", headers=HEADERS, json={"value": "old value"})
+    ).json()["id"]
+    res = await client.post(
+        f"/api/v1/facts/{fact_id}/supersede",
+        headers=HEADERS,
+        json={"value": "new value"},
+    )
+    assert res.status_code == 201
+    new = res.json()
+    assert new["status"] == "proposed"
+    assert new["id"] != fact_id
+
+    by_id = {f["id"]: f for f in (await client.get("/api/v1/facts", headers=HEADERS)).json()}
+    assert by_id[fact_id]["status"] == "superseded"
+    assert by_id[new["id"]]["status"] == "proposed"
+
+    # The replacement itself needs confirmation before it counts as memory.
+    res = await client.post(f"/api/v1/facts/{new['id']}/confirm", headers=HEADERS)
+    assert res.json()["status"] == "confirmed"
+
+
+async def test_fact_supersede_scoping_and_states(client: httpx.AsyncClient) -> None:
+    fact_id = (
+        await client.post("/api/v1/facts", headers=HEADERS, json={"value": "mine"})
+    ).json()["id"]
+    # Another user cannot supersede it.
+    res = await client.post(
+        f"/api/v1/facts/{fact_id}/supersede",
+        headers=HEADERS_OTHER,
+        json={"value": "theirs"},
+    )
+    assert res.status_code == 404
+    # A rejected fact cannot be superseded (not proposed/confirmed).
+    await client.post(f"/api/v1/facts/{fact_id}/reject", headers=HEADERS)
+    res = await client.post(
+        f"/api/v1/facts/{fact_id}/supersede", headers=HEADERS, json={"value": "v2"}
+    )
+    assert res.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# File ingestion retry (SPEC §11)
+# ---------------------------------------------------------------------------
+
+
+async def test_file_retry_flow(client: httpx.AsyncClient, session: AsyncSession) -> None:
+    await client.get("/api/v1/me", headers=HEADERS)
+    failed = UserFile(
+        user_id=777,
+        storage_key="key-failed",
+        telegram_file_id="tg-1",
+        original_filename="broken.pdf",
+        mime_type="application/pdf",
+        state=FileState.failed.value,
+        error="embedding provider unavailable",
+    )
+    rejected = UserFile(
+        user_id=777,
+        storage_key="key-rejected",
+        telegram_file_id="tg-2",
+        original_filename="img.png",
+        mime_type="image/png",
+        state=FileState.rejected.value,
+        error="unsupported type",
+    )
+    session.add_all([failed, rejected])
+    await session.commit()
+    failed_id, rejected_id = failed.id, rejected.id
+
+    res = await client.post(f"/api/v1/files/{failed_id}/retry", headers=HEADERS)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["state"] == "queued"
+    assert body["error"] is None
+
+    # A new ingestion job is enqueued.
+    jobs = (
+        await session.scalars(
+            select(BackgroundJob).where(BackgroundJob.type == "files.ingest")
+        )
+    ).all()
+    assert len(jobs) == 1
+    assert jobs[0].payload == {"file_id": failed_id}
+    assert jobs[0].status == "pending"
+
+    # Only failed files are retryable.
+    assert (
+        await client.post(f"/api/v1/files/{failed_id}/retry", headers=HEADERS)
+    ).status_code == 400
+    assert (
+        await client.post(f"/api/v1/files/{rejected_id}/retry", headers=HEADERS)
+    ).status_code == 400
+    # Another user cannot retry it.
+    assert (
+        await client.post(f"/api/v1/files/{failed_id}/retry", headers=HEADERS_OTHER)
+    ).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Workout scheduling (SPEC §10)
+# ---------------------------------------------------------------------------
+
+
+async def test_workout_schedule_creates_item_and_reminder(
+    client: httpx.AsyncClient,
+) -> None:
+    res = await client.post(
+        "/api/v1/workouts/schedule",
+        headers=HEADERS,
+        json={"name": "Legs", "starts_at": TOMORROW_NOON, "duration_minutes": 45},
+    )
+    assert res.status_code == 201
+    item = res.json()
+    assert item["title"] == "Workout: Legs"
+    assert item["source"] == "workout"
+    assert item["status"] == "scheduled"
+
+    reminders = await client.get("/api/v1/reminders", headers=HEADERS)
+    data = reminders.json()
+    assert len(data) == 1
+    assert data[0]["message"] == "Workout: Legs"
+    fire_at = datetime.fromisoformat(data[0]["fire_at"].replace("Z", "+00:00"))
+    expected_fire = (
+        datetime.fromisoformat(TOMORROW_NOON).replace(tzinfo=UTC)
+    )
+    assert fire_at == expected_fire
+
+
+async def test_workout_schedule_validation(client: httpx.AsyncClient) -> None:
+    res = await client.post(
+        "/api/v1/workouts/schedule", headers=HEADERS, json={"name": "", "starts_at": TOMORROW_NOON}
+    )
+    assert res.status_code == 422
+    res = await client.post(
+        "/api/v1/workouts/schedule", headers=HEADERS, json={"name": "x"}
+    )
+    assert res.status_code == 422

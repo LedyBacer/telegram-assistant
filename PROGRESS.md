@@ -1,6 +1,25 @@
 # Progress
 
-Status: PRIORITY 9 COMPLETE (bounded proactivity pass, SPEC §11, commit
+Status: PRIORITY 10 COMPLETE (Mini App API extension). Added the API
+surface for the V2 features (all in `src/assistant/api/routes.py` +
+`schemas.py`, 12 new tests in `tests/test_api.py`): (1) pending-actions
+inbox — `GET /actions?status=&limit=` (proposed-first, newest),
+`POST /actions/{id}/confirm` (get → 404, rejected/expired → 400,
+confirm+execute in one transaction; stale target → `ActionStaleError` →
+409 + expired; idempotent replay returns executed without re-running),
+`POST /actions/{id}/reject` (terminal states → 400); (2) fact supersede —
+`POST /facts/{id}/supersede` proposes a `replace_fact` action (old fact
+stays active until confirmed, 404 cross-user/rejected); (3) proactive
+settings — `GET/PATCH /proactive-settings` (row auto-created, partial
+PATCH, pydantic bounds 422); (4) file ingestion retry —
+`POST /files/{id}/retry` + `files_service.retry_file` (only `failed`
+retryable, `rejected`/other states → 400; new job with
+`file:{id}:retry:{n}` idempotency key, old job cancelled,
+`extra.retry_count` incremented); (5) workout scheduling —
+`POST /workouts/schedule` creates a calendar item + reminder at
+`starts_at`. Verified: full suite 351 passing, Ruff clean.
+
+Prior: PRIORITY 9 COMPLETE (bounded proactivity pass, SPEC §11, commit
 124a54c). Priority 9 done: deterministic state-derived triggers only (no
 model calls) — `weekly_review` on Monday in the user's local time, once per
 ISO week; `workout` once per user-local day when the last workout is None or

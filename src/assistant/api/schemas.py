@@ -164,6 +164,53 @@ class FactCreate(BaseModel):
     confidence: float | None = Field(default=None, ge=0, le=1)
 
 
+class FactSupersede(BaseModel):
+    value: str = Field(min_length=1, max_length=2000)
+    category: str | None = Field(default=None, max_length=64)
+
+
+class ActionOut(ORMModel):
+    id: int
+    kind: str
+    summary: str
+    status: str
+    payload: dict
+    last_result: dict | None
+    last_error: str | None
+    created_at: datetime
+    expires_at: datetime | None
+    confirmed_at: datetime | None
+    rejected_at: datetime | None
+    executed_at: datetime | None
+    expired_at: datetime | None
+
+
+class ProactiveSettingsOut(ORMModel):
+    enabled: bool
+    weekly_review_enabled: bool
+    workout_nudge_enabled: bool
+    quiet_hours_start: time
+    quiet_hours_end: time
+    max_nudges_per_day: int
+    min_interval_minutes: int
+
+
+class ProactiveSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    weekly_review_enabled: bool | None = None
+    workout_nudge_enabled: bool | None = None
+    quiet_hours_start: time | None = None
+    quiet_hours_end: time | None = None
+    max_nudges_per_day: int | None = Field(default=None, ge=1, le=20)
+    min_interval_minutes: int | None = Field(default=None, ge=0, le=1440)
+
+
+class WorkoutSchedule(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    starts_at: datetime
+    duration_minutes: int | None = Field(default=None, gt=0)
+
+
 class FactOut(ORMModel):
     id: int
     category: str

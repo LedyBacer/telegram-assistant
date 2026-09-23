@@ -239,6 +239,48 @@ async def delete_file(session: AsyncSession, user: User, file_id: int) -> bool:
     return file_id_to_delete is not None
 
 
+async def retry_file(session: AsyncSession, user: User, file_id: int) -> UserFile:
+    """Re-queue ingestion for a failed file (flush only; the caller commits).
+
+    Only ``failed`` files are retryable. ``rejected`` files stay rejected
+    (the rejection is deterministic — unsupported type or oversize — so a
+    re-run can never succeed). A file that is not a local upload is
+    re-downloaded from Telegram; a local upload whose bytes are missing from
+    disk cannot be retried and raises ``ValueError``.
+    """
+    file = await get_file(session, user, file_id)
+    if file is None:
+        raise ValueError("File not found.")
+    if file.state == FileState.rejected.value:
+        raise ValueError("File was rejected and cannot be re-ingested.")
+    if file.state != FileState.failed.value:
+        raise ValueError(f"File is {file.state}, not failed.")
+    if (
+        file.telegram_file_id is None
+        and not _storage_path(file.storage_key).exists()
+    ):
+        raise ValueError("File data is missing and cannot be re-ingested.")
+    if file.job_id is not None:
+        await cancel_job(session, file.job_id)
+    settings = get_settings()
+    retry_count = int((file.extra or {}).get("retry_count", 0)) + 1
+    job = await create_job(
+        session,
+        type=FILES_INGEST_JOB_TYPE,
+        payload={"file_id": file.id},
+        user_id=user.id,
+        idempotency_key=f"file:{file.id}:retry:{retry_count}",
+        max_attempts=settings.job_max_attempts,
+    )
+    file.job_id = job.id
+    file.state = FileState.queued.value
+    file.error = None
+    file.indexed_at = None
+    file.extra = {**(file.extra or {}), "retry_count": retry_count}
+    await session.flush()
+    return file
+
+
 # ---------------------------------------------------------------------------
 # Text extraction + chunking
 # ---------------------------------------------------------------------------

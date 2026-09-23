@@ -14,16 +14,21 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.actions.calendar import ActionStaleError
 from assistant.ai import AIProviderError
 from assistant.api.auth import get_current_user
 from assistant.api.schemas import (
+    ActionOut,
     FactCreate,
     FactOut,
+    FactSupersede,
     FileOut,
     ItemCreate,
     ItemOut,
     ItemUpdate,
     MeOut,
+    ProactiveSettingsOut,
+    ProactiveSettingsUpdate,
     ReminderCreate,
     ReminderOut,
     SearchResultOut,
@@ -32,6 +37,7 @@ from assistant.api.schemas import (
     UserOut,
     WorkoutCreate,
     WorkoutOut,
+    WorkoutSchedule,
     WorkoutStatsOut,
 )
 from assistant.config import get_settings
@@ -44,12 +50,15 @@ from assistant.i18n import (
     t,
 )
 from assistant.models.facts import FactStatus
+from assistant.models.pending_actions import ActionStatus
 from assistant.models.reminders import ReminderStatus
 from assistant.models.users import User
 from assistant.models.workout_logs import WorkoutStatus
+from assistant.services import actions as actions_service
 from assistant.services import calendar as calendar_service
 from assistant.services import facts as facts_service
 from assistant.services import files as files_service
+from assistant.services import proactivity as proactivity_service
 from assistant.services import reminders as reminders_service
 from assistant.services import workouts as workouts_service
 
@@ -298,6 +307,28 @@ async def workout_stats(
     return WorkoutStatsOut(**await workouts_service.workout_stats(session, user))
 
 
+@router.post("/workouts/schedule", response_model=ItemOut, status_code=201)
+async def schedule_workout(
+    body: WorkoutSchedule,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ItemOut:
+    """Schedule a future workout: a calendar item plus a start-time reminder."""
+    try:
+        item = await workouts_service.schedule_workout(
+            session,
+            user,
+            name=body.name,
+            starts_at=_aware(body.starts_at, user),
+            duration_minutes=body.duration_minutes,
+        )
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    await session.commit()
+    await session.refresh(item)
+    return ItemOut.model_validate(item)
+
+
 # ---------------------------------------------------------------------------
 # Files (SPEC §11-13)
 # ---------------------------------------------------------------------------
@@ -339,6 +370,22 @@ async def upload_file(
     await session.commit()
     await session.refresh(created)
     return FileOut.model_validate(created)
+
+
+@router.post("/files/{file_id}/retry", response_model=FileOut)
+async def retry_file_ingest(
+    file_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> FileOut:
+    """Re-queue ingestion for a failed file. Rejected files cannot be retried."""
+    try:
+        file = await files_service.retry_file(session, user, file_id)
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    await session.commit()
+    await session.refresh(file)
+    return FileOut.model_validate(file)
 
 
 @router.delete("/files/{file_id}", status_code=204)
@@ -495,6 +542,104 @@ async def delete_fact(
     return Response(status_code=204)
 
 
+@router.post("/facts/{fact_id}/supersede", response_model=FactOut, status_code=201)
+async def supersede_fact(
+    fact_id: int,
+    body: FactSupersede,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> FactOut:
+    """Replace a fact's value: the old row is superseded, the new value is
+    created as ``proposed`` and needs confirmation like any other fact."""
+    try:
+        fact = await facts_service.supersede_fact(
+            session,
+            user,
+            fact_id,
+            value=body.value,
+            category=body.category,
+            provenance="miniapp",
+        )
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    if fact is None:
+        raise _not_found()
+    await session.commit()
+    await session.refresh(fact)
+    return FactOut.model_validate(fact)
+
+
+# ---------------------------------------------------------------------------
+# Assistant Inbox — pending AI mutation proposals (SPEC §3)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/actions", response_model=list[ActionOut])
+async def list_actions(
+    status: ActionStatus | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[ActionOut]:
+    actions = await actions_service.list_actions(
+        session, user, status=status, limit=limit
+    )
+    return [ActionOut.model_validate(a) for a in actions]
+
+
+@router.post("/actions/{action_id}/confirm", response_model=ActionOut)
+async def confirm_action(
+    action_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ActionOut:
+    """Confirm and execute a proposed action in one transaction — the same
+    flow the Telegram bot uses, so confirming here makes the action
+    terminal for the bot and vice versa.
+
+    Replaying confirmation on an already-executed action returns the stored
+    state (execution itself is idempotent, SPEC §3)."""
+    action = await actions_service.get_action(session, user, action_id)
+    if action is None:
+        raise _not_found()
+    if action.status in (ActionStatus.rejected.value, ActionStatus.expired.value):
+        raise HTTPException(status_code=400, detail=f"action is {action.status}")
+    try:
+        if action.status == ActionStatus.proposed.value:
+            action = await actions_service.confirm_action(session, user, action_id)
+        if action.status == ActionStatus.confirmed.value:
+            action, _result = await actions_service.execute_action(
+                session, user, action_id
+            )
+    except ActionStaleError as exc:
+        raise HTTPException(
+            status_code=409, detail="proposal no longer applies to current data"
+        ) from exc
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    await session.commit()
+    return ActionOut.model_validate(action)
+
+
+@router.post("/actions/{action_id}/reject", response_model=ActionOut)
+async def reject_action(
+    action_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ActionOut:
+    action = await actions_service.get_action(session, user, action_id)
+    if action is None:
+        raise _not_found()
+    if action.status not in (
+        ActionStatus.proposed.value,
+        ActionStatus.confirmed.value,
+    ):
+        raise HTTPException(status_code=400, detail=f"action is {action.status}")
+    action = await actions_service.reject_action(session, user, action_id)
+    await session.commit()
+    return ActionOut.model_validate(action)
+
+
 # ---------------------------------------------------------------------------
 # Settings (SPEC §20)
 # ---------------------------------------------------------------------------
@@ -526,6 +671,30 @@ async def update_settings(
     await session.commit()
     await session.refresh(user.settings)
     return SettingsOut.model_validate(user.settings)
+
+
+@router.get("/proactive-settings", response_model=ProactiveSettingsOut)
+async def read_proactive_settings(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ProactiveSettingsOut:
+    settings = await proactivity_service.get_proactive_settings(session, user.id)
+    await session.commit()
+    return ProactiveSettingsOut.model_validate(settings)
+
+
+@router.patch("/proactive-settings", response_model=ProactiveSettingsOut)
+async def update_proactive_settings(
+    body: ProactiveSettingsUpdate,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ProactiveSettingsOut:
+    settings = await proactivity_service.get_proactive_settings(session, user.id)
+    for field in body.model_fields_set:
+        setattr(settings, field, getattr(body, field))
+    await session.commit()
+    await session.refresh(settings)
+    return ProactiveSettingsOut.model_validate(settings)
 
 
 # ---------------------------------------------------------------------------
