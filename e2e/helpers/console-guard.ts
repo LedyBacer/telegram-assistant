@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page, type Request } from "@playwright/test";
 
 /**
  * Capture browser health signals and fail a test on any unexpected problem:
@@ -37,7 +37,13 @@ export function createConsoleGuard(page: Page, base: string) {
     if (!isIgnored(text)) problems.push(`console.error: ${text}`);
   });
 
+  // Chromium emits a spurious `requestfailed` (net::ERR_ABORTED) for
+  // completed requests answered with `204 No Content` (e.g. DELETE). A
+  // request that already produced a response cannot have truly failed.
+  const completed = new Set<Request>();
+
   page.on("requestfailed", (req) => {
+    if (completed.has(req)) return;
     const url = req.url();
     if (url.startsWith("https://telegram.org")) return; // blocked on purpose
     if (!url.startsWith(base)) return; // only same-origin assets matter
@@ -48,6 +54,7 @@ export function createConsoleGuard(page: Page, base: string) {
   });
 
   page.on("response", (res) => {
+    completed.add(res.request());
     const url = res.url();
     if (!url.startsWith(base)) return;
     const status = res.status();

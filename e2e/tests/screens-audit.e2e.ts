@@ -81,6 +81,8 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   await page.locator("#view .picker-field").nth(3).click();
   await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
   await expect(page.locator(".flatpickr-calendar .flatpickr-time")).toBeVisible();
+  // Flatpickr listens for Escape on its own input: focus it, then close.
+  await page.locator(".picker-input").focus();
   await page.keyboard.press("Escape");
   await expect(page.locator(".flatpickr-calendar")).toBeHidden();
   await assertCleanText(page);
@@ -141,9 +143,9 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   const actionsBefore = await myCard.locator(".item-actions .btn").count();
   expect(actionsBefore).toBe(3); // done, cancel, delete
   await myCard.locator(".item-actions .btn").first().click();
-  await expect(myCard.locator(".item-title")).toContainText(taskTitle);
-  const actionsAfter = await myCard.locator(".item-actions .btn").count();
-  expect(actionsAfter).toBe(1); // delete only
+  // Completion re-renders after the API round-trip: wait for the done/cancel
+  // actions to be replaced by the completed state (delete only).
+  await expect(myCard.locator(".item-actions .btn")).toHaveCount(1);
   // Delete it: the confirm dialog (alertdialog) appears; confirming removes it.
   await myCard.locator(".item-actions .btn").last().click();
   const dialog = page.locator("#sheet-root .sheet-confirm");
@@ -178,7 +180,9 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
   await expect(page.locator(".flatpickr-calendar .flatpickr-time")).toBeVisible();
   await expect(page.locator(".flatpickr-calendar input[type=\"date\"]")).toHaveCount(0);
+  await page.locator(".picker-input").focus();
   await page.keyboard.press("Escape");
+  await expect(page.locator(".flatpickr-calendar")).toBeHidden();
   // Motivation: toggling persists (toast shown, switch state survives render).
   const before = await sw.isChecked();
   await sw.click();
