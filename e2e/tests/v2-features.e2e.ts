@@ -220,21 +220,36 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
   await replaceInput.fill(FACT_NEW);
   await page.locator("#view .replace-form .btn-primary", { hasText: "Сохранить" }).click();
   await expect(page.locator("#toast")).toContainText("Предложено.");
-  // The old fact is superseded (no replace button on it) and the new value is
-  // proposed as a distinct fact, rendered as a text node.
+  // The replacement is a distinct proposed fact that references the old one.
   const newFactValueCard = page.locator("#view .list .card", {
     has: page.locator(`.fact-value:text-is("${FACT_NEW}")`),
   });
   await expect(newFactValueCard).toHaveCount(1);
-  // The replacement is a distinct fact in the proposed state.
   await expect(newFactValueCard.locator(".item-head .badge")).toHaveText(
     "предложен",
   );
-  // The superseded fact shows the localized badge and lost its replace button.
+  // The new card explains which fact it supersedes.
+  await expect(newFactValueCard.locator(".fact-replaces")).toContainText(FACT_OLD);
+  // The old trusted fact STAYS confirmed while the replacement is pending.
   const supersededCard = page.locator("#view .list .card", {
     has: page.locator(`.fact-value:text-is("${FACT_OLD}")`),
   });
+  await expect(supersededCard.locator(".item-head .badge")).toHaveText(
+    "подтверждён",
+  );
+  await assertCleanText(page);
+
+  // Confirming the replacement is the only moment the old fact is superseded:
+  // the new fact becomes confirmed and the old one flips to "заменён".
+  await newFactValueCard
+    .locator(".item-actions .btn", { hasText: "Подтвердить" })
+    .click();
+  await expect(page.locator("#toast")).toContainText("Сохранено.");
+  await expect(newFactValueCard.locator(".item-head .badge")).toHaveText(
+    "подтверждён",
+  );
   await expect(supersededCard.locator(".item-head .badge")).toHaveText("заменён");
+  // The superseded fact lost its replace button.
   await expect(
     supersededCard.locator(".item-actions .btn", { hasText: "Заменить" }),
   ).toHaveCount(0);

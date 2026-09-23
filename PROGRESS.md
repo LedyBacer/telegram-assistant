@@ -1,10 +1,41 @@
 # Progress
 
-Status: V3 PRIORITY 14 COMPLETE (calendar/reminder domain hardening:
-temporal invariants are enforced — an item's end can no longer precede its
-start on create or update — and item/reminder listings are deterministically
-ordered with an id tie-break; item-linked reminders dedupe repeated offsets).
-Next: V3 Priority 15 (memory V3 replacement lifecycle).
+Status: V3 PRIORITY 15 COMPLETE (memory V3 replacement lifecycle: a
+replacement is now an explicit `replaces_fact_id` link; the referenced fact
+keeps its state while the replacement is only `proposed`, and is atomically
+superseded only when the replacement is confirmed — rejecting or deleting the
+replacement leaves the trusted fact intact).
+Next: V3 Priority 16 (memory conflict/dedupe).
+
+## V3 — Priority 15: memory V3 replacement lifecycle
+
+Previously `supersede_fact` demoted a `confirmed` fact to `superseded` the
+moment a replacement was *proposed*, so a trusted fact lost its status while
+its replacement was still unconfirmed — the assistant would have been
+reasoning from a fact it no longer trusted, and the user had no way to keep
+the old one.
+
+- **Explicit link**: `user_facts` gains `replaces_fact_id` (self-FK,
+  `ON DELETE SET NULL`) — the fact a proposed replacement targets.
+  `superseded_by` (old→new) is kept for history. Migration
+  `20260923_b7c8d9e0f1a2_fact_replaces`.
+- **`supersede_fact`** now only creates the `proposed` replacement (linked via
+  `replaces_fact_id`) and leaves the referenced fact's status untouched.
+- **`confirm_fact`** atomically moves the referenced fact to `superseded`
+  (setting `superseded_by`) in the same flush, so the trusted fact is demoted
+  only when its replacement is itself confirmed. Bot and Mini App confirm
+  paths both route through this service, so the guarantee holds on every
+  surface.
+- **`reject_fact` / `delete_fact`** leave the referenced fact untouched.
+- **API**: `FactOut` exposes `replaces_fact_id`. **Mini App**: a replacement
+  card shows the value it supersedes and is not itself replaceable;
+  `e2e/v2-features` now verifies old stays `подтверждён` until the
+  replacement is confirmed, then flips to `заменён`.
+
+Tests (`test_facts.py`: replacement keeps old confirmed, confirm atomically
+supersedes, reject/delete keep old confirmed, cross-user no-op;
+`test_api.py`: supersede flow + `replaces_fact_id` in the payload).
+Verified: 395 pytest pass, Ruff clean, E2E pass.
 
 ## V3 — Priority 14: calendar/reminder domain hardening
 

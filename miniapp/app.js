@@ -894,7 +894,11 @@ async function viewFacts(view) {
     ),
     el("h2", { class: "view-subtitle" }, S("miniapp.my_facts")),
     facts.length
-      ? el("div", { class: "list" }, ...facts.map(factCard))
+      ? el(
+          "div",
+          { class: "list" },
+          ...facts.map((f) => factCard(f, factsById(facts))),
+        )
       : empty(S("miniapp.facts_empty"))
   );
 }
@@ -902,8 +906,18 @@ async function viewFacts(view) {
 /* Inline "replace" form state: one fact at a time, survives re-renders. */
 let supersedingFactId = null;
 
-function factCard(f) {
-  const replaceable = f.status === "proposed" || f.status === "confirmed";
+function factsById(facts) {
+  const map = new Map();
+  for (const f of facts) map.set(f.id, f);
+  return map;
+}
+
+function factCard(f, byId) {
+  // A replacement fact (proposed, linked via replaces_fact_id) is not itself
+  // replaceable; a plain proposed/confirmed fact is.
+  const replaceable =
+    f.status === "confirmed" ||
+    (f.status === "proposed" && !f.replaces_fact_id);
   const actions = [];
   if (f.status === "proposed") {
     actions.push(
@@ -957,6 +971,14 @@ function factCard(f) {
     ),
     // The fact value is user content: always rendered as a text node.
     el("p", { class: "fact-value" }, f.value),
+    // Replacement link: show the value this proposed fact supersedes.
+    f.replaces_fact_id && byId.has(f.replaces_fact_id)
+      ? el(
+          "p",
+          { class: "fact-replaces" },
+          S("miniapp.fact_replaces") + ": " + byId.get(f.replaces_fact_id).value,
+        )
+      : null,
     supersedingFactId === f.id
       ? replaceForm(f)
       : null,

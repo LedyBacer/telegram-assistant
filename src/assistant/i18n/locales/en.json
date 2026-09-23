@@ -272,6 +272,7 @@
   "miniapp.file_retry": "Retry indexing",
   "miniapp.fact_replace": "Replace",
   "miniapp.fact_replace_ph": "New value",
+  "miniapp.fact_replaces": "Replaces",
   "miniapp.proactive_title": "Proactive notifications",
   "miniapp.proactive_enabled": "Enable proactive notifications",
   "miniapp.proactive_weekly_review": "Weekly review (Monday)",

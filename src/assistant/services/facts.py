@@ -128,12 +128,28 @@ async def list_facts(
 async def confirm_fact(
     session: AsyncSession, user: User, fact_id: int
 ) -> UserFact | None:
-    """Mark a proposed fact confirmed (idempotent; flush only)."""
+    """Mark a proposed fact confirmed (idempotent; flush only).
+
+    When the confirmed fact is a replacement (``replaces_fact_id`` set), the
+    referenced fact is atomically moved to ``superseded`` in the same flush,
+    so a confirmed trusted fact only loses its status once its replacement is
+    itself confirmed (SPEC §15).
+    """
     fact = await get_fact(session, user, fact_id)
     if fact is None:
         return None
     if fact.status == FactStatus.proposed.value:
         fact.status = FactStatus.confirmed.value
+        if fact.replaces_fact_id is not None and fact.replaces_fact_id != fact.id:
+            old = await session.get(UserFact, fact.replaces_fact_id)
+            if (
+                old is not None
+                and old.user_id == user.id
+                and old.status
+                in (FactStatus.proposed.value, FactStatus.confirmed.value)
+            ):
+                old.status = FactStatus.superseded.value
+                old.superseded_by = fact.id
         await session.flush()
     return fact
 
@@ -160,8 +176,14 @@ async def supersede_fact(
     category: str | None = None,
     provenance: str | None = None,
 ) -> UserFact | None:
-    """Replace a fact's value: the old one becomes ``superseded`` and a new
-    ``proposed`` fact is created for the user to confirm (flush only)."""
+    """Propose a replacement for a fact (SPEC §15).
+
+    The referenced fact keeps its current state — a ``confirmed`` fact stays
+    confirmed — while the new value is created as ``proposed`` and linked via
+    ``replaces_fact_id``. The replacement only takes effect (atomically
+    superseding the referenced fact) once the user confirms the new fact, so a
+    trusted fact is never demoted while its replacement is pending.
+    """
     old = await get_fact(session, user, fact_id)
     if old is None:
         return None
@@ -182,11 +204,9 @@ async def supersede_fact(
         value=value,
         provenance=(provenance or "user")[:255],
         status=FactStatus.proposed.value,
+        replaces_fact_id=old.id,
     )
     session.add(new)
-    await session.flush()
-    old.status = FactStatus.superseded.value
-    old.superseded_by = new.id
     await session.flush()
     return new
 

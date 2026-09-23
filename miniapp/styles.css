@@ -262,6 +262,14 @@ body {
   white-space: pre-wrap;
 }
 
+.fact-replaces {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--hint);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
 .item-error {
   margin: 8px 0 0;
   font-size: 12px;

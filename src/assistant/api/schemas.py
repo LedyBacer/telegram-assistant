@@ -231,6 +231,7 @@ class FactOut(ORMModel):
     provenance: str | None
     confidence: float | None
     status: str
+    replaces_fact_id: int | None
     created_at: datetime
 
 

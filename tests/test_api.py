@@ -709,12 +709,17 @@ async def test_fact_supersede_flow(client: httpx.AsyncClient) -> None:
     assert new["id"] != fact_id
 
     by_id = {f["id"]: f for f in (await client.get("/api/v1/facts", headers=HEADERS)).json()}
-    assert by_id[fact_id]["status"] == "superseded"
+    # The referenced fact keeps its state until the replacement is confirmed.
+    assert by_id[fact_id]["status"] == "proposed"
     assert by_id[new["id"]]["status"] == "proposed"
+    assert by_id[new["id"]]["replaces_fact_id"] == fact_id
 
-    # The replacement itself needs confirmation before it counts as memory.
+    # Confirming the replacement supersedes the old fact atomically.
     res = await client.post(f"/api/v1/facts/{new['id']}/confirm", headers=HEADERS)
     assert res.json()["status"] == "confirmed"
+    by_id = {f["id"]: f for f in (await client.get("/api/v1/facts", headers=HEADERS)).json()}
+    assert by_id[fact_id]["status"] == "superseded"
+    assert by_id[new["id"]]["status"] == "confirmed"
 
 
 async def test_fact_supersede_scoping_and_states(client: httpx.AsyncClient) -> None:

@@ -49,6 +49,14 @@ class UserFact(Base):
         server_default="proposed",
     )
     superseded_by: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    # Explicit replacement link (SPEC §15): the fact this one proposes to
+    # replace. SET NULL so deleting the referenced fact never cascades onto
+    # the replacement.
+    replaces_fact_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("user_facts.id", ondelete="SET NULL"),
+        default=None,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

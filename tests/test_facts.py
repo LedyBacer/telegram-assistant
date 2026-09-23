@@ -78,7 +78,9 @@ async def test_reject_fact(session: AsyncSession) -> None:
     assert rejected.status == FactStatus.rejected.value
 
 
-async def test_supersede_creates_proposed_and_marks_old(session: AsyncSession) -> None:
+async def test_supersede_creates_proposed_and_keeps_old_confirmed(
+    session: AsyncSession,
+) -> None:
     user = await _user(session)
     fact = await facts.propose_fact(session, user, value="old value")
     await facts.confirm_fact(session, user, fact.id)
@@ -90,9 +92,74 @@ async def test_supersede_creates_proposed_and_marks_old(session: AsyncSession) -
     assert new is not None
     assert new.status == FactStatus.proposed.value
     assert new.value == "new value"
+    assert new.replaces_fact_id == fact.id
     old = await session.get(UserFact, fact.id)
-    assert old.status == FactStatus.superseded.value
-    assert old.superseded_by == new.id
+    # The trusted fact stays confirmed while its replacement is pending.
+    assert old.status == FactStatus.confirmed.value
+    assert old.superseded_by is None
+
+
+async def test_confirming_replacement_atomically_supersedes_old(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    old = await facts.propose_fact(
+        session, user, value="prefer meetings after 11"
+    )
+    await facts.confirm_fact(session, user, old.id)
+    new = await facts.supersede_fact(
+        session, user, old.id, value="prefer meetings before 10"
+    )
+    await session.commit()
+
+    confirmed = await facts.confirm_fact(session, user, new.id)
+    await session.commit()
+
+    assert confirmed is not None
+    assert confirmed.status == FactStatus.confirmed.value
+    reloaded_old = await session.get(UserFact, old.id)
+    assert reloaded_old.status == FactStatus.superseded.value
+    assert reloaded_old.superseded_by == new.id
+
+
+async def test_rejecting_replacement_keeps_old_confirmed(session: AsyncSession) -> None:
+    user = await _user(session)
+    old = await facts.propose_fact(session, user, value="old preference")
+    await facts.confirm_fact(session, user, old.id)
+    new = await facts.supersede_fact(session, user, old.id, value="new preference")
+    await session.commit()
+
+    await facts.reject_fact(session, user, new.id)
+    await session.commit()
+
+    assert (await session.get(UserFact, new.id)).status == FactStatus.rejected.value
+    assert (await session.get(UserFact, old.id)).status == FactStatus.confirmed.value
+
+
+async def test_deleting_replacement_keeps_old_confirmed(session: AsyncSession) -> None:
+    user = await _user(session)
+    old = await facts.propose_fact(session, user, value="old preference")
+    await facts.confirm_fact(session, user, old.id)
+    new = await facts.supersede_fact(session, user, old.id, value="new preference")
+    await session.commit()
+
+    assert await facts.delete_fact(session, user, new.id) is True
+    await session.commit()
+
+    assert await session.get(UserFact, new.id) is None
+    assert (await session.get(UserFact, old.id)).status == FactStatus.confirmed.value
+
+
+async def test_supersede_for_other_users_fact_is_noop(session: AsyncSession) -> None:
+    user = await _user(session, user_id=61)
+    other = await _user(session, user_id=62)
+    old = await facts.propose_fact(session, user, value="mine")
+    await facts.confirm_fact(session, user, old.id)
+    await session.commit()
+
+    # A replacement proposal for another user's fact does not touch it.
+    assert await facts.supersede_fact(session, other, old.id, value="theirs") is None
+    assert (await session.get(UserFact, old.id)).status == FactStatus.confirmed.value
 
 
 async def test_supersede_rejects_blank_value(session: AsyncSession) -> None:
@@ -144,13 +211,16 @@ async def test_confirmed_lines_excludes_unconfirmed(session: AsyncSession) -> No
     c = await facts.propose_fact(session, user, value="old routine")
     await facts.confirm_fact(session, user, b.id)
     await facts.confirm_fact(session, user, c.id)
-    await facts.supersede_fact(session, user, c.id, value="new routine")
+    replacement = await facts.supersede_fact(session, user, c.id, value="new routine")
+    # Until the replacement is confirmed, "old routine" stays confirmed.
+    assert (await session.get(UserFact, c.id)).status == FactStatus.confirmed.value
+    await facts.confirm_fact(session, user, replacement.id)
     await session.commit()
 
     lines = await facts.confirmed_lines(session, user)
-    # "proposed only" was never confirmed and "old routine" is superseded,
-    # so only the confirmed "likes tea" fact remains.
-    assert lines == ["[preferences] likes tea"]
+    # "proposed only" was never confirmed and "old routine" is superseded by
+    # the now-confirmed replacement, so "likes tea" and "new routine" remain.
+    assert lines == ["[preferences] likes tea", "new routine"]
     assert a.id is not None  # proposed fact must never leak into context
 
 

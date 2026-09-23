@@ -549,8 +549,9 @@ async def supersede_fact(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> FactOut:
-    """Replace a fact's value: the old row is superseded, the new value is
-    created as ``proposed`` and needs confirmation like any other fact."""
+    """Propose a replacement: the referenced fact keeps its state, and the new
+    value is created as ``proposed`` (linked via ``replaces_fact_id``); it
+    only supersedes the old fact once the user confirms the new one."""
     try:
         fact = await facts_service.supersede_fact(
             session,
