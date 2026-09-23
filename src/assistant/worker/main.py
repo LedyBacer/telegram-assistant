@@ -24,6 +24,7 @@ from assistant.models.jobs import BackgroundJob
 from assistant.services import digests as digests_service
 from assistant.services import jobs as jobs_service
 from assistant.services import notifications
+from assistant.services import proactivity as proactivity_service
 from assistant.worker import (
     handlers,  # noqa: F401  (registers job handlers)
     registry,
@@ -46,6 +47,7 @@ class JobWorker:
         self._session_factory = get_session_factory()
         self._stopping = False
         self._last_digest_pass = 0.0
+        self._last_proactive_pass = 0.0
 
     def request_stop(self) -> None:
         self._stopping = True
@@ -132,6 +134,21 @@ class JobWorker:
                 logger.info("scheduled %d new digest(s)", created)
             await session.commit()
 
+    async def proactive_pass(self) -> None:
+        """One bounded proactivity pass plus pending-action expiry.
+
+        Idempotent via NudgeDelivery dedupe rows; a per-user failure rolls
+        back only that user and retries on the next pass.
+        """
+        async with self._session_factory() as session:
+            result = await proactivity_service.run_proactive_pass(session)
+            if result["nudges_sent"] or result["actions_expired"]:
+                logger.info(
+                    "proactive pass: %d nudge(s), %d expired action(s)",
+                    result["nudges_sent"],
+                    result["actions_expired"],
+                )
+
     async def run(self) -> None:
         logger.info("worker %s starting (poll=%.2fs batch=%d)", self.worker_id, self.poll_interval, self.batch_size)
         loop = asyncio.get_running_loop()
@@ -148,6 +165,12 @@ class JobWorker:
                     if loop.time() - self._last_digest_pass >= self.digest_interval:
                         self._last_digest_pass = loop.time()
                         await self.schedule_digests()
+                    if loop.time() - self._last_proactive_pass >= self.digest_interval:
+                        self._last_proactive_pass = loop.time()
+                        try:
+                            await self.proactive_pass()
+                        except Exception:
+                            logger.exception("proactive pass failed")
                     await self.poll_once()
                 except asyncio.CancelledError:
                     raise

@@ -135,6 +135,9 @@
   "motivation.empty": "Your schedule is clear today — a good time to plan one small win.",
   "motivation.default": "One thing done is better than ten planned.",
 
+  "proactive.weekly_review": "It's Monday — a good time for a quick weekly review: what matters this week, and where can you drop something?",
+  "proactive.workout": "It's been over two days since your last workout. How about a short one today?",
+
   "errors.cant_read": "I couldn't read that: {error}",
   "errors.generic": "Sorry, something went wrong. Please try again.",
   "errors.ai_unavailable": "Sorry, I can't reach my language model right now. Please try again in a bit.",

@@ -49,6 +49,8 @@ EXPECTED_TABLES = {
     "background_jobs",
     "digests",
     "pending_actions",
+    "proactive_settings",
+    "nudge_deliveries",
 }
 
 

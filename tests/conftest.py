@@ -52,6 +52,8 @@ _ALL_TABLES = (
     "calendar_items",
     "background_jobs",
     "user_settings",
+    "proactive_settings",
+    "nudge_deliveries",
     "users",
 )
 
