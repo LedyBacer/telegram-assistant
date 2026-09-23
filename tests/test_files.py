@@ -633,6 +633,49 @@ async def test_embedding_outage_degrades_to_lexical_only(session) -> None:
     assert results[0].score == pytest.approx(1 / (files.RRF_K + 1))
 
 
+async def test_lexical_or_style_partial_overlap_recalls(session) -> None:
+    """P19 (SPEC §13): lexical matching is OR-style and normalized — a chunk
+    matching only ONE of the query's words is recalled, where the previous
+    AND (plaintext) gate required every word to be present."""
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="warranty.txt",
+        texts=["the warranty covers repairs for two years"],
+    )
+
+    class _DownEmbedder(_FakeEmbedder):
+        async def embed_query(self, *, query: str) -> list[float]:
+            raise AIProviderError("embedding server down")  # force lexical-only
+
+    # "shipping" matches nothing, but "warranty" does -> the chunk is recalled.
+    results = await files.retrieve_chunks(
+        session, user, "warranty shipping", provider=_DownEmbedder()
+    )
+    assert [r.file_name for r in results] == ["warranty.txt"]
+
+
+async def test_lexical_query_is_operator_safe(session) -> None:
+    """P19 (SPEC §13): operator characters in the query are normalized away, so
+    arbitrary user input cannot be interpreted as a tsquery operator and the
+    call never raises."""
+    user = await _user(session)
+    await _indexed_file(
+        session, user, filename="notes.md", texts=["quantum entanglement basics"]
+    )
+
+    class _DownEmbedder(_FakeEmbedder):
+        async def embed_query(self, *, query: str) -> list[float]:
+            raise AIProviderError("embedding server down")  # force lexical-only
+
+    # tsquery operators (!, |, &, <, >, parentheses) are stripped; "quantum"
+    # still matches the chunk.
+    for query in ("quantum & !everything", "quantum | (weird) <terms>"):
+        results = await files.retrieve_chunks(session, user, query, provider=_DownEmbedder())
+        assert [r.file_name for r in results] == ["notes.md"]
+
+
 async def test_retrieval_merges_adjacent_chunks(session) -> None:
     """Consecutive positions of one file collapse into a bounded excerpt."""
     user = await _user(session)

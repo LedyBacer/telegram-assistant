@@ -1,14 +1,33 @@
 # Progress
 
-Status: V3 PRIORITY 18 COMPLETE (RAG V3 — meaningful relevance filtering:
-the vector arm tracks each candidate's cosine distance and drops candidates
-beyond the configurable `retrieval_max_distance` bound (default 0.9), so a
-semantically off-topic search no longer returns its nearest-but-unrelated
-chunks; lexical keyword candidates are always kept; the fused result exposes
-the chunk's best vector distance; cross-language relevance is covered by a
-multilingual test).
-Next: V3 Priority 19 (improve lexical retrieval — OR-style / normalized terms,
-PostgreSQL-only).
+Status: V3 PRIORITY 19 COMPLETE (RAG V3 — improved lexical retrieval: the
+lexical arm now builds an OR-style, operator-safe tsquery, so a chunk matches
+when it contains ANY of the query's words (not all of them) and arbitrary user
+input can no longer be read as a tsquery operator; still PostgreSQL-only).
+Next: V3 Priority 20 (adjacent-chunk merging + citations — file + position
+proximity).
+
+## V3 — Priority 19: improved lexical retrieval
+
+The lexical arm used `plainto_tsquery`, which ANDs every query word together
+(a multi-word query only matched a chunk containing *all* words) and treats
+operators as literal text. The arm now builds an explicit OR-style tsquery.
+
+- **OR-style recall**: `_lexical_tsquery` splits the query into terms, lowercases
+  each, and joins them with `|`, so a chunk is recalled when it contains *any*
+  of the query's words. Restores recall for partial-overlap queries.
+- **Operator-safe**: each term is stripped of every non-word character before
+  being handed to `to_tsquery`, so arbitrary user input (including `!`, `|`,
+  `&`, `<`, `>`, parentheses) can never be interpreted as a tsquery operator
+  and the call never raises. A term-less query returns no lexical candidates.
+- **PostgreSQL-only**: no new dependencies; uses `to_tsvector`/`to_tsquery`
+  with the language-neutral `simple` config.
+
+Tests (`test_files.py`): `test_lexical_or_style_partial_overlap_recalls`
+(one-word overlap now recalls, previously dropped by the AND gate);
+`test_lexical_query_is_operator_safe` (operator-laden queries are normalized
+away and match on the surviving term).
+Verified: 406 pytest pass, Ruff clean.
 
 ## V3 — Priority 18: meaningful relevance filtering
 

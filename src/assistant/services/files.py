@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -545,8 +546,8 @@ RRF_MIN_SCORE = 1.0 / (RRF_K + CANDIDATE_LIMIT)
 MERGED_TEXT_LIMIT = 800
 
 # The language-neutral text-search config (SPEC §6.1), cast to regconfig so
-# PostgreSQL resolves to_tsvector/plainto_tsquery (a bare string literal is
-# not an implicit cast target for the function overload).
+# PostgreSQL resolves to_tsvector/to_tsquery (a bare string literal is not an
+# implicit cast target for the function overload).
 _TS_CONFIG = cast(literal("simple"), REGCONFIG)
 
 
@@ -554,17 +555,31 @@ def _tsvector() -> Any:
     return func.to_tsvector(_TS_CONFIG, FileChunk.text)
 
 
-def _tsquery(query: str) -> Any:
-    # plainto_tsquery parses the raw text as natural language (words are
-    # ANDed, operators are ignored), so arbitrary user input cannot raise.
-    return func.plainto_tsquery(_TS_CONFIG, literal(query))
+def _lexical_tsquery(query: str) -> Any | None:
+    """An OR-style, normalized ``tsquery`` for the lexical arm (P19, SPEC §13).
+
+    The query is split into whitespace-delimited terms, each lowercased and
+    stripped of every non-word character so arbitrary user input can never be
+    read as a ``to_tsquery`` operator. Terms are joined with ``|`` (OR), so a
+    chunk matches when it contains *any* of the query's words rather than all
+    of them — restoring recall for multi-word queries that only partially
+    overlap a chunk. Returns ``None`` when the query has no usable terms.
+    """
+    terms = [re.sub(r"[^\w]+", "", term.lower()) for term in query.split()]
+    terms = [t for t in terms if t]
+    if not terms:
+        return None
+    return func.to_tsquery(_TS_CONFIG, " | ".join(terms))
 
 
 async def _lexical_candidates(
     session: AsyncSession, user: User, query: str
 ) -> list[tuple[FileChunk, str]]:
     """User chunks matching the query lexically, ranked by ts_rank desc."""
-    rank = func.ts_rank(_tsvector(), _tsquery(query)).label("lex_rank")
+    tsquery = _lexical_tsquery(query)
+    if tsquery is None:
+        return []
+    rank = func.ts_rank(_tsvector(), tsquery).label("lex_rank")
     rows = (
         (
             await session.execute(
@@ -572,7 +587,7 @@ async def _lexical_candidates(
                 .join(UserFile, FileChunk.file_id == UserFile.id)
                 .where(
                     FileChunk.user_id == user.id,
-                    _tsvector().op("@@")(_tsquery(query)),
+                    _tsvector().op("@@")(tsquery),
                 )
                 .order_by(rank.desc(), FileChunk.position.asc())
                 .limit(CANDIDATE_LIMIT)
