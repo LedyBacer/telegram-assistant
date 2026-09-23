@@ -1,13 +1,32 @@
 # Progress
 
-Status: V3 PRIORITY 28 COMPLETE (Mini App renders every date/time in the
-user's configured timezone via Intl.DateTimeFormat; user-TZ day boundaries
-for the calendar; naive user-TZ wall-clock values in pickers/forms;
-Playwright cross-zone regression test). P26 (do-not-redesign constraint)
-is carried by every change in this Mini App block: styles/components/
-navigation preserved, no framework.
-Next: V3 Priority 29 (workout logging datetime — store and submit
-started_at from the picker).
+Status: V3 PRIORITY 29 COMPLETE (workout-log form submits the picked
+datetime as started_at; Playwright cross-zone regression test).
+P26 (do-not-redesign constraint) is carried by every change in this
+Mini App block: styles/components/navigation preserved, no framework.
+Next: V3 Priority 30 (task/event edit flow — detail/edit existing items
+via PATCH /items; display ends_at).
+
+## V3 — Priority 29: Workout logging datetime
+
+The workout-log form's "when" picker was display-only: its value was
+never stored in form state, so `POST /api/v1/workouts` always omitted
+`started_at` and the backend fell back to "now" — a historical log
+(picked yesterday, 18:30) was silently stored as the submission instant.
+
+- `miniapp/app.js`: the log form now keeps `logStart` (naive user-TZ
+  wall string, same protocol as every other form field — see
+  ASSUMPTIONS #35), seeds the picker from it, and submits it as
+  `started_at`. No backend change: `WorkoutCreate.started_at` already
+  accepts a naive datetime in the user's timezone.
+- `e2e/tests/workout-log-time.e2e.ts` (new): Amsterdam browser + Moscow
+  user + frozen clock; picks a past wall datetime (2026-09-20 18:30)
+  through the Flatpickr UI, logs the workout, asserts the card shows the
+  user-TZ wall time, reloads the page and asserts it survives, and checks
+  the stored value is exactly `2026-09-20T15:30:00Z` via the API.
+
+Verified: full E2E suite 9 passed; `uv run ruff check .` clean (no
+Python changed).
 
 ## V3 — Priority 28: User-timezone date/time display in the Mini App
 

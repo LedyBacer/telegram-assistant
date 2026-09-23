@@ -634,9 +634,13 @@ async function viewWorkouts(view, gen, signal) {
     "aria-label": S("miniapp.minutes"),
     inputmode: "numeric",
   });
+  let logStart = null;
   const whenBtn = pickerBtn(S("miniapp.when"), S("miniapp.now"), async () => {
-    const wall = await pickDateTime(null);
-    if (wall) whenBtn.querySelector(".picker-value").textContent = fmtWall(wall);
+    const wall = await pickDateTime(logStart);
+    if (wall) {
+      logStart = wall;
+      whenBtn.querySelector(".picker-value").textContent = fmtWall(wall);
+    }
   });
   const effortBtn = pickerBtn(S("miniapp.effort"), S("miniapp.not_set"), async () => {
     const chosen = await openSheet({
@@ -665,6 +669,7 @@ async function viewWorkouts(view, gen, signal) {
     try {
       await api("/api/v1/workouts", "POST", {
         name,
+        started_at: logStart,
         duration_minutes: minutesInput.value ? Number(minutesInput.value) : null,
         perceived_effort: effortValue(),
       });
