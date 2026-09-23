@@ -153,6 +153,62 @@ async def test_build_context_excludes_other_users_data(session: AsyncSession) ->
     assert ctx.fact_lines == []
 
 
+async def test_recent_entities_in_context(session: AsyncSession) -> None:
+    """Entities outside the today / 7-day windows are still referenceable
+    via the 'recently touched' context sections (no tool round-trip)."""
+    user = await _user(session)
+    today = datetime.now(tz=UTC).date()
+    standup = await calendar_service.create_item(
+        session,
+        user,
+        title="Team standup",
+        kind=ItemKind.event,
+        starts_at=datetime.combine(today, datetime.min.time(), tzinfo=UTC)
+        + timedelta(hours=12),
+    )
+    # 30 days out: outside today and the 7-day upcoming window.
+    far = await calendar_service.create_item(
+        session,
+        user,
+        title="Far meeting",
+        starts_at=datetime.now(tz=UTC) + timedelta(days=30),
+    )
+    # Five soon-firing reminders fill ctx.reminders (fire_at order, limit 5);
+    # the sixth, created last and firing far out, must come from the
+    # recent-created section.
+    for n in range(5):
+        await reminders_service.create_reminder(
+            session,
+            user,
+            fire_at=datetime.now(tz=UTC) + timedelta(hours=n + 1),
+            message=f"Soon {n}",
+        )
+    distant = await reminders_service.create_reminder(
+        session,
+        user,
+        fire_at=datetime.now(tz=UTC) + timedelta(days=60),
+        message="Distant one",
+    )
+    await session.commit()
+
+    ctx = await chat_service.build_context(
+        session, user, "move it", provider=_FakeProvider()
+    )
+    assert [i.title for i in ctx.today_items] == ["Team standup"]
+    assert [i.title for i in ctx.recent_items] == ["Far meeting"]
+    assert [r.message for r in ctx.recent_reminders] == ["Distant one"]
+
+    rendered = chat_service.render_context(ctx)
+    assert "Recently touched items" in rendered
+    assert "Recently created reminders" in rendered
+    recent_block = rendered.split("Recently touched items", 1)[1].split("\n\n")[0]
+    assert f"id={far.id} Far meeting" in recent_block
+    assert "status: scheduled" in recent_block
+    # Deduped: the today item is not repeated in the recent section.
+    assert f"id={standup.id}" not in recent_block
+    assert f"id={distant.id} Distant one" in rendered
+
+
 async def test_render_context_empty_is_placeholder(session: AsyncSession) -> None:
     user = await _user(session)
     ctx = await chat_service.build_context(session, user, "hi", provider=_FakeProvider())

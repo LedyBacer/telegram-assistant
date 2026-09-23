@@ -1,9 +1,34 @@
 # Progress
 
-Status: V3 PRIORITY 10 COMPLETE (deterministic entity resolution: read
-tools answer name references like "move standup" with an unambiguous
-match/ambiguous/no-match line before the plain listings).
-Next: V3 Priority 11 (real recent-entity references).
+Status: V3 PRIORITY 11 COMPLETE (real recent-entity references: the turn
+context now carries the user's most recently created/updated items and
+reminders that fall outside the today / 7-day windows, with ids, so
+"move it" resolves without a tool round-trip).
+Next: V3 Priority 12 (expand conversational mutation coverage).
+
+## V3 — Priority 11: real recent-entity references
+
+Context (`chat.build_context`) only covered items anchored today / within 7
+days and the next five pending reminders by fire time. An entity the user
+created a moment ago but anchored far away ("book a call in a month", then
+"move it to Tuesday") was not in the context at all, forcing a
+data_requests round-trip just to reference their own last action.
+
+Now the context includes two deterministic sections:
+
+- `recent_items`: the user's 5 most recently updated/created calendar
+  items (any status), deduped against the today/upcoming sections,
+  rendered with id, kind, times, and status.
+- `recent_reminders`: the 3 most recently created pending reminders,
+  deduped against the fire-time list, rendered with id, message, fire
+  time.
+- `TURN_SYSTEM` tells the model to use these ids for "it" / "that" /
+  "the one I just added" references and to clarify when several fit.
+
+No migration: ordered by existing `updated_at` / `created_at` columns.
+Test: `test_recent_entities_in_context` (far-anchored item and far-firing
+reminder surface only via the recent sections; today item deduped).
+Verified: 377 pytest pass, Ruff clean.
 
 ## V3 — Priority 10: read tools + deterministic entity resolution
 

@@ -1,7 +1,9 @@
 """Contextual AI chat (SPEC §15).
 
 Context is built *selectively* per turn — recent messages, today's and
-upcoming tasks, pending reminders, recent workouts, and confirmed facts —
+upcoming tasks, pending reminders, recently touched entities (items and
+reminders that fall outside those windows, so follow-up references to them
+resolve without a tool round-trip), recent workouts, and confirmed facts —
 never the whole database. Document retrieval is conditional (SPEC §6): it is
 only performed when the orchestration layer explicitly requests it, so
 ordinary chat never calls the embedding provider. Document excerpts and
@@ -36,6 +38,8 @@ TASK_CONTEXT_LIMIT = 5
 REMINDER_CONTEXT_LIMIT = 5
 WORKOUT_CONTEXT_LIMIT = 5
 FILE_CHUNK_CONTEXT_LIMIT = 3
+RECENT_ITEM_CONTEXT_LIMIT = 5
+RECENT_REMINDER_CONTEXT_LIMIT = 3
 
 
 @dataclass(slots=True)
@@ -47,6 +51,11 @@ class ChatContext:
     upcoming_items: list[CalendarItem] = field(default_factory=list)
     reminders: list[Reminder] = field(default_factory=list)
     workouts: list[WorkoutLog] = field(default_factory=list)
+    # Entities the user most recently created/updated that fall outside the
+    # today / next-7-days windows above, so follow-up references to them
+    # ("move it", "cancel that") can resolve without a tool round-trip.
+    recent_items: list[CalendarItem] = field(default_factory=list)
+    recent_reminders: list[Reminder] = field(default_factory=list)
     fact_lines: list[str] = field(default_factory=list)
     file_excerpts: list[str] = field(default_factory=list)
     citations: str = ""
@@ -103,6 +112,35 @@ async def build_context(
     ctx.workouts = await workouts_service.list_workouts(
         session, user, limit=WORKOUT_CONTEXT_LIMIT
     )
+    known_item_ids = {i.id for i in ctx.today_items} | {
+        i.id for i in ctx.upcoming_items
+    }
+    recent_items = (
+        await session.scalars(
+            select(CalendarItem)
+            .where(CalendarItem.user_id == user.id)
+            .order_by(CalendarItem.updated_at.desc(), CalendarItem.id.desc())
+            .limit(TASK_CONTEXT_LIMIT + RECENT_ITEM_CONTEXT_LIMIT)
+        )
+    ).all()
+    ctx.recent_items = [
+        i for i in recent_items if i.id not in known_item_ids
+    ][:RECENT_ITEM_CONTEXT_LIMIT]
+    known_reminder_ids = {r.id for r in ctx.reminders}
+    recent_reminders = (
+        await session.scalars(
+            select(Reminder)
+            .where(
+                Reminder.user_id == user.id,
+                Reminder.status == ReminderStatus.pending.value,
+            )
+            .order_by(Reminder.created_at.desc(), Reminder.id.desc())
+            .limit(REMINDER_CONTEXT_LIMIT + RECENT_REMINDER_CONTEXT_LIMIT)
+        )
+    ).all()
+    ctx.recent_reminders = [
+        r for r in recent_reminders if r.id not in known_reminder_ids
+    ][:RECENT_REMINDER_CONTEXT_LIMIT]
     ctx.fact_lines = await facts_service.confirmed_lines(session, user)
 
     if retrieve:
@@ -131,6 +169,21 @@ def render_context(ctx: ChatContext) -> str:
             "Pending reminders:\n- "
             + "\n- ".join(
                 f"id={r.id} {r.message} at {_fmt_dt(r.fire_at)}" for r in ctx.reminders
+            )
+        )
+    if ctx.recent_items:
+        sections.append(
+            "Recently touched items (outside the windows above):\n- "
+            + "\n- ".join(
+                _item_line(i) + f", status: {i.status}" for i in ctx.recent_items
+            )
+        )
+    if ctx.recent_reminders:
+        sections.append(
+            "Recently created reminders:\n- "
+            + "\n- ".join(
+                f"id={r.id} {r.message} at {_fmt_dt(r.fire_at)}"
+                for r in ctx.recent_reminders
             )
         )
     if ctx.workouts:
