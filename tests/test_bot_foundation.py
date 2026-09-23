@@ -346,6 +346,115 @@ async def test_on_text_task_draft_flow_confirm_persists_item(session) -> None:
         await _truncate_users(session)
 
 
+class TestPrivateChatsOnly:
+    """V3 P25: the bot is restricted to private chats; groups/channels get a
+    localized rejection and no user/item/state is ever created from them."""
+
+    def _fake_message(self, chat_type: str, user_id: int = 1) -> SimpleNamespace:
+        return SimpleNamespace(
+            text="hello",
+            chat=SimpleNamespace(id=100, type=chat_type),
+            from_user=_fake_tg_user(user_id),
+            answer=AsyncMock(),
+        )
+
+    def _fake_callback(self, chat_type: str, user_id: int = 1) -> SimpleNamespace:
+        return SimpleNamespace(
+            from_user=_fake_tg_user(user_id),
+            message=SimpleNamespace(chat=SimpleNamespace(id=100, type=chat_type)),
+            answer=AsyncMock(),
+        )
+
+    async def test_group_message_rejected_localized_no_user_created(
+        self, session
+    ) -> None:
+        from assistant.i18n import DEFAULT_LANGUAGE, t
+
+        await _truncate_users(session)
+        try:
+            message = self._fake_message("group")
+            await handlers.reject_non_private_chat(message, session)
+            await session.commit()
+
+            message.answer.assert_awaited_once_with(
+                t(DEFAULT_LANGUAGE, "chat.private_only")
+            )
+            count = (
+                await session.execute(text("SELECT count(*) FROM users"))
+            ).scalar_one()
+            assert count == 0
+        finally:
+            await _truncate_users(session)
+
+    async def test_group_rejection_uses_existing_user_language(self, session) -> None:
+        from assistant.i18n import t
+
+        await _truncate_users(session)
+        try:
+            user, _ = await upsert_user(session, user_id=9, first_name="Bea")
+            user.settings.language = "en"
+            await session.commit()
+
+            message = self._fake_message("supergroup", user_id=9)
+            await handlers.reject_non_private_chat(message, session)
+            message.answer.assert_awaited_once_with(t("en", "chat.private_only"))
+        finally:
+            await _truncate_users(session)
+
+    async def test_group_callback_rejected_with_alert(self, session) -> None:
+        from assistant.i18n import DEFAULT_LANGUAGE, t
+
+        await _truncate_users(session)
+        try:
+            callback = self._fake_callback("channel")
+            await handlers.reject_non_private_callback(callback, session)
+            await session.commit()
+
+            callback.answer.assert_awaited_once_with(
+                t(DEFAULT_LANGUAGE, "chat.private_only"), show_alert=True
+            )
+            count = (
+                await session.execute(text("SELECT count(*) FROM users"))
+            ).scalar_one()
+            assert count == 0
+        finally:
+            await _truncate_users(session)
+
+    async def test_main_router_filters_allow_only_private_chats(self) -> None:
+        from magic_filter import AttrDict
+
+        def chat_ctx(kind: str) -> AttrDict:
+            return AttrDict({"chat": SimpleNamespace(type=kind)})
+
+        message_filter = handlers.router.message.filter
+        assert message_filter is not None
+        assert bool(message_filter.resolve(chat_ctx("private")))
+        for kind in ("group", "supergroup", "channel"):
+            assert not bool(message_filter.resolve(chat_ctx(kind)))
+
+        callback_filter = handlers.router.callback_query.filter
+        assert callback_filter is not None
+
+        def callback_ctx(kind: str) -> AttrDict:
+            return AttrDict(
+                {"message": SimpleNamespace(chat=SimpleNamespace(type=kind))}
+            )
+
+        assert bool(callback_filter.resolve(callback_ctx("private")))
+        for kind in ("group", "supergroup", "channel"):
+            assert not bool(callback_filter.resolve(callback_ctx(kind)))
+
+    def test_guard_router_wired_before_main_router(self) -> None:
+        import inspect
+
+        from assistant.bot import main
+
+        src = inspect.getsource(main._run)
+        assert src.index("include_router(private_guard)") < src.index(
+            "include_router(router)"
+        )
+
+
 def test_time_zone_conversion_utc() -> None:
     # Sanity check used by _parse_draft expectations.
     assert datetime(2026, 9, 21, 18, 30, tzinfo=TZ).astimezone(UTC) == datetime(

@@ -4,7 +4,7 @@ import asyncio
 
 from aiogram import Bot, Dispatcher
 
-from assistant.bot.handlers import router
+from assistant.bot.handlers import private_guard, router
 from assistant.bot.middlewares import DBSessionMiddleware
 from assistant.config import get_settings
 from assistant.db.engine import dispose_engine
@@ -31,6 +31,9 @@ async def _run() -> None:
     dp = Dispatcher()
     dp.message.outer_middleware(DBSessionMiddleware())
     dp.callback_query.outer_middleware(DBSessionMiddleware())
+    # The private-chats guard must be checked before any bot handler
+    # (V3 P25): non-private updates get a localized explanation and stop.
+    dp.include_router(private_guard)
     dp.include_router(router)
 
     try:

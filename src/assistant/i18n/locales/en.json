@@ -115,6 +115,7 @@
   "action.unavailable": "That change is no longer available.",
   "action.skipped": "I couldn't prepare one or more of the requested changes. Please rephrase.",
   "chat.empty_turn": "I'm not sure I understood. Could you rephrase?",
+  "chat.private_only": "I only work in private chats. Please message me directly (1-on-1) — tasks, reminders, and digests are delivered in our private conversation, so I ignore groups and channels.",
 
   "reminders.created": "Reminder created.",
   "reminders.notification": "Reminder: {message}",

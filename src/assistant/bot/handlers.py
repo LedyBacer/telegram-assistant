@@ -66,8 +66,45 @@ from assistant.services.tg_text import answer_long
 from assistant.services.users import upsert_user
 
 router = Router(name="bot")
+router.message.filter = F.chat.type == "private"
+router.callback_query.filter = F.message.chat.type == "private"
 
 logger = logging.getLogger("assistant.bot")
+
+
+# --- Private-chats-only guard (V3 P25) ------------------------------------
+# The data model uses the Telegram user ID as the background-delivery chat
+# ID (reminders/digests are sent to the user's private chat). Group and
+# channel usage is unsupported: the main router's filters keep every bot
+# handler private-only, and this guard router — included in the dispatcher
+# *before* the main router — explains the restriction to the sender. No
+# user row, item, reminder, or FSM state is ever created from a group.
+private_guard = Router(name="private_guard")
+
+
+@private_guard.message(F.chat.type != "private")
+async def reject_non_private_chat(
+    message: Message, session: AsyncSession
+) -> None:
+    lang = await _lookup_user_lang(session, message.from_user)
+    await message.answer(t(lang, "chat.private_only"))
+
+
+@private_guard.callback_query(F.message.chat.type != "private")
+async def reject_non_private_callback(
+    callback: CallbackQuery, session: AsyncSession
+) -> None:
+    lang = await _lookup_user_lang(session, callback.from_user)
+    await callback.answer(t(lang, "chat.private_only"), show_alert=True)
+
+
+async def _lookup_user_lang(session: AsyncSession, tg_user: Any) -> str:
+    """Language of an *existing* user, without upserting (the rejection
+    path must not create users). Falls back to the default language."""
+    user = (await session.scalars(select(User).where(User.id == tg_user.id))).one_or_none()
+    if user is None or user.settings is None:
+        return DEFAULT_LANGUAGE
+    return user.settings.language
 
 
 @dataclass(slots=True)

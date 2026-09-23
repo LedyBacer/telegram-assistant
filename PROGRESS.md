@@ -1,10 +1,46 @@
 # Progress
 
-Status: V3 PRIORITY 24 COMPLETE (Telegram message-length limits — one
-central splitter bounds every outbound text to 4096 chars, splitting at
-paragraph then line boundaries; AI replies, digests, reminders and nudges
-all route through it, keyboard attached to the final segment).
-Next: V3 Priority 25 (restrict the bot to private chats).
+Status: V3 PRIORITY 25 COMPLETE (private-chats-only — router-level
+`F.chat.type == "private"` filters keep every bot handler private-only;
+a guard router wired before the main router answers group/channel
+messages and callbacks with a localized rejection, and the rejection
+path never creates a user, item, reminder, or FSM state).
+Next: V3 Priority 26 (Mini App V3 — stale-render races, timezone via
+state.me.settings.timezone, ...).
+
+## V3 — Priority 25: Restrict the bot to private chats
+
+The data model uses the Telegram *user* ID as the background-delivery
+chat ID (reminders, digests, nudges go to the user's 1-on-1 chat), so a
+task created in a group would deliver its notifications to the user's
+private chat — an incoherent experience. P25 makes the bot private-only:
+
+- `src/assistant/bot/handlers.py`:
+  - Router-level filters on the main router:
+    `router.message.filter = F.chat.type == "private"` and
+    `router.callback_query.filter = F.message.chat.type == "private"` —
+    every existing and future handler is private-only by construction.
+  - New `private_guard` router (no router-level filter; each handler
+    carries its own `F.chat.type != "private"` /
+    `F.message.chat.type != "private"` filter):
+    - group/supergroup/channel **messages** get a normal reply with the
+      localized `chat.private_only` explanation;
+    - non-private **callbacks** get an inline alert with the same text.
+  - `_lookup_user_lang(session, tg_user)` resolves the sender's language
+    from an *existing* user row only (no upsert) and falls back to the
+    default language, so the rejection path is side-effect free.
+- `src/assistant/bot/main.py`: the dispatcher includes `private_guard`
+  **before** `router`, so non-private updates are answered and stop
+  before any bot handler can see them.
+- i18n: `chat.private_only` added to `en.json` and `ru.json`.
+
+Verified: `tests/test_bot_foundation.py::TestPrivateChatsOnly` (5 tests)
+— group message → localized (default-language) reply and zero user rows;
+existing English user → English rejection; group callback → alert answer
+and zero user rows; the router-level message and callback filters admit
+`private` and reject `group`/`supergroup`/`channel`; the guard router is
+wired before the main router. Full suite 446 passed, Ruff clean.
+Assumption #33 documents the design and the no-upsert stance.
 
 ## V3 — Priority 24: Telegram message-length limits
 
