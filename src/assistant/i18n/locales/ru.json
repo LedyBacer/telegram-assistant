@@ -247,6 +247,7 @@
   "miniapp.fact_proposed": "предложен",
   "miniapp.fact_confirmed": "подтверждён",
   "miniapp.fact_rejected": "отклонён",
+  "miniapp.fact_superseded": "заменён",
   "miniapp.facts_category": "Категория",
   "miniapp.fact_value_required": "Введи текст факта.",
   "miniapp.sheet_cancel": "Отмена",

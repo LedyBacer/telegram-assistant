@@ -1,6 +1,36 @@
 # Progress
 
-Status: PRIORITY 11 COMPLETE (Mini App integration of the V2 features).
+Status: PRIORITY 12 COMPLETE (tests/acceptance for the V2 features).
+New E2E spec `e2e/tests/v2-features.e2e.ts` (single full-flow test) covers
+the five V2 features against the real API + DB: (1) Actions inbox — three
+seeded proposed actions: confirm → "Сохранено." + badge "выполнено" +
+created item in Today; stale target confirm → 409 toast "Это действие
+больше не актуально." + badge "истекло" after re-fetch, 0 buttons; reject
+→ "отклонено". (2) Workout scheduling — missing-time validation toast,
+Flatpickr date + 23:50 time pick, "Workout: <name>" lands in Today.
+(3) File retry — a DB-seeded `failed` file (real bytes on disk) →
+"Повторить индексацию" → "в очереди". (4) Fact supersede — replace form on
+a confirmed fact → new proposed fact "предложен", old fact badge "заменён"
+(no replace button). (5) Proactive settings card — default values
+(weekly on, 22:00/08:00/3/120 мин), switch toggle → "Настройки сохранены."
++ restore. Supporting: `e2e/helpers/seed.ts` (`runDbScript` runs asyncpg
+Python against the isolated `assistant_e2e` DB from the repo root);
+`global-setup.ts` now also truncates `pending_actions`,
+`proactive_settings`, `nudge_deliveries`. E2E caught a real production
+bug the pytest suite masked: the confirm route raised 409/400 before
+committing, so the session dependency rolled back the in-transaction
+`expired` marking (pytest's client overrides `get_session` with the raw
+shared session and never rolls back). Fix in
+`src/assistant/api/routes.py`: commit before raising in both the
+`ActionStaleError` and `ValueError` branches. i18n: added
+`miniapp.fact_superseded` (ru "заменён" / en "superseded") +
+`FACT_STATE_KEYS`/`FACT_STATE_TONES` entry in `miniapp/app.js`.
+`scripts/acceptance.sh` left as-is (SPEC does not mandate E2E there); it
+stays green. Verified: full Playwright 6/6, full pytest 351 passing,
+Ruff clean, ru/en locale parity 264/264, `scripts/acceptance.sh` all green
+(fresh DB + migrations).
+
+Prior: PRIORITY 11 COMPLETE (Mini App integration of the V2 features).
 `miniapp/app.js` + locales + CSS: (1) new ⏳ Actions tab (second in the
 bottom nav) — pending-proposals inbox from `GET /actions`: kind icon,
 summary, "expires {when}" meta, status badge (pending/done/rejected/

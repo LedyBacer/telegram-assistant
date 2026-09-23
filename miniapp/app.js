@@ -844,11 +844,13 @@ const FACT_STATE_KEYS = {
   proposed: "miniapp.fact_proposed",
   confirmed: "miniapp.fact_confirmed",
   rejected: "miniapp.fact_rejected",
+  superseded: "miniapp.fact_superseded",
 };
 const FACT_STATE_TONES = {
   proposed: "muted",
   confirmed: "ok",
   rejected: "error",
+  superseded: "muted",
 };
 
 async function viewFacts(view) {

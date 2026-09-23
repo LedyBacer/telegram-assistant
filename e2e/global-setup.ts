@@ -25,6 +25,8 @@ TABLES = (
     "digests", "file_chunks", "user_files", "chat_messages", "user_facts",
     "workout_logs", "reminders", "calendar_items", "background_jobs",
     "user_settings", "users",
+    # V2 tables (actions inbox + proactivity) so their state resets too.
+    "pending_actions", "proactive_settings", "nudge_deliveries",
 )
 
 async def main() -> None:

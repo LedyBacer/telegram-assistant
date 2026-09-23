@@ -247,6 +247,7 @@
   "miniapp.fact_proposed": "proposed",
   "miniapp.fact_confirmed": "confirmed",
   "miniapp.fact_rejected": "rejected",
+  "miniapp.fact_superseded": "superseded",
   "miniapp.facts_category": "Category",
   "miniapp.fact_value_required": "Enter the fact text.",
   "miniapp.sheet_cancel": "Cancel",
