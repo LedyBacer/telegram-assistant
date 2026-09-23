@@ -15,7 +15,7 @@ All Telegram and AI HTTP calls are faked; no network access is required.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -316,6 +316,27 @@ class _ChatProvider:
 
     async def embed_query(self, *, query: str) -> list[float]:
         return [0.0] * 384
+
+
+def test_ai_draft_duration_maps_to_ends_at_not_due_at() -> None:
+    """SPEC §4.1: a duration extends the item (start -> end) and must NOT be
+    stored as a due date."""
+    from zoneinfo import ZoneInfo
+
+    from assistant.bot.handlers import _ai_draft_to_task_draft
+
+    draft = _ai_draft_to_task_draft(
+        AITaskDraft(
+            title="Gym",
+            kind="event",
+            start=datetime(2026, 9, 25, 20, 0),
+            duration_minutes=60,
+        ),
+        ZoneInfo("Europe/Berlin"),
+    )
+    # Naive 20:00 Berlin (CEST) is 18:00 UTC; +60 min -> 19:00 UTC end.
+    assert draft.ends_at == datetime(2026, 9, 25, 19, 0, tzinfo=UTC)
+    assert draft.due_at is None
 
 
 def _draft_provider() -> _DraftProvider:

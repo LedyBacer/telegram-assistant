@@ -192,3 +192,115 @@ async def test_update_item(session: AsyncSession) -> None:
     assert updated.priority == ItemPriority.high.value
     with pytest.raises(ValueError, match="empty"):
         await cal.update_item(session, user, item.id, title="  ")
+
+
+async def test_update_item_tri_state(session: AsyncSession) -> None:
+    """SPEC §4.3: omitted = unchanged, explicit None = clear, value = set."""
+    user = await _user(session)
+    item = await cal.create_item(
+        session,
+        user,
+        title="Tri",
+        description="desc",
+        starts_at=datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+        ends_at=datetime(2026, 10, 1, 13, 0, tzinfo=UTC),
+        due_at=datetime(2026, 10, 1, 15, 0, tzinfo=UTC),
+    )
+    await session.commit()
+
+    # Explicit None clears; every omitted field keeps its value.
+    updated = await cal.update_item(session, user, item.id, ends_at=None)
+    await session.commit()
+    assert updated.ends_at is None
+    assert updated.starts_at == datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    assert updated.due_at == datetime(2026, 10, 1, 15, 0, tzinfo=UTC)
+    assert updated.description == "desc"
+
+    # Explicit value sets again.
+    updated = await cal.update_item(
+        session, user, item.id, ends_at=datetime(2026, 10, 1, 14, 0, tzinfo=UTC)
+    )
+    await session.commit()
+    assert updated.ends_at == datetime(2026, 10, 1, 14, 0, tzinfo=UTC)
+
+    # Description can also be cleared.
+    updated = await cal.update_item(session, user, item.id, description=None)
+    await session.commit()
+    assert updated.description is None
+
+
+async def test_complete_item_cancels_pending_reminders(session: AsyncSession) -> None:
+    """SPEC §4.2: completing an item handles its reminders via the shared
+    service, from every surface."""
+    user = await _user(session)
+    item = await cal.create_item(
+        session,
+        user,
+        title="Wrap-up",
+        starts_at=datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+    )
+    created = await rem.create_item_reminders(session, user, item, offsets_minutes=[0])
+    await session.commit()
+
+    completed = await cal.complete_item(session, user, item.id)
+    await session.commit()
+    assert completed is not None
+    assert completed.status == ItemStatus.completed.value
+    assert created[0].status == ReminderStatus.cancelled.value
+    assert created[0].cancelled_at is not None
+    job = await session.get(BackgroundJob, created[0].job_id)
+    assert job.status == JobStatus.cancelled.value
+
+
+async def test_reschedule_recomputes_linked_reminders(session: AsyncSession) -> None:
+    """SPEC §4.2: moving an item's start moves its linked reminders (fire_at
+    and the delivery job's availability) with it."""
+    user = await _user(session)
+    item = await cal.create_item(
+        session,
+        user,
+        title="Meeting",
+        starts_at=datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+    )
+    created = await rem.create_item_reminders(session, user, item, offsets_minutes=[30, 0])
+    await session.commit()
+    assert created[0].fire_at == datetime(2026, 10, 1, 11, 30, tzinfo=UTC)
+
+    updated = await cal.update_item(
+        session, user, item.id, starts_at=datetime(2026, 10, 1, 14, 0, tzinfo=UTC)
+    )
+    await session.commit()
+    assert updated.starts_at == datetime(2026, 10, 1, 14, 0, tzinfo=UTC)
+    for r in created:
+        assert r.status == ReminderStatus.pending.value
+        expected = datetime(2026, 10, 1, 14, 0, tzinfo=UTC) - timedelta(
+            minutes=r.offset_minutes
+        )
+        assert r.fire_at == expected
+        job = await session.get(BackgroundJob, r.job_id)
+        assert job.status == JobStatus.pending.value
+        assert job.available_at == expected
+
+    # A title rename refreshes the reminder text too.
+    updated = await cal.update_item(session, user, item.id, title="Big meeting")
+    await session.commit()
+    assert all(r.message == "Big meeting" for r in created)
+
+
+async def test_clearing_start_cancels_linked_reminders(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await cal.create_item(
+        session,
+        user,
+        title="Unanchored",
+        starts_at=datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+    )
+    created = await rem.create_item_reminders(session, user, item, offsets_minutes=[0])
+    await session.commit()
+
+    updated = await cal.update_item(session, user, item.id, starts_at=None)
+    await session.commit()
+    assert updated.starts_at is None
+    assert created[0].status == ReminderStatus.cancelled.value
+    job = await session.get(BackgroundJob, created[0].job_id)
+    assert job.status == JobStatus.cancelled.value

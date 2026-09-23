@@ -39,6 +39,7 @@
   "draft.kind": "тип: {kind}",
   "draft.priority": "приоритет: {priority}",
   "draft.start": "начало: {when} ({tz})",
+  "draft.end": "конец: {when} ({tz})",
   "draft.due": "срок: {when} ({tz})",
   "draft.remind": "напоминать: {offsets} мин до начала",
   "draft.notes": "заметки: {notes}",

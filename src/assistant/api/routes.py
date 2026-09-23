@@ -175,17 +175,30 @@ async def update_item(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ItemOut:
+    # Tri-state partial update (SPEC §4.3): an omitted key is left as-is
+    # (UNSET), an explicit null clears the value, a value is set.
+    present = body.model_fields_set
+    datetime_fields = {"starts_at", "ends_at", "due_at"}
+
+    def _tri(field: str):
+        if field not in present:
+            return calendar_service.UNSET
+        value = getattr(body, field)
+        if value is None:
+            return None
+        return _aware(value, user) if field in datetime_fields else value
+
     try:
         item = await calendar_service.update_item(
             session,
             user,
             item_id,
-            title=body.title,
-            description=body.description,
-            starts_at=_aware(body.starts_at, user) if body.starts_at else None,
-            ends_at=_aware(body.ends_at, user) if body.ends_at else None,
-            due_at=_aware(body.due_at, user) if body.due_at else None,
-            priority=body.priority,
+            title=_tri("title"),
+            description=_tri("description"),
+            starts_at=_tri("starts_at"),
+            ends_at=_tri("ends_at"),
+            due_at=_tri("due_at"),
+            priority=_tri("priority"),
         )
     except ValueError as exc:
         raise _bad_request(exc) from exc

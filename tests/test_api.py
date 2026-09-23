@@ -150,6 +150,46 @@ async def test_item_crud_flow(client: httpx.AsyncClient) -> None:
     assert res.status_code == 404
 
 
+async def test_item_patch_tri_state(client: httpx.AsyncClient) -> None:
+    """SPEC §4.3: omitted keys are left alone, an explicit null clears the
+    value. The API must expose the same tri-state semantics as the service."""
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={
+            "title": "Tri-state",
+            "starts_at": TODAY_NOON,
+            "ends_at": TOMORROW_NOON,
+            "due_at": TOMORROW_NOON,
+            "description": "keep me",
+        },
+    )
+    assert res.status_code == 201
+    item_id = res.json()["id"]
+
+    # Explicit null clears starts_at; every omitted field is untouched.
+    res = await client.patch(
+        f"/api/v1/items/{item_id}", headers=HEADERS, json={"starts_at": None}
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["starts_at"] is None
+    assert datetime.fromisoformat(body["ends_at"].replace("Z", "+00:00")) == (
+        _NOW + timedelta(days=1)
+    ).replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=UTC)
+    assert body["due_at"] is not None
+    assert body["description"] == "keep me"
+
+    # A value can be set back.
+    res = await client.patch(
+        f"/api/v1/items/{item_id}", headers=HEADERS, json={"starts_at": TOMORROW_NOON}
+    )
+    assert res.status_code == 200
+    assert datetime.fromisoformat(res.json()["starts_at"].replace("Z", "+00:00")) == (
+        _NOW + timedelta(days=1)
+    ).replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=UTC)
+
+
 async def test_item_cancel_flow(client: httpx.AsyncClient) -> None:
     res = await client.post(
         "/api/v1/items",

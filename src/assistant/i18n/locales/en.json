@@ -39,6 +39,7 @@
   "draft.kind": "kind: {kind}",
   "draft.priority": "priority: {priority}",
   "draft.start": "start: {when} ({tz})",
+  "draft.end": "end: {when} ({tz})",
   "draft.due": "due: {when} ({tz})",
   "draft.remind": "remind: {offsets} min before start",
   "draft.notes": "notes: {notes}",

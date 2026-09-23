@@ -19,10 +19,21 @@ from assistant.models.calendar_items import (
     ItemPriority,
     ItemStatus,
 )
-from assistant.models.reminders import Reminder, ReminderStatus
 from assistant.models.users import User
 
 _ITEM_LIMIT = 200
+
+
+class _Unset:
+    """Marker for 'field not supplied' in partial updates (SPEC §4.3)."""
+
+    def __repr__(self) -> str:
+        return "<unset>"
+
+
+#: Distinguishes "field omitted" (leave as-is) from an explicit ``None``
+#: (clear the value) in :func:`update_item`.
+UNSET = _Unset()
 
 
 def _to_utc(value: datetime | None, tz: ZoneInfo) -> datetime | None:
@@ -89,37 +100,58 @@ async def update_item(
     user: User,
     item_id: int,
     *,
-    title: str | None = None,
-    description: str | None = None,
-    starts_at: datetime | None = None,
-    ends_at: datetime | None = None,
-    due_at: datetime | None = None,
-    priority: ItemPriority | None = None,
+    title: str | None | _Unset = UNSET,
+    description: str | None | _Unset = UNSET,
+    starts_at: datetime | None | _Unset = UNSET,
+    ends_at: datetime | None | _Unset = UNSET,
+    due_at: datetime | None | _Unset = UNSET,
+    priority: ItemPriority | None | _Unset = UNSET,
 ) -> CalendarItem | None:
-    """Update mutable fields of a calendar item. ``None`` means "leave as-is"."""
+    """Update mutable fields of a calendar item (SPEC §4.3 tri-state).
+
+    * field **omitted** (left as :data:`UNSET`): leave unchanged;
+    * field set to **``None``**: clear the nullable value;
+    * field set to a **value**: set it.
+
+    When the item's ``starts_at`` changes, pending item-linked reminders are
+    recomputed to fire at the new start (SPEC §4.2).
+    """
     item = await get_item(session, user, item_id)
     if item is None:
         return None
     tz = _user_tz(user)
-    if title is not None:
+    title_changed = False
+    if title is not UNSET:
+        if title is None:
+            raise ValueError("Title cannot be empty.")
         title = title.strip()
         if not title:
             raise ValueError("Title cannot be empty.")
         if len(title) > 500:
             raise ValueError("Title is too long (max 500 characters).")
+        title_changed = title != item.title
         item.title = title
-    if description is not None:
-        if len(description) > 4000:
+    if description is not UNSET:
+        if description is not None and len(description) > 4000:
             raise ValueError("Description is too long (max 4000 characters).")
         item.description = description
-    if starts_at is not None:
-        item.starts_at = _to_utc(starts_at, tz)
-    if ends_at is not None:
+    starts_changed = False
+    if starts_at is not UNSET:
+        new_start = _to_utc(starts_at, tz)
+        starts_changed = new_start != item.starts_at
+        item.starts_at = new_start
+    if ends_at is not UNSET:
         item.ends_at = _to_utc(ends_at, tz)
-    if due_at is not None:
+    if due_at is not UNSET:
         item.due_at = _to_utc(due_at, tz)
-    if priority is not None:
+    if priority is not UNSET:
         item.priority = priority.value
+    if starts_changed or title_changed:
+        # Shared invariant (SPEC §4.2): linked reminders track starts_at and
+        # the item's title, regardless of which surface performed the update.
+        from assistant.services.reminders import reschedule_item_reminders
+
+        await reschedule_item_reminders(session, user, item)
     await session.flush()
     return item
 
@@ -127,13 +159,17 @@ async def update_item(
 async def complete_item(
     session: AsyncSession, user: User, item_id: int
 ) -> CalendarItem | None:
-    """Mark an item as completed and record ``completed_at``."""
+    """Mark an item as completed, record ``completed_at``, and cancel its
+    pending reminders (SPEC §4.2 — shared across every surface)."""
     item = await get_item(session, user, item_id)
     if item is None:
         return None
     if item.status != ItemStatus.completed.value:
         item.status = ItemStatus.completed.value
         item.completed_at = datetime.now(UTC)
+        from assistant.services.reminders import cancel_item_reminders
+
+        await cancel_item_reminders(session, user, item.id)
         await session.flush()
     return item
 
@@ -141,28 +177,16 @@ async def complete_item(
 async def cancel_item(
     session: AsyncSession, user: User, item_id: int
 ) -> CalendarItem | None:
-    """Cancel an item and cancel its pending reminders (SPEC §8)."""
+    """Cancel an item and its pending reminders (SPEC §4.2)."""
     item = await get_item(session, user, item_id)
     if item is None:
         return None
     if item.status != ItemStatus.cancelled.value:
         item.status = ItemStatus.cancelled.value
-    reminders = (
-        await session.scalars(
-            select(Reminder).where(
-                Reminder.calendar_item_id == item.id,
-                Reminder.status == ReminderStatus.pending.value,
-            )
-        )
-    ).all()
-    for reminder in reminders:
-        reminder.status = ReminderStatus.cancelled.value
-        reminder.cancelled_at = datetime.now(UTC)
-        if reminder.job_id is not None:
-            from assistant.services.jobs import cancel_job
+        from assistant.services.reminders import cancel_item_reminders
 
-            await cancel_job(session, reminder.job_id)
-    await session.flush()
+        await cancel_item_reminders(session, user, item.id)
+        await session.flush()
     return item
 
 
@@ -173,17 +197,11 @@ async def delete_item(
     item = await get_item(session, user, item_id)
     if item is None:
         return False
-    reminders = (
-        await session.scalars(
-            select(Reminder).where(Reminder.calendar_item_id == item.id)
-        )
-    ).all()
-    for reminder in reminders:
-        if reminder.job_id is not None:
-            from assistant.services.jobs import cancel_job
+    from assistant.services.reminders import cancel_item_reminders
 
-            await cancel_job(session, reminder.job_id)
-        await session.delete(reminder)
+    # Cancel pending reminders (and their jobs) first, then delete the rows;
+    # the relationship cascade removes any sent/cancelled reminder rows too.
+    await cancel_item_reminders(session, user, item.id)
     await session.delete(item)
     await session.flush()
     return True

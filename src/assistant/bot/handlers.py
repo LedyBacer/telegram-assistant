@@ -72,6 +72,7 @@ class TaskDraft:
     title: str
     kind: ItemKind
     starts_at: datetime | None
+    ends_at: datetime | None
     due_at: datetime | None
     priority: ItemPriority
     description: str | None
@@ -217,6 +218,7 @@ def _parse_draft(text: str, tz: ZoneInfo) -> TaskDraft:
         title=title,
         kind=kind,
         starts_at=starts_at,
+        ends_at=None,
         due_at=due_at,
         priority=priority,
         description=fields.get("description") or None,
@@ -232,14 +234,18 @@ def _ai_draft_to_task_draft(ai: AITaskDraft, tz: ZoneInfo) -> TaskDraft:
         if starts_at.tzinfo is None:
             starts_at = starts_at.replace(tzinfo=tz)
         starts_at = starts_at.astimezone(UTC)
-    due_at: datetime | None = None
+    # SPEC §4.1: a duration extends the item (start -> end); it must NOT be
+    # represented as a due date. ``due_at`` stays reserved for explicit
+    # deadlines.
+    ends_at: datetime | None = None
     if starts_at is not None and ai.duration_minutes:
-        due_at = starts_at + timedelta(minutes=ai.duration_minutes)
+        ends_at = starts_at + timedelta(minutes=ai.duration_minutes)
     return TaskDraft(
         title=ai.title,
         kind=ItemKind(ai.kind),
         starts_at=starts_at,
-        due_at=due_at,
+        ends_at=ends_at,
+        due_at=None,
         priority=ItemPriority(ai.priority),
         description=ai.notes,
         remind_offsets=list(ai.reminder_offsets),
@@ -260,6 +266,15 @@ def _draft_preview(draft: TaskDraft, tz: ZoneInfo, lang: str) -> str:
                 lang,
                 "draft.start",
                 when=draft.starts_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
+                tz=tz,
+            )
+        )
+    if draft.ends_at:
+        lines.append(
+            t(
+                lang,
+                "draft.end",
+                when=draft.ends_at.astimezone(tz).strftime("%Y-%m-%d %H:%M"),
                 tz=tz,
             )
         )
@@ -677,6 +692,7 @@ async def on_draft(
             kind=draft.kind,
             description=draft.description,
             starts_at=draft.starts_at,
+            ends_at=draft.ends_at,
             due_at=draft.due_at,
             priority=draft.priority,
         )

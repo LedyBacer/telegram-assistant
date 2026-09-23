@@ -113,6 +113,52 @@ async def create_item_reminders(
     return created
 
 
+async def reschedule_item_reminders(
+    session: AsyncSession, user: User, item: CalendarItem
+) -> int:
+    """Recompute pending ``item_linked`` reminders after the item changes.
+
+    Called from the shared calendar service when the item's start time (or
+    title) changes, so the invariant "linked reminders fire at
+    ``starts_at - offset``" holds no matter which surface (bot, API,
+    action engine) performed the update. If the item no longer has a start,
+    the pending linked reminders are cancelled — there is nothing to anchor
+    them to. Returns the number of reminders rescheduled (0 when the start
+    was cleared or there were no pending linked reminders).
+    """
+    reminders = (
+        await session.scalars(
+            select(Reminder).where(
+                Reminder.user_id == user.id,
+                Reminder.calendar_item_id == item.id,
+                Reminder.status == ReminderStatus.pending.value,
+                Reminder.trigger_type == "item_linked",
+            )
+        )
+    ).all()
+    if not reminders:
+        return 0
+    if item.starts_at is None:
+        now = datetime.now(UTC)
+        for reminder in reminders:
+            reminder.status = ReminderStatus.cancelled.value
+            reminder.cancelled_at = now
+            if reminder.job_id is not None:
+                await cancel_job(session, reminder.job_id)
+        await session.flush()
+        return 0
+    for reminder in reminders:
+        offset = reminder.offset_minutes or 0
+        reminder.fire_at = item.starts_at - timedelta(minutes=offset)
+        reminder.message = item.title
+        if reminder.job_id is not None:
+            job = await session.get(BackgroundJob, reminder.job_id)
+            if job is not None and job.status == JobStatus.pending.value:
+                job.available_at = reminder.fire_at
+    await session.flush()
+    return len(reminders)
+
+
 async def get_reminder(
     session: AsyncSession, user: User, reminder_id: int
 ) -> Reminder | None:
