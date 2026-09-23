@@ -1,10 +1,37 @@
 # Progress
 
-Status: V3 PRIORITY 11 COMPLETE (real recent-entity references: the turn
-context now carries the user's most recently created/updated items and
-reminders that fall outside the today / 7-day windows, with ids, so
-"move it" resolves without a tool round-trip).
-Next: V3 Priority 12 (expand conversational mutation coverage).
+Status: V3 PRIORITY 12 COMPLETE (conversational workout mutations: the
+model can now log a workout that just happened and schedule a future
+one through the typed pending-action flow, with the same service-layer
+validation as every other surface).
+Next: V3 Priority 13 (mutation previews from typed data).
+
+## V3 — Priority 12: expand conversational mutation coverage (workouts)
+
+Workout mutations were only reachable via the Mini App; conversation
+had no `log_workout` / `schedule_workout` action kinds, so "I ran 5k this
+morning" and "remind me to run tomorrow at 7" dead-ended.
+
+- New `src/assistant/actions/workouts.py` registers two kinds:
+  - `log_workout`: payload `name`, optional `started_at`,
+    `duration_minutes` (>0), `notes` (≤4000), `perceived_effort` (1..10);
+    executor delegates to `workouts_service.log_workout`.
+  - `schedule_workout`: payload `name`, `starts_at`, optional
+    `duration_minutes` (>0); executor delegates to
+    `workouts_service.schedule_workout` (calendar item + start-time
+    reminder).
+- Both executors pass naive datetimes through; the services already
+  interpret them in the user's timezone and normalize to UTC.
+- `actions/__init__.py` imports the module so the kinds self-register.
+- Kinds appear in the turn prompt automatically via `actions_doc`.
+
+Tests (`tests/test_actions.py`, "Workout action kinds (P12)" section):
+`test_execute_log_workout` (propose→confirm→execute, fields persisted,
+status completed), `test_log_workout_payload_validation` (duration 0 and
+effort 11 rejected at propose), `test_execute_schedule_workout_creates_item_and_reminder`
+(item titled "Workout: Run", correct start/duration, exactly one pending
+reminder).
+Verified: 380 pytest pass, Ruff clean.
 
 ## V3 — Priority 11: real recent-entity references
 

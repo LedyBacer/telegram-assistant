@@ -66,5 +66,7 @@ def registered_kinds() -> list[str]:
     return sorted(_REGISTRY)
 
 
-# Built-in kinds (calendar mutations) register themselves on import.
+# Built-in kinds (calendar and workout mutations) register themselves on
+# import.
 import assistant.actions.calendar  # noqa: E402,F401
+import assistant.actions.workouts  # noqa: E402,F401

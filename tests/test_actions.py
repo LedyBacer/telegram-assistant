@@ -523,3 +523,95 @@ async def test_concurrent_confirm_executes_once(
             .where(CalendarItem.user_id == user.id)
         )
         assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Workout action kinds (P12)
+# ---------------------------------------------------------------------------
+
+
+async def test_execute_log_workout(session: AsyncSession) -> None:
+    from assistant.services import workouts as wo
+
+    user = await _user(session)
+    action = await act.propose_action(
+        session,
+        user,
+        kind="log_workout",
+        payload={
+            "name": "Push",
+            "duration_minutes": 40,
+            "perceived_effort": 7,
+            "notes": "new PR",
+        },
+        summary="Log push workout",
+    )
+    await act.confirm_action(session, user, action.id)
+    done, result = await act.execute_action(session, user, action.id)
+    await session.commit()
+    assert done.status == ActionStatus.executed.value
+    assert result["name"] == "Push"
+    log = await wo.get_workout(session, user, result["workout_id"])
+    assert log is not None
+    assert log.duration_minutes == 40
+    assert log.perceived_effort == 7
+    assert log.notes == "new PR"
+    assert log.status == "completed"
+
+
+async def test_log_workout_payload_validation(session: AsyncSession) -> None:
+    user = await _user(session)
+    with pytest.raises(ValueError):
+        await act.propose_action(
+            session,
+            user,
+            kind="log_workout",
+            payload={"name": "Push", "duration_minutes": 0},
+            summary="s",
+        )
+    with pytest.raises(ValueError):
+        await act.propose_action(
+            session,
+            user,
+            kind="log_workout",
+            payload={"name": "Push", "perceived_effort": 11},
+            summary="s",
+        )
+
+
+async def test_execute_schedule_workout_creates_item_and_reminder(
+    session: AsyncSession,
+) -> None:
+    from assistant.models.reminders import Reminder
+
+    user = await _user(session)
+    action = await act.propose_action(
+        session,
+        user,
+        kind="schedule_workout",
+        payload={
+            "name": "Run",
+            "starts_at": MOVED.isoformat(),
+            "duration_minutes": 30,
+        },
+        summary="Schedule run",
+    )
+    await act.confirm_action(session, user, action.id)
+    done, result = await act.execute_action(session, user, action.id)
+    await session.commit()
+    assert done.status == ActionStatus.executed.value
+    item = await cal.get_item(session, user, result["item_id"])
+    assert item is not None
+    assert item.title == "Workout: Run"
+    assert item.starts_at == MOVED
+    assert item.extra.get("duration_minutes") == 30
+    rows = list(
+        (
+            await session.execute(
+                select(Reminder).where(Reminder.calendar_item_id == item.id)
+            )
+        )
+        .scalars()
+    )
+    assert len(rows) == 1
+    assert rows[0].status == "pending"
