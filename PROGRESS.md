@@ -1,8 +1,30 @@
 # Progress
 
-Status: V3 PRIORITY 2 COMPLETE (atomic PendingAction lifecycle +
-concurrency). Next: V3 Priority 3 (expiry semantics — no secret mutation in
-read paths).
+Status: V3 PRIORITY 3 COMPLETE (PendingAction expiry semantics — read paths
+no longer mutate). Next: V3 Priority 4 (optimistic stale-data protection for
+mutations).
+
+## V3 — Priority 3: expiry without secret mutation on read
+
+Read paths (`get_action`, `list_actions`) previously called `_lazy_expire`,
+so a plain GET flipped a row to `expired` and flushed a write (a hidden
+mutation on a read, and a write on what should be a read-only request). Now:
+
+- `services/actions` splits the logic: a pure `_is_expired_now` /
+  `effective_status(action)` reports an overdue proposed/confirmed action as
+  `expired` WITHOUT writing; the mutating `_lazy_expire` is kept only for the
+  write paths (via a new `_load_write` used by confirm/reject/execute). The
+  durable `expired` write happens in those write paths and the worker's bulk
+  `expire_actions` — never on read.
+- `get_action` / `list_actions` are pure reads (no flush).
+- `api/schemas.ActionOut` reports the effective status at the boundary
+  (overdue → `expired`) so the UI reflects reality; `api/routes` reject guard
+  uses `effective_status` so an overdue action 400s instead of transitioning.
+
+Tests: `test_actions.py::test_read_does_not_mutate_overdue_action` (read
+reports expired, stored row stays `proposed`, bulk pass durably flips it) and
+`test_api.py::test_action_overdue_reports_expired_without_write` (GET reports
+`expired`, reject 400s, DB row untouched). Verified: 358 pytest pass, Ruff clean.
 
 ## V3 — Priority 2: atomic PendingAction confirm + execute
 

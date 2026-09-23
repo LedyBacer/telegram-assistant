@@ -611,6 +611,38 @@ async def test_action_list_status_filter(
     assert [a["id"] for a in rejected.json()] == [action_id]
 
 
+async def test_action_overdue_reports_expired_without_write(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    await client.get("/api/v1/me", headers=HEADERS)  # upsert user 777
+    user = await session.get(User, 777)
+    assert user is not None
+    action = await actions_service.propose_action(
+        session,
+        user,
+        kind="create_item",
+        payload={"title": "Late", "starts_at": TODAY_NOON},
+        summary="create 'Late'",
+        expires_in=timedelta(seconds=-1),
+    )
+    await session.commit()
+    action_id = action.id
+
+    # The read endpoint reports the effective (expired) status, and rejecting
+    # an overdue action is a 400 (it is not transitioned).
+    listed = await client.get("/api/v1/actions", headers=HEADERS)
+    assert [a["status"] for a in listed.json()] == ["expired"]
+    assert (
+        await client.post(f"/api/v1/actions/{action_id}/reject", headers=HEADERS)
+    ).status_code == 400
+
+    # The read did NOT persist the transition: the stored row is still
+    # ``proposed`` (only a write path or the worker's bulk pass flips it).
+    stored = await actions_service.get_action(session, user, action_id)
+    assert stored is not None
+    assert stored.status == "proposed"
+
+
 # ---------------------------------------------------------------------------
 # Proactivity settings (SPEC §11)
 # ---------------------------------------------------------------------------

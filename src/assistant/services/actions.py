@@ -41,21 +41,39 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _lazy_expire(action: PendingAction) -> bool:
-    """Transition a pending/confirmed action past its expiry. Returns True
-    if the action just expired."""
-    if (
+def _is_expired_now(action: PendingAction) -> bool:
+    """Pure check: a proposed/confirmed action is overdue once its TTL passes.
+    Reads use this to *report* an effective status without writing."""
+    return (
         action.status in (ActionStatus.proposed.value, ActionStatus.confirmed.value)
         and action.expires_at is not None
         and action.expires_at <= _now()
-    ):
+    )
+
+
+def effective_status(action: PendingAction) -> str:
+    """The status a reader should see. An overdue proposed/confirmed action is
+    reported as ``expired`` WITHOUT persisting the transition — read paths must
+    not mutate; the durable ``expired`` write happens only in the write paths
+    (confirm/reject/execute) and the worker's bulk :func:`expire_actions`."""
+    if _is_expired_now(action):
+        return ActionStatus.expired.value
+    return action.status
+
+
+def _lazy_expire(action: PendingAction) -> bool:
+    """Write-path only: transition an overdue action to ``expired``. Returns
+    True if the action just expired. Callers in a write transaction commit it."""
+    if _is_expired_now(action):
         action.status = ActionStatus.expired.value
         action.expired_at = _now()
         return True
     return False
 
 
-async def _load(session: AsyncSession, user: User, action_id: int) -> PendingAction | None:
+async def _load_write(session: AsyncSession, user: User, action_id: int) -> PendingAction | None:
+    """Load for a WRITE path, lazily expiring (mutates + flushes) an overdue
+    action so the transition is committed with the caller's transaction."""
     action = await session.get(PendingAction, action_id)
     if action is None or action.user_id != user.id:
         return None
@@ -103,8 +121,12 @@ async def propose_action(
 async def get_action(
     session: AsyncSession, user: User, action_id: int
 ) -> PendingAction | None:
-    """Return the user's action, lazily expiring it if its TTL passed."""
-    return await _load(session, user, action_id)
+    """Return the user's action. Pure read: it never mutates; use
+    :func:`effective_status` to report an overdue action as ``expired``."""
+    action = await session.get(PendingAction, action_id)
+    if action is None or action.user_id != user.id:
+        return None
+    return action
 
 
 async def list_actions(
@@ -114,7 +136,9 @@ async def list_actions(
     status: ActionStatus | None = None,
     limit: int = 50,
 ) -> list[PendingAction]:
-    """List the user's actions, newest first, optionally filtered by status."""
+    """List the user's actions, newest first, optionally filtered by (stored)
+    status. Pure read: it never mutates; report each row's
+    :func:`effective_status` to the caller."""
     stmt = (
         select(PendingAction)
         .where(PendingAction.user_id == user.id)
@@ -123,10 +147,7 @@ async def list_actions(
     )
     if status is not None:
         stmt = stmt.where(PendingAction.status == status.value)
-    actions = list((await session.scalars(stmt)).all())
-    if any(_lazy_expire(a) for a in actions):
-        await session.flush()
-    return actions
+    return list((await session.scalars(stmt)).all())
 
 
 async def confirm_action(
@@ -135,7 +156,7 @@ async def confirm_action(
     """Mark a proposed action ``confirmed`` (idempotent: confirming an
     already-confirmed action returns it unchanged). Raises ValueError when
     the action does not exist or was already rejected/expired."""
-    action = await _load(session, user, action_id)
+    action = await _load_write(session, user, action_id)
     if action is None:
         raise ValueError("Action not found.")
     if action.status == ActionStatus.proposed.value:
@@ -152,7 +173,7 @@ async def reject_action(
 ) -> PendingAction:
     """Mark a proposed/confirmed action ``rejected`` (idempotent on a
     rejected action)."""
-    action = await _load(session, user, action_id)
+    action = await _load_write(session, user, action_id)
     if action is None:
         raise ValueError("Action not found.")
     if action.status in (ActionStatus.proposed.value, ActionStatus.confirmed.value):
@@ -179,7 +200,7 @@ async def execute_action(
     Flushes only; the caller commits (the executor's mutations land in the
     same transaction, so a commit failure rolls the action state back too).
     """
-    action = await _load(session, user, action_id)
+    action = await _load_write(session, user, action_id)
     if action is None:
         raise ValueError("Action not found.")
     if action.status == ActionStatus.executed.value:

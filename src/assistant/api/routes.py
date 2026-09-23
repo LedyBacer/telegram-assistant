@@ -637,11 +637,15 @@ async def reject_action(
     action = await actions_service.get_action(session, user, action_id)
     if action is None:
         raise _not_found()
-    if action.status not in (
+    # Use effective status: an overdue proposed/confirmed action is rejected
+    # (not executed/transitioned) and reported as expired without a write.
+    if actions_service.effective_status(action) not in (
         ActionStatus.proposed.value,
         ActionStatus.confirmed.value,
     ):
-        raise HTTPException(status_code=400, detail=f"action is {action.status}")
+        raise HTTPException(
+            status_code=400, detail=f"action is {actions_service.effective_status(action)}"
+        )
     action = await actions_service.reject_action(session, user, action_id)
     await session.commit()
     return ActionOut.model_validate(action)

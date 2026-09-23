@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from assistant.i18n import is_supported
 from assistant.models.calendar_items import ItemKind, ItemPriority
@@ -183,6 +183,19 @@ class ActionOut(ORMModel):
     rejected_at: datetime | None
     executed_at: datetime | None
     expired_at: datetime | None
+
+    @model_validator(mode="after")
+    def _report_effective_status(self) -> ActionOut:
+        # Read paths do not persist expiry (SPEC §3): report an overdue
+        # proposed/confirmed action as ``expired`` at the API boundary so the
+        # UI reflects reality without the read writing to the DB.
+        if (
+            self.status in ("proposed", "confirmed")
+            and self.expires_at is not None
+            and self.expires_at <= datetime.now(UTC)
+        ):
+            self.status = "expired"
+        return self
 
 
 class ProactiveSettingsOut(ORMModel):

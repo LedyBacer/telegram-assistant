@@ -396,6 +396,39 @@ async def test_bulk_expire(session: AsyncSession) -> None:
     )
 
 
+async def test_read_does_not_mutate_overdue_action(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await cal.create_item(session, user, title="P")
+    action = await act.propose_action(
+        session,
+        user,
+        kind="update_item",
+        payload={"item_id": item.id},
+        summary="s",
+        expires_in=timedelta(seconds=-1),
+    )
+    await session.commit()
+
+    # A read reports the effective (expired) status...
+    fresh = await act.get_action(session, user, action.id)
+    assert fresh is not None
+    assert act.effective_status(fresh) == ActionStatus.expired.value
+    # ...without persisting the transition (stored status stays proposed).
+    assert fresh.status == ActionStatus.proposed.value
+
+    # list_actions is equally non-mutating.
+    listed = await act.list_actions(session, user)
+    assert [act.effective_status(a) for a in listed] == [ActionStatus.expired.value]
+    assert [a.status for a in listed] == [ActionStatus.proposed.value]
+
+    # The worker's bulk pass is what durably flips the row.
+    await act.expire_actions(session)
+    await session.commit()
+    assert (await act.get_action(session, user, action.id)).status == (
+        ActionStatus.expired.value
+    )
+
+
 # ---------------------------------------------------------------------------
 # Atomic confirm + execute (row-locked, double-click safe)
 # ---------------------------------------------------------------------------
