@@ -1,6 +1,36 @@
 # Progress
 
-Status: PRIORITY 13 COMPLETE (final docs/report/cleanup).
+Status: V3 PRIORITY 1 COMPLETE (worker transaction ownership). Next: V3
+Priority 2 (atomic PendingAction lifecycle + TTL/concurrency).
+
+## V3 — Priority 1: worker transaction ownership (commit this session)
+
+`worker/main.py::_run_job` no longer wraps a job handler in an outer
+transaction. New ownership contract (SPEC §5): the worker owns job CLAIMING
+(`poll_once`) and the FINAL job state (`_complete` / `_fail`, each a short
+transaction on its own session); each handler owns its domain transactions and
+commits between external I/O stages, so no DB transaction spans the Telegram /
+embedding network calls. Handlers updated:
+- `reminders._handle_reminder_send` and `digests._handle_digest_send` now use
+  Phase A (read + commit) → Phase B (Telegram send, no open tx) → Phase C
+  (re-fetch + stamp `sent_at` exactly once) — durable at-least-once delivery,
+  `sent_at` written after the send so a crash re-sends rather than drops.
+- `files` ingestion already committed between download/extract/embed/chunk-write.
+
+Tests: `tests/test_worker_ingest.py` (3) drive a REAL `files.ingest` job through
+`JobWorker._run_job` — happy path (file → `indexed`, job → `completed`, lease
+cleared), owner-token/lease protection (a stale token cannot complete the job),
+and cancel-mid-ingest (the fake embedder blocks at the embed stage until the
+cancel commits, so the run's chunk-write is provably skipped). Test infra:
+`tests/conftest.py` now forces `DATABASE_URL` to the test database (the shell
+exports the Docker hostname `postgres`, which is unresolvable from the host, so
+app-side `get_session_factory()` calls like `files._record_failure` were
+order-dependent on `test_api.py` importing first). Verified: 354 pytest pass,
+Ruff clean.
+
+---
+
+## V2 (baseline before this V3 effort)
 
 ## P13 — Final documentation and report (this session)
 
