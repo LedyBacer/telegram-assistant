@@ -22,6 +22,7 @@ from assistant.db import dispose_engine, get_session_factory
 from assistant.logging import setup_logging
 from assistant.models.jobs import BackgroundJob
 from assistant.services import digests as digests_service
+from assistant.services import files as files_service
 from assistant.services import jobs as jobs_service
 from assistant.services import notifications
 from assistant.services import proactivity as proactivity_service
@@ -150,6 +151,14 @@ class JobWorker:
                 await session.rollback()
                 logger.warning("job %s no longer owned, skipping fail", job_id)
 
+    async def reap_file_artifacts(self) -> None:
+        """One bounded pass reaping disk artifacts of terminally failed file
+        ingests whose bytes are re-sourcable (SPEC §21/P22 consistency)."""
+        async with self._session_factory() as session:
+            reaped = await files_service.reap_terminal_artifacts(session)
+            if reaped:
+                logger.info("reaped %d terminal file artifact(s)", reaped)
+
     async def schedule_digests(self) -> None:
         """One idempotent pass ensuring every user has today's digest queued."""
         async with self._session_factory() as session:
@@ -189,6 +198,10 @@ class JobWorker:
                     if loop.time() - self._last_digest_pass >= self.digest_interval:
                         self._last_digest_pass = loop.time()
                         await self.schedule_digests()
+                        try:
+                            await self.reap_file_artifacts()
+                        except Exception:
+                            logger.exception("file artifact reap failed")
                     if loop.time() - self._last_proactive_pass >= self.digest_interval:
                         self._last_proactive_pass = loop.time()
                         try:

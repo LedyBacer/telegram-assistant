@@ -866,15 +866,20 @@ async def test_delete_file_removes_rows_job_and_disk(session, monkeypatch, tmp_p
     disk.write_text("data")
     await session.commit()
 
-    assert await files.delete_file(session, user, file.id) is True
+    storage_key = await files.delete_file(session, user, file.id)
+    assert storage_key == file.storage_key
+    # The disk artifact survives until the commit is confirmed (P22): a
+    # failed commit must not destroy the only copy of a local upload.
+    assert disk.exists()
     await session.commit()
 
     assert await session.get(UserFile, file.id) is None
     assert (await session.scalars(select(FileChunk))).all() == []
     job = await session.get(BackgroundJob, file.job_id)
     assert job.status == JobStatus.cancelled.value
+    files.discard_storage(storage_key)
     assert not disk.exists()
-    assert await files.delete_file(session, user, file.id) is False
+    assert await files.delete_file(session, user, file.id) is None
 
 
 async def test_delete_file_scoped_to_owner(session) -> None:
@@ -891,8 +896,89 @@ async def test_delete_file_scoped_to_owner(session) -> None:
     await session.commit()
     # The other user cannot see or delete the file.
     assert await files.get_file(session, other, file.id) is None
-    assert await files.delete_file(session, other, file.id) is False
+    assert await files.delete_file(session, other, file.id) is None
     assert await session.get(UserFile, file.id) is not None
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle consistency: terminal-failure artifact reaping (P22)
+# ---------------------------------------------------------------------------
+
+
+async def _fail_terminal(session: AsyncSession, file: UserFile) -> None:
+    """Mark a file's ingest job terminally failed and the file state failed."""
+    job = await session.get(BackgroundJob, file.job_id)
+    job.status = JobStatus.failed.value
+    file.state = FileState.failed.value
+    file.error = "ingestion failed"
+    await session.commit()
+
+
+async def test_reap_terminal_artifacts_removes_resourcable_only(
+    session, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+    monkeypatch.setattr(files, "get_ai_provider", lambda: _FakeEmbedder())
+    user = await _user(session)
+
+    # (a) Telegram file, terminally failed: bytes are re-downloadable -> reap.
+    resourcable = await files.register_upload(
+        session, user, original_filename="a.txt", mime_type="text/plain",
+        size_bytes=3, telegram_file_id="tg-file-a",
+    )
+    # (b) Local upload, terminally failed: disk is the ONLY source -> keep.
+    local = await files.register_local_upload(
+        session, user, original_filename="b.txt", mime_type="text/plain",
+        data=b"local",
+    )
+    # (c) Telegram file mid-backoff (job pending): retry will re-download ->
+    # keep the current artifact so it is not deleted under a live retry.
+    backoff = await files.register_upload(
+        session, user, original_filename="c.txt", mime_type="text/plain",
+        size_bytes=3, telegram_file_id="tg-file-c",
+    )
+    await session.commit()
+    (tmp_path / "files").mkdir(parents=True, exist_ok=True)
+    for f in (resourcable, backoff):
+        (tmp_path / "files" / f.storage_key).write_text("data")
+    await _fail_terminal(session, resourcable)
+    await _fail_terminal(session, local)
+    backoff.state = FileState.failed.value
+    backoff.error = "transient"
+    await session.commit()  # backoff job stays pending (job_max_attempts not hit)
+
+    reaped = await files.reap_terminal_artifacts(session)
+
+    assert reaped == 1
+    assert not (tmp_path / "files" / resourcable.storage_key).exists()
+    assert (tmp_path / "files" / local.storage_key).exists()
+    assert (tmp_path / "files" / backoff.storage_key).exists()
+    # Idempotent: nothing left to reap.
+    assert await files.reap_terminal_artifacts(session) == 0
+
+
+async def test_local_upload_missing_artifact_fails_visibly(
+    session, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+    monkeypatch.setattr(files, "get_ai_provider", lambda: _FakeEmbedder())
+
+    user = await _user(session)
+    file = await files.register_local_upload(
+        session, user, original_filename="gone.txt", mime_type="text/plain",
+        data=b"payload",
+    )
+    file_id = file.id
+    await session.commit()
+    (tmp_path / "files" / file.storage_key).unlink()  # simulate lost volume
+
+    job = await _claim_file_job(session, worker_id="w-test")
+    with pytest.raises(files.FileUploadError, match="missing and cannot be re-ingested"):
+        await files.handle_files_ingest(session, job)
+
+    file = await session.get(UserFile, file_id, populate_existing=True)
+    assert file.state == FileState.failed.value
+    assert "missing and cannot be re-ingested" in (file.error or "")
 
 
 # ---------------------------------------------------------------------------

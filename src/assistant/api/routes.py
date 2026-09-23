@@ -412,10 +412,13 @@ async def delete_file(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    deleted = await files_service.delete_file(session, user, file_id)
-    if not deleted:
+    storage_key = await files_service.delete_file(session, user, file_id)
+    if storage_key is None:
         raise _not_found()
     await session.commit()
+    # Disk artifact is removed only AFTER the commit survives (P22): a failed
+    # commit must not delete the only copy of a local upload.
+    files_service.discard_storage(storage_key)
     return Response(status_code=204)
 
 

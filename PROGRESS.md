@@ -1,11 +1,45 @@
 # Progress
 
-Status: V3 PRIORITY 21 COMPLETE (file-ingestion resource safety — per-file
-extracted-text / chunk-count / PDF-page caps with visible failure, stdlib
-streaming DOCX extraction with a decompression cap, off-loop pipeline work,
-and streamed Mini App upload reads with early 413 + orphan cleanup).
-Next: V3 Priority 22 (file lifecycle consistency — fs vs DB transaction
-ordering).
+Status: V3 PRIORITY 22 COMPLETE (file lifecycle consistency — delete removes
+the disk artifact only after the DB commit survives; a bounded worker pass
+reaps artifacts of terminally failed, re-sourcable ingests; a missing local
+upload artifact now fails visibly).
+Next: V3 Priority 23 (Telegram output safe by default — plain text /
+escaped HTML).
+
+## V3 — Priority 22: file lifecycle consistency (fs vs DB)
+
+Disk and database were not consistent with each other across the file
+lifecycle on the single-server local volume:
+
+- **Delete ordering (fs vs DB transaction ordering)**: `delete_file`
+  unlinked the disk artifact *before* the API route's commit — a failed
+  commit would leave a DB row whose only copy of the bytes (a local upload)
+  was already gone. `delete_file` is now DB-only (cancels the job, deletes
+  chunks + row, flushes) and returns the `storage_key`; the route commits
+  first, then calls `discard_storage`.
+- **Terminal-failure reaping (tombstone strategy)**: every permanently
+  failed Telegram download pinned its (up to 20 MB) artifact on the shared
+  volume forever. New bounded, idempotent worker pass
+  `reap_terminal_artifacts` removes artifacts only when state is `failed`,
+  the job is in the terminal `failed` state, and the bytes are re-sourcable
+  (`telegram_file_id` set). Local uploads keep their artifact (disk is the
+  only source and retry needs it); mid-backoff files (job `pending`) are
+  untouched. Runs on the digest-interval cadence in `JobWorker.run`.
+- **Missing-artifact visibility**: a local upload whose artifact vanished
+  (lost volume) now fails visibly with "Stored file data is missing and
+  cannot be re-ingested" at the top of the pipeline, matching the existing
+  `retry_file` pre-check.
+
+Tests (`test_files.py`): delete tests updated for the commit-first
+contract (artifact survives `delete_file` until `discard_storage` after
+commit; not-found returns `None`); new
+`test_reap_terminal_artifacts_removes_resourcable_only` (Telegram
+terminal-failed reaped; local-upload terminal-failed kept; mid-backoff
+kept; idempotent) and
+`test_local_upload_missing_artifact_fails_visibly`.
+Amended `docs/ASSUMPTIONS.md` #30.
+Verified: 416 pytest pass, Ruff clean.
 
 ## V3 — Priority 21: file-ingestion resource safety
 

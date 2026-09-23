@@ -202,6 +202,35 @@ def discard_storage(storage_key: str) -> None:
     _remove_disk_file(storage_key)
 
 
+async def reap_terminal_artifacts(session: AsyncSession) -> int:
+    """Reap disk artifacts of files whose ingestion has **terminally** failed
+    and whose bytes can be re-sourced (P22 file-lifecycle consistency).
+
+    On a single-server local volume the on-disk copy of a permanently failed
+    Telegram download is dead weight — a retry re-downloads from Telegram — so
+    it is removed. Local uploads keep their artifact: it is the only source,
+    and the user can retry. Only files whose ingestion job is in the terminal
+    ``failed`` state are touched, so mid-backoff files (job ``pending``) keep
+    their bytes. Bounded and idempotent; safe to run on every worker pass.
+    Returns the number of artifacts removed.
+    """
+    stmt = (
+        select(UserFile)
+        .where(UserFile.state == FileState.failed.value)
+        .where(UserFile.telegram_file_id.is_not(None))
+        .where(UserFile.job_id.is_not(None))
+        .join(BackgroundJob, UserFile.job_id == BackgroundJob.id)
+        .where(BackgroundJob.status == JobStatus.failed.value)
+    )
+    candidates = list((await session.scalars(stmt)).all())
+    reaped = 0
+    for file in candidates:
+        if _storage_path(file.storage_key).exists():
+            _remove_disk_file(file.storage_key)
+            reaped += 1
+    return reaped
+
+
 def _rejection_reason(
     mime_type: str, size_bytes: int | None, max_bytes: int
 ) -> LocalizableError | None:
@@ -241,23 +270,26 @@ async def list_files(
     return list((await session.scalars(stmt)).all())
 
 
-async def delete_file(session: AsyncSession, user: User, file_id: int) -> bool:
-    """Delete a file, its chunks, its disk artifact, and pending job.
+async def delete_file(session: AsyncSession, user: User, file_id: int) -> str | None:
+    """Delete a file row, its chunks, and its pending job (flush only; the
+    caller commits). Returns the ``storage_key`` of the deleted file, or
+    ``None`` if it was not found.
 
-    Returns ``True`` if a file was deleted, ``False`` if it was not found.
+    The disk artifact is intentionally NOT removed here (P22): the caller must
+    commit first, then call :func:`discard_storage`. Removing the artifact
+    before the commit could delete the only copy of a local upload if the
+    commit then failed, leaving a DB row with no recoverable bytes.
     """
     file = await get_file(session, user, file_id)
     if file is None:
-        return False
+        return None
     if file.job_id is not None:
         await cancel_job(session, file.job_id)
     await session.execute(delete(FileChunk).where(FileChunk.file_id == file_id))
     storage_key = file.storage_key
-    file_id_to_delete = file.id
     await session.delete(file)
     await session.flush()
-    _remove_disk_file(storage_key)
-    return file_id_to_delete is not None
+    return storage_key
 
 
 async def retry_file(session: AsyncSession, user: User, file_id: int) -> UserFile:
@@ -477,9 +509,15 @@ async def _run_pipeline(
     await session.commit()
     if file.telegram_file_id is None:
         # Mini App upload: the bytes were already written to ``destination`` by
-        # ``register_local_upload``; skip the Telegram download.
+        # ``register_local_upload``; skip the Telegram download. The stored
+        # bytes are the ONLY source, so a missing artifact is a visible
+        # failure, not a re-download (P22).
         if not (file.extra or {}).get("local_upload"):
             raise FileUploadError("File has no Telegram file id to download from.")
+        if not destination.exists():
+            raise FileUploadError(
+                "Stored file data is missing and cannot be re-ingested."
+            )
     else:
         await _download_telegram_file(file.telegram_file_id, destination)
 
