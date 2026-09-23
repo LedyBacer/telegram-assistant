@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -128,28 +128,20 @@ async def schedule_todays_digest(
     """
     tz = _user_tz(user)
     today = datetime.now(tz=tz).date()
-    existing = await session.scalar(
-        select(DigestDelivery).where(
-            DigestDelivery.user_id == user.id,
-            DigestDelivery.digest_date == today,
-        )
+    # INSERT ... ON CONFLICT DO NOTHING: a lost uniqueness race returns an
+    # empty result instead of raising IntegrityError. The old catch-and-
+    # rollback path destroyed the caller's open transaction — in the worker's
+    # multi-user ``ensure_digest_jobs`` pass that silently discarded every
+    # delivery/job row flushed for earlier users.
+    result = await session.execute(
+        pg_insert(DigestDelivery)
+        .values(user_id=user.id, digest_date=today)
+        .on_conflict_do_nothing(index_elements=["user_id", "digest_date"])
+        .returning(DigestDelivery.id)
     )
-    if existing is not None:
-        return existing, False
-
-    digest_time = (
-        user.settings.digest_time
-        if user.settings is not None
-        else time(8, 0)
-    )
-    fire_at = datetime.combine(today, digest_time, tzinfo=tz)
-    delivery = DigestDelivery(user_id=user.id, digest_date=today)
-    session.add(delivery)
-    try:
-        await session.flush()
-    except IntegrityError:
-        # Concurrent scheduler beat us to it; use the winning row.
-        await session.rollback()
+    new_id = result.scalar_one_or_none()
+    if new_id is None:
+        # A concurrent scheduler beat us to it; use the winning row.
         existing = await session.scalar(
             select(DigestDelivery).where(
                 DigestDelivery.user_id == user.id,
@@ -157,9 +149,19 @@ async def schedule_todays_digest(
             )
         )
         if existing is None:
-            raise
+            raise RuntimeError(
+                f"digest row for user {user.id} vanished after insert conflict"
+            )
         return existing, False
+    delivery = await session.get(DigestDelivery, new_id)
+    assert delivery is not None
 
+    digest_time = (
+        user.settings.digest_time
+        if user.settings is not None
+        else time(8, 0)
+    )
+    fire_at = datetime.combine(today, digest_time, tzinfo=tz)
     job = await jobs_service.create_job(
         session,
         type=DIGEST_JOB_TYPE,

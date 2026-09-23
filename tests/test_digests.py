@@ -128,6 +128,40 @@ async def test_schedule_todays_digest_is_idempotent(session: AsyncSession) -> No
     assert jobs[0].idempotency_key == f"digest:{user.id}:{local_today.isoformat()}"
 
 
+async def test_conflict_does_not_rollback_caller_transaction(
+    session: AsyncSession,
+) -> None:
+    """Regression for the caller-transaction rollback hazard: a lost
+    uniqueness race in ``schedule_todays_digest`` must take the
+    ON CONFLICT path (no IntegrityError, no ``session.rollback()``),
+    because a rollback here would discard the delivery/job rows the
+    multi-user worker pass already flushed for earlier users."""
+    user_a = await _user(session, user_id=83)
+    user_b = await _user(session, user_id=84)
+
+    # user_b's digest already exists (committed by the "concurrent" winner).
+    delivery_b, _ = await digests.schedule_todays_digest(session, user_b)
+    await session.commit()
+
+    # In one open transaction: create for user_a, then hit the conflict
+    # branch for user_b.
+    delivery_a, created_a = await digests.schedule_todays_digest(session, user_a)
+    assert created_a is True
+    again_b, created_b = await digests.schedule_todays_digest(session, user_b)
+    assert created_b is False
+    assert again_b.id == delivery_b.id
+
+    # user_a's row must survive the commit (a rollback would have lost it).
+    await session.commit()
+    rows = (
+        await session.scalars(
+            select(DigestDelivery).where(DigestDelivery.user_id == user_a.id)
+        )
+    ).all()
+    assert [r.id for r in rows] == [delivery_a.id]
+    assert delivery_a.job_id is not None
+
+
 async def test_ensure_digest_jobs_schedules_all_then_is_noop(
     session: AsyncSession,
 ) -> None:

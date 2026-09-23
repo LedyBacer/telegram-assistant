@@ -1,8 +1,31 @@
 # Progress
 
-Status: V3 PRIORITY 4 COMPLETE (optimistic stale-data protection for
-pending-action mutations). Next: V3 Priority 5 (caller-transaction rollback
-hazards).
+Status: V3 PRIORITY 5 COMPLETE (caller-transaction rollback hazards removed —
+digest scheduling no longer rolls back its caller's transaction). Next: V3
+Priority 6 (honest Telegram delivery semantics).
+
+## V3 — Priority 5: caller-transaction rollback hazards
+
+Audited every `rollback()` / `IntegrityError` site in `src/`:
+
+- **Fixed — `digests.schedule_todays_digest`**: on a lost
+  `(user_id, digest_date)` uniqueness race it caught `IntegrityError` and
+  called `session.rollback()`, destroying the CALLER's open transaction.
+  In the worker's multi-user `ensure_digest_jobs` pass that silently
+  discarded every delivery/job row flushed for earlier users. Replaced
+  with `pg_insert(...).on_conflict_do_nothing(index_elements=[
+  "user_id", "digest_date"]).returning(...)` — the conflict branch now
+  selects the winning row; no exception, no rollback, transaction stays
+  intact (same pattern as `jobs.py`).
+- **Verified safe**: `files.py` (worker handler owns its session; failure
+  state recorded on a second connection), `proactivity.py`
+  (`run_proactive_pass` deliberately scopes one commit/rollback per user),
+  `worker/main.py` (worker owns claim/job-state txns), `bot/middlewares.py`
+  (per-request session).
+
+New test: `test_conflict_does_not_rollback_caller_transaction` (a conflict
+in one user's schedule must not lose earlier users' flushed rows).
+Verified: 360 pytest pass, Ruff clean.
 
 ## V3 — Priority 4: optimistic stale-data protection
 
