@@ -88,11 +88,23 @@ class Settings(BaseSettings):
         return self
 
     # File ingestion
-    max_upload_size_bytes: int = 20 * 1024 * 1024
-    chunk_size: int = 1000
-    chunk_overlap: int = 150
+    max_upload_size_bytes: int = Field(
+        default=20 * 1024 * 1024, ge=1, le=500 * 1024 * 1024
+    )
+    chunk_size: int = Field(default=1000, ge=50, le=20_000)
+    chunk_overlap: int = Field(default=150, ge=0, le=10_000)
     file_storage_dir: str = "storage/files"
-    embedding_batch_size: int = 64
+    embedding_batch_size: int = Field(default=64, ge=1, le=512)
+
+    # Ingestion resource safety (SPEC §21): hostile inputs (highly compressed
+    # PDF/DOCX, huge text) must not cause unbounded CPU/memory work. The
+    # extracted text of one file is capped in characters, the chunk count —
+    # and therefore the number of embedding batches and chunk rows written —
+    # is capped per file, and PDFs with more pages than ``max_pdf_pages``
+    # fail visibly instead of being parsed in full.
+    max_extracted_text_chars: int = Field(default=2_000_000, ge=1_000, le=50_000_000)
+    max_chunks_per_file: int = Field(default=2_000, ge=1, le=20_000)
+    max_pdf_pages: int = Field(default=500, ge=1, le=10_000)
 
     # Retrieval relevance policy (SPEC §13, §17): a vector candidate is only
     # "meaningfully relevant" when its cosine distance to the query is within

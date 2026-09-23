@@ -230,9 +230,15 @@ def test_chunk_text_overlap_and_coverage() -> None:
     assert all(f"w{i}" in joined for i in range(50))
 
 
+def _extract(data: bytes, mime_type: str, **overrides: Any) -> str:
+    kwargs: dict[str, Any] = {"max_chars": 100_000, "max_pdf_pages": 500}
+    kwargs.update(overrides)
+    return files.extract_text(data, mime_type, **kwargs)
+
+
 def test_extract_text_plain_markdown_and_docx() -> None:
-    assert files.extract_text("héllo\n".encode(), "text/plain") == "héllo\n"
-    assert files.extract_text(b"# md", "text/markdown") == "# md"
+    assert _extract("héllo\n".encode(), "text/plain") == "héllo\n"
+    assert _extract(b"# md", "text/markdown") == "# md"
 
     import docx as docx_lib
 
@@ -240,12 +246,39 @@ def test_extract_text_plain_markdown_and_docx() -> None:
     document = docx_lib.Document()
     document.add_paragraph("Hello docx world")
     document.save(buffer)
-    assert files.extract_text(buffer.getvalue(), files.DOCX_MIME) == "Hello docx world"
+    assert _extract(buffer.getvalue(), files.DOCX_MIME) == "Hello docx world"
 
 
 def test_extract_text_unsupported_raises() -> None:
     with pytest.raises(files.FileUploadError, match="Unsupported"):
-        files.extract_text(b"x", "image/png")
+        _extract(b"x", "image/png")
+
+
+def test_extract_text_enforces_character_bound() -> None:
+    with pytest.raises(files.FileUploadError, match="too long"):
+        _extract(b"a" * 5_000, "text/plain", max_chars=1_000)
+
+
+def test_extract_docx_decompression_bomb_is_bounded(monkeypatch) -> None:
+    import zipfile as zipfile_lib
+
+    monkeypatch.setattr(files, "_DOCX_XML_MAX_BYTES", 1024)
+    xml = "<w:document><w:body>" + "<w:t>ab" * 4096 + "</w:t></w:body></w:document>"
+    buffer = io.BytesIO()
+    with zipfile_lib.ZipFile(buffer, "w", zipfile_lib.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", xml)
+    with pytest.raises(files.FileUploadError, match="decompression limit"):
+        _extract(buffer.getvalue(), files.DOCX_MIME)
+
+
+def test_extract_docx_requires_document_xml() -> None:
+    import zipfile as zipfile_lib
+
+    buffer = io.BytesIO()
+    with zipfile_lib.ZipFile(buffer, "w", zipfile_lib.ZIP_DEFLATED) as archive:
+        archive.writestr("other.xml", "<nothing/>")
+    with pytest.raises(files.FileUploadError, match="word/document.xml missing"):
+        _extract(buffer.getvalue(), files.DOCX_MIME)
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +398,77 @@ async def test_ingest_extraction_failure_is_visible(session, monkeypatch, tmp_pa
     file = await session.get(UserFile, file_id, populate_existing=True)
     assert file.state == FileState.failed.value
     assert "Could not read PDF" in (file.error or "")
+
+
+async def test_ingest_fails_when_extracted_text_exceeds_limit(
+    session, monkeypatch, tmp_path
+) -> None:
+    """A hostilely large text document fails visibly at the extraction stage
+    (SPEC §21) instead of being chunked and embedded unboundedly."""
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+    monkeypatch.setattr(get_settings(), "max_extracted_text_chars", 1_000)
+    monkeypatch.setattr(files, "get_ai_provider", lambda: _FakeEmbedder())
+    monkeypatch.setattr(files, "_download_telegram_file", _fake_download(b"x" * 5_000))
+
+    user = await _user(session)
+    file = await files.register_upload(
+        session,
+        user,
+        original_filename="huge.txt",
+        mime_type="text/plain",
+        size_bytes=5_000,
+        telegram_file_id="tg-file-9",
+    )
+    file_id = file.id
+    await session.commit()
+
+    job = await _claim_file_job(session, worker_id="w-test")
+    with pytest.raises(files.FileUploadError, match="too long"):
+        await files.handle_files_ingest(session, job)
+
+    file = await session.get(UserFile, file_id, populate_existing=True)
+    assert file.state == FileState.failed.value
+    assert "too long" in (file.error or "")
+    assert (
+        await session.scalar(select(func.count()).select_from(FileChunk))
+        == 0
+    )
+
+
+async def test_ingest_fails_when_chunk_count_exceeds_limit(
+    session, monkeypatch, tmp_path
+) -> None:
+    """The total number of chunks — and therefore embedding batches and chunk
+    rows — is bounded per file (SPEC §21)."""
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+    monkeypatch.setattr(get_settings(), "chunk_size", 100)
+    monkeypatch.setattr(get_settings(), "chunk_overlap", 0)
+    monkeypatch.setattr(get_settings(), "max_chunks_per_file", 3)
+    monkeypatch.setattr(files, "get_ai_provider", lambda: _FakeEmbedder())
+    text = " ".join(f"w{i:03d}" for i in range(200))  # ~1199 chars -> >3 chunks
+    monkeypatch.setattr(
+        files, "_download_telegram_file", _fake_download(text.encode())
+    )
+
+    user = await _user(session)
+    file = await files.register_upload(
+        session,
+        user,
+        original_filename="many.txt",
+        mime_type="text/plain",
+        size_bytes=len(text),
+        telegram_file_id="tg-file-10",
+    )
+    file_id = file.id
+    await session.commit()
+
+    job = await _claim_file_job(session, worker_id="w-test")
+    with pytest.raises(files.FileUploadError, match="too large to index"):
+        await files.handle_files_ingest(session, job)
+
+    file = await session.get(UserFile, file_id, populate_existing=True)
+    assert file.state == FileState.failed.value
+    assert "too large to index" in (file.error or "")
 
 
 async def test_ingest_is_idempotent_on_replay(session, monkeypatch, tmp_path) -> None:

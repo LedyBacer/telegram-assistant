@@ -18,10 +18,13 @@ always scoped to the requesting user. Document text is untrusted user data.
 
 from __future__ import annotations
 
+import asyncio
+import html
 import io
 import logging
 import re
 import uuid
+import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -193,6 +196,12 @@ async def register_local_upload(
     return file
 
 
+def discard_storage(storage_key: str) -> None:
+    """Remove a stored file's disk artifact (orphan cleanup when the database
+    registration of an upload fails; SPEC §21)."""
+    _remove_disk_file(storage_key)
+
+
 def _rejection_reason(
     mime_type: str, size_bytes: int | None, max_bytes: int
 ) -> LocalizableError | None:
@@ -298,40 +307,81 @@ async def retry_file(session: AsyncSession, user: User, file_id: int) -> UserFil
 # ---------------------------------------------------------------------------
 
 
-def extract_text(data: bytes, mime_type: str) -> str:
+#: Decompressed ``word/document.xml`` size bound (SPEC §21): a zip bomb must
+#: not decompress into unbounded memory. 64 MB of raw XML is far beyond any
+#: sane document.
+_DOCX_XML_MAX_BYTES = 64 * 1024 * 1024
+
+
+def extract_text(
+    data: bytes,
+    mime_type: str,
+    *,
+    max_chars: int,
+    max_pdf_pages: int,
+) -> str:
     """Extract plain text from a file's bytes. Raises FileUploadError for
-    unsupported types or unreadable content."""
+    unsupported types, unreadable content, or content that exceeds the
+    configured resource bounds (SPEC §21)."""
     if mime_type in ("text/plain", "text/markdown"):
-        return data.decode("utf-8", errors="replace")
-    if mime_type == "application/pdf":
-        return _extract_pdf(data)
-    if mime_type == DOCX_MIME:
-        return _extract_docx(data)
-    raise FileUploadError(f"Unsupported file type: {mime_type}")
+        text = data.decode("utf-8", errors="replace")
+    elif mime_type == "application/pdf":
+        text = _extract_pdf(data, max_pages=max_pdf_pages)
+    elif mime_type == DOCX_MIME:
+        text = _extract_docx(data)
+    else:
+        raise FileUploadError(f"Unsupported file type: {mime_type}")
+    if len(text) > max_chars:
+        raise FileUploadError(
+            f"extracted text is too long ({len(text)} > {max_chars} characters)"
+        )
+    return text
 
 
-def _extract_pdf(data: bytes) -> str:
+def _extract_pdf(data: bytes, *, max_pages: int) -> str:
     from pypdf import PdfReader
 
     try:
         reader = PdfReader(io.BytesIO(data))
     except Exception as exc:
         raise FileUploadError(f"Could not read PDF: {exc}") from exc
+    page_count = len(reader.pages)
+    if page_count > max_pages:
+        raise FileUploadError(
+            f"PDF has too many pages ({page_count} > {max_pages})"
+        )
     pages = [(page.extract_text() or "") for page in reader.pages]
     return "\n\n".join(p for p in pages if p.strip())
 
 
 def _extract_docx(data: bytes) -> str:
-    import docx
+    """Extract text from a DOCX by streaming ``word/document.xml``.
 
-    document = docx.Document(io.BytesIO(data))
-    parts = [p.text for p in document.paragraphs if p.text.strip()]
-    for table in document.tables:
-        for row in table.rows:
-            cells = [c.text.strip() for c in row.cells if c.text.strip()]
-            if cells:
-                parts.append(" | ".join(cells))
-    return "\n".join(parts)
+    The entry is read in bounded chunks with a decompressed-size cap (zip-bomb
+    guard); every ``<w:t>`` run — in paragraphs and tables alike — yields text.
+    """
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise FileUploadError(f"Could not read DOCX: {exc}") from exc
+    with archive:
+        try:
+            source = archive.open("word/document.xml")
+        except KeyError as exc:
+            raise FileUploadError("Not a valid DOCX (word/document.xml missing)") from exc
+        parts: list[str] = []
+        total = 0
+        with source:
+            while True:
+                part = source.read(1 << 20)
+                if not part:
+                    break
+                total += len(part)
+                if total > _DOCX_XML_MAX_BYTES:
+                    raise FileUploadError("DOCX content exceeds the decompression limit")
+                parts.append(part.decode("utf-8", errors="replace"))
+    runs = re.findall(r"<w:t(?:\s[^>]*)?>([^<]*)</w:t>", "".join(parts))
+    return "\n".join(html.unescape(run) for run in runs if run.strip())
 
 
 def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
@@ -433,16 +483,32 @@ async def _run_pipeline(
     else:
         await _download_telegram_file(file.telegram_file_id, destination)
 
-    # Extract (CPU, local).
+    # Extract (CPU, local) — off the event loop so a large or hostilely
+    # compressed document cannot starve the worker's heartbeat and other jobs
+    # (SPEC §21).
     await _set_file_state(session, file, FileState.extracting)
     await session.commit()
-    data = destination.read_bytes()
-    text = extract_text(data, file.mime_type)
+    data = await asyncio.to_thread(destination.read_bytes)
+    text = await asyncio.to_thread(
+        extract_text,
+        data,
+        file.mime_type,
+        max_chars=settings.max_extracted_text_chars,
+        max_pdf_pages=settings.max_pdf_pages,
+    )
 
     # Chunk (CPU, local).
     await _set_file_state(session, file, FileState.chunking)
     await session.commit()
-    chunks = chunk_text(text, settings.chunk_size, settings.chunk_overlap)
+    chunks = await asyncio.to_thread(
+        chunk_text, text, settings.chunk_size, settings.chunk_overlap
+    )
+    # Total embedding batches and chunk rows are bounded per file (SPEC §21).
+    if len(chunks) > settings.max_chunks_per_file:
+        raise FileUploadError(
+            f"document is too large to index ({len(chunks)} chunks > "
+            f"{settings.max_chunks_per_file})"
+        )
 
     # Embed (external I/O) — commit before so no tx spans the model call.
     vectors: list[list[float]] = []
@@ -488,7 +554,11 @@ async def _run_pipeline(
     file.state = FileState.indexed.value
     file.indexed_at = datetime.now(UTC)
     file.error = None
-    file.extra = {**file.extra, "char_count": sum(len(c) for c in chunks)}
+    file.extra = {
+        **file.extra,
+        "char_count": sum(len(c) for c in chunks),
+        "chunk_count": len(chunks),
+    }
     await session.commit()
 
 

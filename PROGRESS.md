@@ -1,12 +1,50 @@
 # Progress
 
-Status: V3 PRIORITY 20 COMPLETE (RAG V3 — adjacent-chunk merging + citations:
-same-file retrieved chunks within a configurable position proximity are merged
-into one bounded excerpt (now independent of score order and correctly bridging
-the whole span), and citations reflect file AND position — a merged span is
-annotated with its contiguous 1-based part range).
-Next: V3 Priority 21 (file-ingestion resource safety — byte/text/chunk/batch
-bounds; async offload; streamed uploads).
+Status: V3 PRIORITY 21 COMPLETE (file-ingestion resource safety — per-file
+extracted-text / chunk-count / PDF-page caps with visible failure, stdlib
+streaming DOCX extraction with a decompression cap, off-loop pipeline work,
+and streamed Mini App upload reads with early 413 + orphan cleanup).
+Next: V3 Priority 22 (file lifecycle consistency — fs vs DB transaction
+ordering).
+
+## V3 — Priority 21: file-ingestion resource safety
+
+Hostile inputs (highly compressed PDF/DOCX, huge text) could drive unbounded
+CPU/memory in the single worker process, and the Mini App upload endpoint
+buffered the whole body before the size check.
+
+- **Per-file caps (SPEC §21)**, all configurable: `max_extracted_text_chars`
+  (default 2 000 000 — enforced after extraction, before chunking),
+  `max_chunks_per_file` (default 2 000 — bounds embedding batches and
+  `file_chunks` rows; enforced after chunking, before embedding),
+  `max_pdf_pages` (default 500 — checked from `len(reader.pages)` before any
+  page is parsed). Any cap exceeded raises `FileUploadError`; the job fails
+  visibly with `state=failed` and a human-readable `error`, and zero chunks
+  are written.
+- **Stdlib streaming DOCX extraction**: `_extract_docx` now reads
+  `word/document.xml` through `zipfile` in 1 MiB chunks with a 64 MiB
+  decompressed-byte cap (`_DOCX_XML_MAX_BYTES`) — a zip bomb fails with a
+  clear error instead of exhausting memory — and pulls `<w:t>` runs with a
+  regex + `html.unescape`. `python-docx` is no longer imported at runtime
+  (kept as a test-fixture dependency only, for creating real DOCX files).
+- **Off-loop pipeline work**: disk read, `extract_text`, and `chunk_text`
+  run via `asyncio.to_thread` so a large document cannot starve the worker's
+  event loop / job heartbeats. Indexed files record `char_count` and
+  `chunk_count` in `extra` for inspection.
+- **Streamed upload reads + orphan cleanup**: the Mini App `POST /files`
+  endpoint reads the body in 1 MiB parts and raises HTTP 413 the moment
+  `max_upload_size_bytes` is exceeded (an oversized body is never buffered
+  whole); if `register_local_upload` / `session.commit()` fails, the freshly
+  written disk artifact is removed via the new `discard_storage()` helper.
+
+Tests (`test_files.py`): `test_extract_text_enforces_character_bound`,
+`test_extract_docx_decompression_bomb_is_bounded`,
+`test_extract_docx_requires_document_xml`,
+`test_ingest_fails_when_extracted_text_exceeds_limit`,
+`test_ingest_fails_when_chunk_count_exceeds_limit`.
+Amended `.env.example` (MAX_EXTRACTED_TEXT_CHARS / MAX_CHUNKS_PER_FILE /
+MAX_PDF_PAGES) and `docs/ASSUMPTIONS.md` #29.
+Verified: 414 pytest pass, Ruff clean.
 
 ## V3 — Priority 20: adjacent-chunk merging + citations
 
