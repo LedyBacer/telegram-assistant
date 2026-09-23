@@ -7,12 +7,13 @@ recorded so a stuck file is inspectable, and a failing stage is re-queued by
 the worker with backoff (failures are visible on the ``user_files`` row and
 retryable).
 
-Retrieval is conditional and genuinely hybrid (SPEC §6): a PostgreSQL
-lexical full-text gate (language-neutral ``simple`` text-search config) must
-match before the embedding provider is ever called; when it does, lexical
-and vector candidate sets are fused with Reciprocal Rank Fusion. An
-embedding outage degrades to lexical-only results. Retrieval is always
-scoped to the requesting user. Document text is untrusted user data.
+Retrieval is genuinely hybrid (SPEC §6, §13): the lexical full-text arm
+(language-neutral ``simple`` text-search config) and the semantic vector arm
+(pgvector cosine) run **independently** — a semantically-relevant chunk that
+shares no exact words with the query is not filtered out by a lexical
+prerequisite — and their ranked candidate sets are fused with Reciprocal Rank
+Fusion. An embedding outage degrades to lexical-only results. Retrieval is
+always scoped to the requesting user. Document text is untrusted user data.
 """
 
 from __future__ import annotations
@@ -552,19 +553,6 @@ def _tsquery(query: str) -> Any:
     return func.plainto_tsquery(_TS_CONFIG, literal(query))
 
 
-async def _lexical_hits(
-    session: AsyncSession, user: User, query: str
-) -> int:
-    """Count of the user's chunks with lexical overlap with the query."""
-    match = _tsvector().op("@@")(_tsquery(query))
-    count = await session.scalar(
-        select(func.count()).select_from(FileChunk).where(
-            FileChunk.user_id == user.id, match
-        )
-    )
-    return int(count or 0)
-
-
 async def _lexical_candidates(
     session: AsyncSession, user: User, query: str
 ) -> list[tuple[FileChunk, str]]:
@@ -678,19 +666,21 @@ async def retrieve_chunks(
     top_k: int = 5,
     provider: AIProvider | None = None,
 ) -> list[RetrievedChunk]:
-    """Conditional hybrid retrieval scoped to the user (SPEC §6, §13).
+    """Hybrid retrieval scoped to the user (SPEC §6, §13).
 
-    1. A lexical full-text gate (PostgreSQL ``simple`` config) must match at
-       least one of the user's chunks; otherwise the query has no lexical
-       overlap and we return ``[]`` WITHOUT calling the embedding provider
-       (ordinary chat never embeds).
-    2. Lexical and vector candidate sets are fused with Reciprocal Rank
-       Fusion, so a lexically-matching chunk can win even when it is not in
-       the semantic top-K.
-    3. An embedding outage (``AIProviderError``) degrades to lexical-only
+    The lexical full-text arm (PostgreSQL ``simple`` config) and the semantic
+    vector arm (pgvector cosine) run **independently** and their ranked
+    candidate sets are fused with Reciprocal Rank Fusion (SPEC §17): there is
+    no lexical prerequisite, so a semantically-relevant chunk that shares no
+    exact words with the query is still a candidate.
+
+    1. Lexical and vector candidate sets are fetched independently (the vector
+       arm needs the embedding provider, so the read transaction is released
+       before that network call).
+    2. An embedding outage (``AIProviderError``) degrades to lexical-only
        results instead of breaking the turn.
-    4. Adjacent chunks from the same file are merged and the context stays
-       bounded to ``top_k``.
+    3. ``[]`` only when both arms are empty; adjacent chunks from the same
+       file are merged and the context stays bounded to ``top_k``.
 
     Scores are RRF scores (higher is better). Citations are derived
     deterministically from the returned metadata via :func:`format_citations`.
@@ -699,9 +689,6 @@ async def retrieve_chunks(
     if not query or top_k <= 0:
         return []
     provider = provider or get_ai_provider()
-
-    if await _lexical_hits(session, user, query) == 0:
-        return []
 
     lexical = await _lexical_candidates(session, user, query)
     # Phase A/B/C: release the read transaction before the embedding network
@@ -713,6 +700,8 @@ async def retrieve_chunks(
     except AIProviderError:
         logger.warning("embedding provider unavailable; using lexical-only retrieval")
 
+    if not lexical and not vector:
+        return []
     fused = _fuse(lexical, vector)
     return _merge_adjacent(fused)[:top_k]
 

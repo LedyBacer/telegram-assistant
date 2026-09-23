@@ -272,8 +272,9 @@ async def run_read_tool(
         ]
         return ("\n".join(lines) if lines else "(no data)", [])
     if tool == "documents":
-        # Conditional retrieval (SPEC §6): the lexical gate inside
-        # retrieve_chunks means a no-overlap query costs zero embeddings.
+        # Hybrid retrieval (SPEC §6, §13): lexical and vector arms run
+        # independently and are fused; the tool is only invoked when the
+        # model requests it, so the embedding call is bounded by that choice.
         chunks = await files_service.retrieve_chunks(
             session,
             user,

@@ -471,18 +471,33 @@ async def test_retrieval_is_user_scoped_and_fuses_hybrid(session) -> None:
     assert await files.retrieve_chunks(session, user, "   ", provider=_FakeEmbedder()) == []
 
 
-async def test_lexical_gate_avoids_embedding_provider(session) -> None:
-    """No lexical overlap -> empty result and ZERO embedding calls (SPEC §6)."""
+async def test_no_lexical_overlap_still_runs_vector_arm(session) -> None:
+    """No lexical prerequisite (SPEC §17): a query with zero lexical overlap
+    still embeds and can surface a semantically-nearest chunk via the vector
+    arm (previously the lexical gate returned [] without any embedding call)."""
     user = await _user(session)
     await _indexed_file(
         session, user, filename="quantum-notes.md", texts=["quantum entanglement basics"]
     )
     embedder = _FakeEmbedder()
 
+    # "good morning" shares no words with the stored chunk (lexical empty),
+    # but the vector arm embeds and returns the only candidate.
     results = await files.retrieve_chunks(session, user, "good morning", provider=embedder)
 
-    assert results == []
-    assert embedder.query_calls == []
+    assert [r.file_name for r in results] == ["quantum-notes.md"]
+    # Vector rank 1 only (no lexical contribution) -> 1/(RRF_K+1).
+    assert results[0].score == pytest.approx(1 / (files.RRF_K + 1))
+    assert embedder.query_calls == ["good morning"]
+
+
+async def test_no_match_on_either_arm_returns_empty(session) -> None:
+    """Empty only when BOTH arms are empty (SPEC §17)."""
+    user = await _user(session)
+    embedder = _FakeEmbedder()
+    assert await files.retrieve_chunks(session, user, "anything", provider=embedder) == []
+    # The vector arm ran (embedding was requested) but found no chunks.
+    assert embedder.query_calls == ["anything"]
 
 
 async def test_rrf_recovers_lexical_candidate_outside_semantic_top_k(session) -> None:

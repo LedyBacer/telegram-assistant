@@ -1,14 +1,40 @@
 # Progress
 
-Status: V3 PRIORITY 16 COMPLETE (memory conflict/dedupe: dedupe identity is a
-collision-resistant `key_hash` (SHA-256 of the normalized value) replacing the
-truncated 255-char `key`; the model can reference a confirmed-fact id it saw in
-memory context as a replacement and it is revalidated server-side for ownership
-+ state; rejection suppression is documented as permanent, cleared only by
-deletion).
-Next: V3 Priority 17 (RAG V3 — remove the lexical prerequisite: run lexical and
-vector arms independently and fuse/rank; an embedding failure degrades to
-lexical-only).
+Status: V3 PRIORITY 17 COMPLETE (RAG V3 — removed the lexical prerequisite:
+the lexical full-text arm and the pgvector cosine arm now run independently
+and are fused with RRF, so a semantically-relevant chunk that shares no exact
+words with the query is no longer dropped; the result is empty only when both
+arms are empty, and an embedding outage degrades to lexical-only).
+Next: V3 Priority 18 (meaningful relevance filtering — track vector distance
+separately; configurable relevance policy; multilingual tests).
+
+## V3 — Priority 17: RAG — remove the lexical prerequisite
+
+Retrieval was lexical-gated: the tsvector full-text arm had to match at least
+one of the user's chunks **before** the embedding provider was ever called, so
+a semantically-relevant chunk that shared no exact words with the query
+(paraphrased queries) was silently dropped even when the vector arm would have
+ranked it first.
+
+- **Independent arms**: `retrieve_chunks` now fetches the lexical candidate
+  list and the vector candidate list **independently** and fuses them with
+  Reciprocal Rank Fusion. The lexical early-return gate (`_lexical_hits`) and
+  the prerequisite count query are removed.
+- **Empty only when both are empty**: the result is `[]` when neither arm
+  yields a candidate; otherwise the fused, merged list is bounded to `top_k`.
+- **Embedding outage** still degrades to lexical-only (`AIProviderError` →
+  lexical results) and the read transaction is released before the embedding
+  network call (no connection held across provider I/O). The embedding call
+  is bounded by the model's decision to invoke the `documents` read tool.
+- Amended `docs/ASSUMPTIONS.md` #22 and the retrieval docstrings to reflect the
+  no-prerequisite design.
+
+Tests (`test_files.py`: `test_no_lexical_overlap_still_runs_vector_arm` —
+zero-overlap query now embeds and surfaces the nearest chunk with a
+vector-only RRF score; `test_no_match_on_either_arm_returns_empty` — empty
+only when both arms are empty; existing hybrid-fusion, RRF-recovery,
+embedding-outage, and adjacent-merge tests unchanged).
+Verified: 402 pytest pass, Ruff clean.
 
 ## V3 — Priority 16: memory conflict/dedupe
 

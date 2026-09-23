@@ -32,7 +32,7 @@ async function goTab(page: Page, tab: string): Promise<void> {
  */
 function seedV2State(): void {
   runDbScript(`
-import asyncio, json, pathlib
+import asyncio, hashlib, json, pathlib
 from datetime import datetime, timezone
 import asyncpg
 
@@ -77,12 +77,17 @@ async def main():
             json.dumps({"title": REJECT_SUMMARY, "kind": "task"}),
             "create_item: " + REJECT_SUMMARY,
         )
+        fact_value = FACT_OLD
+        fact_key_hash = hashlib.sha256(
+            " ".join(fact_value.split()).lower().encode("utf-8")
+        ).hexdigest()
         await conn.execute(
-            "INSERT INTO user_facts (user_id, category, key, value, status) "
-            "VALUES ($1, 'food', $2, $3, 'confirmed')",
+            "INSERT INTO user_facts (user_id, category, key, key_hash, value, status) "
+            "VALUES ($1, 'food', $2, $3, $4, 'confirmed')",
             USER,
             "v2-" + RUN,
-            FACT_OLD,
+            fact_key_hash,
+            fact_value,
         )
         p = pathlib.Path("storage/e2e-files")
         p.mkdir(parents=True, exist_ok=True)
