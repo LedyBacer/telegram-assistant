@@ -1,6 +1,31 @@
 # Progress
 
-Status: MILESTONE 17 COMPLETE (configurable chat timeout + explicit Qwen
+Status: PRIORITY 9 COMPLETE (bounded proactivity pass, SPEC §11, commit
+124a54c). Priority 9 done: deterministic state-derived triggers only (no
+model calls) — `weekly_review` on Monday in the user's local time, once per
+ISO week; `workout` once per user-local day when the last workout is None or
+older than 48 h (`WORKOUT_STALE_HOURS`). New models `ProactiveSettings`
+(per-user: enabled, weekly_review_enabled, workout_nudge_enabled,
+quiet_hours_start/end wrapping midnight, default 22:00→08:00,
+max_nudges_per_day, min_interval_minutes) + `NudgeDelivery` (durable dedupe
+per (user_id, kind, period_key)); migration
+`20260923_9c8d7e6f5a4b_proactivity`. `services/proactivity.py`:
+`evaluate_user(session, user_id: int, now, send)` — all data via explicit
+SELECTs (no ORM instance state: `Session.rollback` expires every object in
+the session, async lazy reload raises MissingGreenlet); anti-spam gates in
+order enabled → quiet hours (user TZ) → daily cap → min interval; delivery
+row flushed BEFORE send so a crashed send still dedupes.
+`expire_stale_actions` marks past-expiry proposed/confirmed pending actions
+expired (bulk UPDATE). `run_proactive_pass`: per-user commit/rollback
+isolation (one failed send rolls back only that user; retries next pass),
+returns {nudges_sent, actions_expired}. Worker: `proactive_pass()` in the
+run loop every `digest_interval` seconds (default 30). i18n `proactive.*`
+keys in ru/en. Tests: `tests/test_proactivity.py` (11 — triggers, dedupe,
+quiet-hours wrap, daily cap, min interval, disabled, user scoping, action
+expiry, pass isolation + retry). Verified: full suite 339 passing, Ruff
+clean.
+
+Prior: MILESTONE 17 COMPLETE (configurable chat timeout + explicit Qwen
 thinking mode with Telegram UX). Milestone 17 done: (1) `CHAT_TIMEOUT_SECONDS`
 (default 180, `1 <= x <= 3600`) drives the chat OpenAI client `Timeout`
 (`read=chat timeout`, `connect=10`, `write=30`, `pool=10`, `max_retries=0`)
