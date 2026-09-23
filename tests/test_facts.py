@@ -225,6 +225,116 @@ async def test_confirmed_lines_excludes_unconfirmed(session: AsyncSession) -> No
 
 
 # ---------------------------------------------------------------------------
+# Dedupe identity + replacement revalidation (SPEC §16)
+# ---------------------------------------------------------------------------
+
+
+async def test_dedupe_uses_hash_not_truncated_prefix(session: AsyncSession) -> None:
+    """Two values sharing a 255-char prefix are distinct facts under the
+    hash identity (the old truncated `key` would have collided)."""
+    user = await _user(session)
+    prefix = "w" * 255
+    a = await facts.propose_fact(session, user, value=prefix + "-alpha")
+    b = await facts.propose_fact(session, user, value=prefix + "-beta")
+    await session.commit()
+
+    # The display keys are identical (both truncated at 255) ...
+    assert a.key == b.key
+    # ... but the dedupe hashes differ, so both facts were kept.
+    assert a.key_hash != b.key_hash
+    assert {f.id for f in await facts.list_facts(session, user)} == {a.id, b.id}
+
+
+async def test_dedupe_collapses_equivalent_normalized_values(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    first = await facts.propose_if_absent(
+        session, user, value="Likes  tea"
+    )
+    assert first is not None
+    # Same normalized value (case + whitespace-insensitive) is suppressed.
+    dup = await facts.propose_if_absent(session, user, value="likes  tea")
+    assert dup is None
+    assert (await session.scalars(select(UserFact))).all() == [first]
+
+
+async def test_rejection_suppression_is_permanent(session: AsyncSession) -> None:
+    """A rejected fact blocks re-proposal of the same value until deleted
+    (SPEC §16: rejection suppression is permanent, not time-bounded)."""
+    user = await _user(session)
+    fact = await facts.propose_if_absent(session, user, value="disliked claim")
+    assert fact is not None
+    await facts.reject_fact(session, user, fact.id)
+    await session.commit()
+
+    assert await facts.propose_if_absent(session, user, value="disliked claim") is None
+    # Deleting the rejected row clears the suppression.
+    assert await facts.delete_fact(session, user, fact.id) is True
+    await session.commit()
+    repropose = await facts.propose_if_absent(session, user, value="disliked claim")
+    assert repropose is not None
+    assert repropose.status == FactStatus.proposed.value
+
+
+async def test_propose_if_absent_links_valid_replaces_fact(session: AsyncSession) -> None:
+    user = await _user(session)
+    old = await facts.propose_fact(session, user, value="meetings after 11")
+    await facts.confirm_fact(session, user, old.id)
+    await session.commit()
+
+    new = await facts.propose_if_absent(
+        session,
+        user,
+        value="meetings before 10",
+        replaces_fact_id=old.id,
+    )
+    assert new is not None
+    assert new.replaces_fact_id == old.id
+    assert new.status == FactStatus.proposed.value
+
+
+async def test_propose_if_absent_drops_invalid_replaces_fact(
+    session: AsyncSession,
+) -> None:
+    """A model-referenced replaces_fact_id that fails ownership/state
+    revalidation is dropped: the proposal is stored as a plain new fact."""
+    user = await _user(session, user_id=61)
+    other = await _user(session, user_id=62)
+
+    # Another user's fact is not a valid target.
+    foreign = await facts.propose_fact(session, other, value="other users fact")
+    await facts.confirm_fact(session, other, foreign.id)
+    # A rejected fact is not a valid target.
+    rejected = await facts.propose_fact(session, user, value="rejected fact")
+    await facts.reject_fact(session, user, rejected.id)
+    await session.commit()
+
+    for bad_id in (foreign.id, rejected.id, 999999999):
+        new = await facts.propose_if_absent(
+            session,
+            user,
+            value=f"new distinct value {bad_id}",
+            replaces_fact_id=bad_id,
+        )
+        assert new is not None
+        assert new.replaces_fact_id is None
+    await session.commit()
+
+
+async def test_confirmed_facts_orders_oldest_first(session: AsyncSession) -> None:
+    user = await _user(session)
+    a = await facts.propose_fact(session, user, value="a")
+    b = await facts.propose_fact(session, user, value="b")
+    await facts.confirm_fact(session, user, a.id)
+    await facts.confirm_fact(session, user, b.id)
+    await session.commit()
+
+    confirmed = await facts.confirmed_facts(session, user)
+    assert [f.id for f in confirmed] == [a.id, b.id]
+
+
+# ---------------------------------------------------------------------------
 # Bot wiring
 # ---------------------------------------------------------------------------
 

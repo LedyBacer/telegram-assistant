@@ -77,6 +77,10 @@ class FactProposal(BaseModel):
 
     value: str = Field(min_length=1, max_length=2000)
     category: str = Field(default="general", max_length=64)
+    # Optional reference to an existing confirmed-fact id from memory context
+    # (SPEC §16): the model marks this fact as an update/replacement. The
+    # engine revalidates ownership and state before linking it.
+    replaces_fact_id: int | None = None
 
 
 class AssistantTurn(BaseModel):

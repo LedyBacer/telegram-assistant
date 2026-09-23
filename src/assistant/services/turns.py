@@ -99,7 +99,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "workouts": "recent workout logs",
     "files": "stored files (name, state, size)",
     "documents": "search the text of stored documents for relevant excerpts",
-    "facts": "confirmed user facts",
+    "facts": "confirmed user facts (with ids)",
 }
 
 
@@ -284,7 +284,13 @@ async def run_read_tool(
         lines = [f"{c.file_name} (excerpt): {c.text[:400]}" for c in chunks]
         return ("\n".join(lines) if lines else "(no data)", list(chunks))
     if tool == "facts":
-        lines = await facts_service.confirmed_lines(session, user)
+        facts = await facts_service.confirmed_facts(session, user)
+        lines = [
+            f"id={f.id} "
+            + (f"[{f.category}] " if f.category != "general" else "")
+            + f.value
+            for f in facts
+        ]
         return ("\n".join(f"- {line}" for line in lines) if lines else "(no data)", [])
     return ("(unknown tool)", [])
 
@@ -461,12 +467,16 @@ async def run_turn(
 
     proposed_facts: list[UserFact] = []
     for fact in [*turn.facts, *fold_facts]:
+        # ``replaces_fact_id`` is a model-referenced fact id (SPEC §16); it is
+        # revalidated for ownership + state inside ``propose_if_absent`` and
+        # silently dropped if it is not a live fact of this user.
         created = await facts_service.propose_if_absent(
             session,
             user,
             value=fact.value,
             category=fact.category,
             provenance="assistant",
+            replaces_fact_id=fact.replaces_fact_id,
         )
         if created is not None:
             proposed_facts.append(created)

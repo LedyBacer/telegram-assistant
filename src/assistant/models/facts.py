@@ -31,6 +31,7 @@ class UserFact(Base):
     __tablename__ = "user_facts"
     __table_args__ = (
         Index("ix_user_facts_user_status", "user_id", "status", "category"),
+        Index("ix_user_facts_user_key_hash", "user_id", "key_hash"),
         CheckConstraint("confidence BETWEEN 0 AND 1", name="valid_confidence"),
     )
 
@@ -40,6 +41,11 @@ class UserFact(Base):
     )
     category: Mapped[str] = mapped_column(String(64), nullable=False, default="general")
     key: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Collision-resistant dedupe identity: a stable digest of the normalized
+    # full value (SPEC §16). ``key`` is a human-readable truncated form used
+    # for display only; dedupe compares this hash so two distinct facts that
+    # share a 255-char prefix can never collide.
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     provenance: Mapped[str | None] = mapped_column(String(255), default=None)
     confidence: Mapped[float | None] = mapped_column(Numeric(3, 2), default=None)

@@ -8,6 +8,8 @@ facts; all access is scoped to the requesting user.
 
 from __future__ import annotations
 
+import hashlib
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,9 +20,20 @@ from assistant.models.users import User
 MAX_FACT_LENGTH = 2000
 
 
+def _normalize(value: str) -> str:
+    return " ".join(value.split()).lower()
+
+
 def _fact_key(value: str) -> str:
-    """Normalized, collision-tolerant identity for a fact's content."""
-    return " ".join(value.split()).lower()[:255]
+    """Human-readable, truncated identifier (display/debugging only)."""
+    return _normalize(value)[:255]
+
+
+def _fact_hash(value: str) -> str:
+    """Collision-resistant dedupe identity: stable digest of the normalized
+    full value (SPEC §16). Two distinct facts sharing a 255-char prefix can
+    no longer collide the way the truncated ``key`` could."""
+    return hashlib.sha256(_normalize(value).encode("utf-8")).hexdigest()
 
 
 async def propose_fact(
@@ -31,8 +44,14 @@ async def propose_fact(
     category: str = "general",
     provenance: str | None = None,
     confidence: float | None = None,
+    replaces_fact_id: int | None = None,
 ) -> UserFact:
-    """Create a new fact in the ``proposed`` state (flush only)."""
+    """Create a new fact in the ``proposed`` state (flush only).
+
+    ``replaces_fact_id`` optionally links the fact as a replacement for an
+    existing one (SPEC §15); callers that trust an unvalidated reference
+    should pass it through ``propose_if_absent`` instead.
+    """
     value = (value or "").strip()
     if not value:
         raise LocalizableError("facts.err_required")
@@ -44,14 +63,44 @@ async def propose_fact(
         user_id=user.id,
         category=(category or "general")[:64],
         key=_fact_key(value),
+        key_hash=_fact_hash(value),
         value=value,
         provenance=(provenance or "user")[:255],
         confidence=confidence,
         status=FactStatus.proposed.value,
+        replaces_fact_id=replaces_fact_id,
     )
     session.add(fact)
     await session.flush()
     return fact
+
+
+async def _revalidated_replaces_id(
+    session: AsyncSession,
+    user: User,
+    replaces_fact_id: int | None,
+) -> int | None:
+    """Revalidate a model-referenced replacement target (SPEC §16).
+
+    The model may cite an existing confirmed-fact id that is explicitly
+    present in its memory context, but ownership and state are re-checked
+    here: the referenced fact must belong to the same user and be in a
+    live state (``proposed`` or ``confirmed``). Anything else — a missing
+    id, another user's fact, an already ``rejected``/``superseded`` fact,
+    or a self-reference — is treated as absent, so the proposal is stored
+    as a plain new fact rather than trusted blindly.
+    """
+    if replaces_fact_id is None:
+        return None
+    old = await session.get(UserFact, replaces_fact_id)
+    if (
+        old is not None
+        and old.user_id == user.id
+        and old.status
+        in (FactStatus.proposed.value, FactStatus.confirmed.value)
+    ):
+        return old.id
+    return None
 
 
 async def propose_if_absent(
@@ -61,6 +110,7 @@ async def propose_if_absent(
     value: str,
     category: str = "general",
     provenance: str | None = None,
+    replaces_fact_id: int | None = None,
 ) -> UserFact | None:
     """Propose a fact for automatic memory capture (SPEC §14).
 
@@ -69,14 +119,21 @@ async def propose_if_absent(
     ``confirmed`` or ``rejected``) — so the assistant never re-asks about a
     fact the user already settled. A ``superseded`` fact does not block a
     fresh proposal (it allows updating a previously replaced fact).
+
+    Dedupe compares the collision-resistant ``key_hash`` (SPEC §16), not the
+    truncated ``key``. ``replaces_fact_id`` (SPEC §15) is revalidated for
+    ownership and state before being linked; an invalid reference is simply
+    dropped so the proposal is stored as a plain new fact.
     """
     value = (value or "").strip()
     if not value or len(value) > MAX_FACT_LENGTH:
         return None
-    key = _fact_key(value)
+    key_hash = _fact_hash(value)
     existing = (
         await session.scalars(
-            select(UserFact).where(UserFact.user_id == user.id, UserFact.key == key)
+            select(UserFact).where(
+                UserFact.user_id == user.id, UserFact.key_hash == key_hash
+            )
         )
     ).all()
     live_states = (
@@ -93,6 +150,9 @@ async def propose_if_absent(
         value=value,
         category=category,
         provenance=provenance,
+        replaces_fact_id=await _revalidated_replaces_id(
+            session, user, replaces_fact_id
+        ),
     )
 
 
@@ -201,6 +261,7 @@ async def supersede_fact(
         user_id=user.id,
         category=(category or old.category)[:64],
         key=_fact_key(value),
+        key_hash=_fact_hash(value),
         value=value,
         provenance=(provenance or "user")[:255],
         status=FactStatus.proposed.value,
@@ -221,13 +282,20 @@ async def delete_fact(session: AsyncSession, user: User, fact_id: int) -> bool:
     return True
 
 
+async def confirmed_facts(
+    session: AsyncSession, user: User, *, limit: int = 20
+) -> list[UserFact]:
+    """The user's confirmed facts, oldest first (stable reading order)."""
+    facts = await list_facts(session, user, status=FactStatus.confirmed, limit=limit)
+    return list(reversed(facts))
+
+
 async def confirmed_lines(
     session: AsyncSession, user: User, *, limit: int = 20
 ) -> list[str]:
     """Confirmed facts rendered as context lines for chat (SPEC §14-15)."""
-    facts = await list_facts(session, user, status=FactStatus.confirmed, limit=limit)
     lines: list[str] = []
-    for fact in reversed(facts):  # oldest first: stable reading order
+    for fact in await confirmed_facts(session, user, limit=limit):
         prefix = f"[{fact.category}] " if fact.category != "general" else ""
         lines.append(f"{prefix}{fact.value}")
     return lines

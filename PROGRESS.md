@@ -1,11 +1,48 @@
 # Progress
 
-Status: V3 PRIORITY 15 COMPLETE (memory V3 replacement lifecycle: a
-replacement is now an explicit `replaces_fact_id` link; the referenced fact
-keeps its state while the replacement is only `proposed`, and is atomically
-superseded only when the replacement is confirmed — rejecting or deleting the
-replacement leaves the trusted fact intact).
-Next: V3 Priority 16 (memory conflict/dedupe).
+Status: V3 PRIORITY 16 COMPLETE (memory conflict/dedupe: dedupe identity is a
+collision-resistant `key_hash` (SHA-256 of the normalized value) replacing the
+truncated 255-char `key`; the model can reference a confirmed-fact id it saw in
+memory context as a replacement and it is revalidated server-side for ownership
++ state; rejection suppression is documented as permanent, cleared only by
+deletion).
+Next: V3 Priority 17 (RAG V3 — remove the lexical prerequisite: run lexical and
+vector arms independently and fuse/rank; an embedding failure degrades to
+lexical-only).
+
+## V3 — Priority 16: memory conflict/dedupe
+
+The fact dedupe key was truncated to the first 255 normalized characters, so
+two long facts sharing a prefix collided into one identity. Dedupe now keys on
+a stable digest, and the model can propose an *update* to a specific confirmed
+fact it has seen, with the reference revalidated before it is trusted.
+
+- **Collision-resistant identity**: `user_facts` gains `key_hash`
+  (String(64), NOT NULL) — the SHA-256 hexdigest of the normalized value
+  (`" ".join(value.split()).lower()`), plus a `(user_id, key_hash)` index.
+  `key` is retained as a human-readable, display/debug-only truncated form.
+  `propose_if_absent` dedupes on `key_hash`. Migration
+  `20260924_b7c8d9e0f1b3_fact_key_hash` backfills existing rows in Python
+  (no pgcrypto dependency) before making the column NOT NULL.
+- **Model-referenced replacements (SPEC §16)**: `FactProposal` gains an
+  optional `replaces_fact_id`. The `facts` read tool now renders confirmed
+  facts with their ids (`id=N ...`) so the model can cite one; the prompt
+  instructs it to set `replaces_fact_id` when a new fact updates an existing
+  one. The engine passes the id through `propose_if_absent`, which revalidates
+  it (same user, status `proposed`/`confirmed`) via `_revalidated_replaces_id`;
+  an invalid reference (another user's fact, a rejected/superseded fact, a
+  missing id) is silently dropped and the fact stored as a plain new proposal.
+  On confirm the replacement atomically supersedes the referenced fact
+  (existing §15 lifecycle).
+- **Rejection suppression** is documented as **permanent, not time-bounded**
+  (`docs/ASSUMPTIONS.md` #25): a `rejected` fact keeps its `key_hash` in the
+  live set and blocks re-proposal of that exact value until the user deletes
+  the row; there is no TTL. A `superseded` fact does not block.
+
+Tests (`test_facts.py`: hash-vs-truncated-prefix distinctness, normalized
+dedupe collapse, permanent rejection suppression cleared only by delete,
+valid/invalid `replaces_fact_id` revalidation, `confirmed_facts` ordering).
+Verified: 401 pytest pass, Ruff clean.
 
 ## V3 — Priority 15: memory V3 replacement lifecycle
 

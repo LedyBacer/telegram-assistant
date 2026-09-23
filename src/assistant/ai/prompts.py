@@ -73,11 +73,15 @@ Reply with EXACTLY ONE JSON object with these optional fields:
   <short user-facing description>}} — mutations you PROPOSE (at most one
   action per distinct item/reminder);
 - "facts": a list of {{"value": <a durable fact about the user>,
-  "category": <optional short label, default "general">}} — propose ONLY a
-  fact that is clearly, stably true and useful for future conversations
-  (a preference, routine, or personal context the user just stated). Omit
-  this field (empty list) unless you have such a fact; never propose
-  ephemeral statements, guesses, or one-off task details.
+  "category": <optional short label, default "general">,
+  "replaces_fact_id": <optional id>}} — propose ONLY a fact that is clearly,
+  stably true and useful for future conversations (a preference, routine, or
+  personal context the user just stated). Omit this field (empty list)
+  unless you have such a fact; never propose ephemeral statements, guesses,
+  or one-off task details. If the new fact is an update to an existing
+  confirmed fact shown by the "facts" tool (e.g. a changed preference), set
+  "replaces_fact_id" to that fact's id (it must come from the tool results;
+  never invent one) so the user can confirm it as a replacement.
 - "clarification": a question to the user when the request is ambiguous.
 
 Read tools:
