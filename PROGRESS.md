@@ -392,11 +392,35 @@ confirmed in the catalog.
 
 ## Current milestone
 
-- None — all 17 milestones complete.
+- Milestone 18: Mini App production-hardening pass. Frontend rewritten as
+  small vanilla ES modules (`miniapp/{index.html,styles.css,app.js,
+  js/{api,telegram,ui,state}.js}`, vendored Flatpickr — no framework, no
+  build step); root-cause fix of the `[object HTMLDivElement]` rendering
+  bug (safe `el()` DOM construction, user content as text nodes, no
+  innerHTML); `GET /` → 307 → `/miniapp` implemented in FastAPI;
+  Telegram-native theming via `--tg-theme-*` variables (light/dark/custom,
+  runtime `themeChanged`); Flatpickr (24h, ru/en) replaces native
+  pickers; reusable bottom sheet/action sheet replaces native selects
+  (selected state, Escape/outside-click/cancel, keyboard focus, ARIA);
+  loading/empty/populated/error states on every data screen; backend fix:
+  calendar `list_items` anchors on `coalesce(starts_at, due_at)` so
+  due-date-only items appear in range views. E2E: Playwright + Chromium
+  (devDependency only, never in the prod image) with a deterministic
+  Telegram WebApp stub, env-gated `ASSISTANT_TEST_AUTH` dependency
+  override (verified inert in production: 401 without initData),
+  390x844 viewport, isolated `assistant_e2e` DB truncated via a single
+  `TRUNCATE ... CASCADE` in `e2e/global-setup.ts` (wired as Playwright
+  `globalSetup`), 4 specs / 20-step scenario green, console guard,
+  programmatic theme/layout/a11y/touch-target assertions, 6 reference
+  screenshots in gitignored `test-artifacts/screenshots/`;
+  `scripts/public_smoke.sh` read-only post-deploy check; README fully
+  updated. Verification: 263 pytest passing (fresh DB), Ruff clean,
+  `docker compose config` valid, full Playwright suite 4/4, smoke PASS,
+  prod-auth negative check 401, working tree clean, nothing pushed.
 
 ## Next
 
-- Project is complete. Future work (out of scope for this run): real
-  Telegram/OpenAI credential smoke tests, HTTPS reverse proxy deployment for
-  the Mini App, CI pipeline, observability, additional languages
-  (ru/en supported today).
+- Future work (out of scope for this run): real Telegram/OpenAI
+  credential smoke tests, HTTPS reverse proxy deployment for the Mini
+  App, CI pipeline, observability, additional languages (ru/en
+  supported today).

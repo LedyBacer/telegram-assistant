@@ -182,6 +182,7 @@ uv run alembic current        # inspect the applied revision
 uv run pytest           # full suite (needs a reachable PostgreSQL + pgvector)
 uv run ruff check .     # lint gate
 bash scripts/acceptance.sh   # production-like end-to-end acceptance run
+npm run test:e2e        # Mini App browser E2E (Playwright; see section above)
 ```
 
 Tests require a reachable PostgreSQL 17 with pgvector (see `DATABASE_URL` /
@@ -198,14 +199,86 @@ and the loopback-only port-exposure audit.
 
 ## Mini App development
 
-The Mini App is a static SPA (`miniapp/index.html` + `miniapp/app.js`,
-Tailwind via CDN, vanilla JS) mounted by the API at `/miniapp`. Develop by
-pointing `PUBLIC_BASE_URL` at the API (e.g. `http://localhost:8000`), open the
-bot inside Telegram, and press the Mini App button — the bot links
-`$PUBLIC_BASE_URL/miniapp`. Inside Telegram, `Telegram.WebApp.initData` is
-sent with every request and verified server-side; outside Telegram the page
-shows a hint to open it from the bot. For a phone-usable feel, keep the layout
-single-column and test at 390 px width.
+The Mini App is a **vanilla JS static app** — no framework, no build pipeline.
+Layout:
+
+```text
+miniapp/
+    index.html        # shell; references /miniapp/... absolute paths
+    styles.css        # Telegram theme CSS variables + component styles
+    app.js            # boot, routing between tabs, view renderers
+    js/
+        api.js        # same-origin fetch client (initData header)
+        telegram.js   # small Telegram WebApp wrapper (ready/expand/theme/
+                      #   BackButton/haptics; no-op outside Telegram)
+        ui.js         # DOM helpers (safe text rendering), bottom sheet,
+                      #   Flatpickr date/time pickers
+        state.js      # app state (language, theme, cache)
+    vendor/           # vendored Flatpickr (js + css + ru locale)
+```
+
+- **Entry point:** `GET /` → **307** → `/miniapp` (implemented in FastAPI; no
+  reverse-proxy workaround needed). `GET /miniapp` serves `index.html` with 200.
+- **Theme:** colors come exclusively from the `--tg-theme-*` CSS variables that
+  `js/telegram.js` copies from `Telegram.WebApp.themeParams` at boot and on
+  `themeChanged` (light, dark, and custom client themes all work; `:root`
+  fallbacks cover a plain browser). No hardcoded brand colors.
+- **Date/time:** Flatpickr (24-hour, ru/en locale follows the app language,
+  themed via the same CSS variables) — never the native browser pickers.
+- **Selects:** a small reusable bottom sheet / action sheet (selected state,
+  cancel, outside-click and Escape close, keyboard focus) replaces native
+  `<select>` for short option lists.
+- Develop by pointing `PUBLIC_BASE_URL` at the API (e.g. `http://localhost:8000`),
+  open the bot inside Telegram, and press the Mini App button — the bot links
+  `$PUBLIC_BASE_URL/miniapp`. Inside Telegram, `Telegram.WebApp.initData` is
+  sent with every request and verified server-side; outside Telegram the page
+  shows a hint to open it from the bot. Keep the layout single-column and test
+  at 390 px width.
+- **Adding translations:** frontend strings are backend keys — add the key to
+  *both* `src/assistant/i18n/locales/ru.json` and `en.json` (parity is tested),
+  then reference it through the `S(key)` helper. There is no local frontend
+  locale copy.
+
+### Mini App E2E tests (Playwright, dev/test only)
+
+Playwright + Chromium are a **dev/test-only** dependency — they are never
+installed into the production Docker image (the image is Python-only).
+
+```bash
+npm install                 # installs @playwright/test (devDependency)
+npm run test:e2e            # full E2E suite (Playwright starts its own API)
+npm run smoke               # read-only public smoke test (post-deploy)
+```
+
+The suite runs against an isolated stack on port 8123 (`e2e/playwright.config.ts`):
+a dedicated `assistant_e2e` database that `e2e/global-setup.ts` creates,
+migrates, and `TRUNCATE ... CASCADE`s before every run, and an API process
+started by Playwright itself. Viewport is 390x844 (ru-RU, UTC).
+
+**Authenticated tests without a production bypass:** the E2E API is started
+with `ASSISTANT_TEST_AUTH=1`, which makes `create_app()` override the
+`get_current_user` dependency with a deterministic test user. The override is
+purely in-process and env-gated — a normal production request (no env var)
+gets `401` without valid Telegram `initData`, so the bypass cannot activate
+from outside. The Telegram WebApp client itself is stubbed in the browser via
+`page.addInitScript` (`e2e/helpers/telegram-stub.ts`), providing `initData`,
+`themeParams`, `ready()/expand()`, BackButton, HapticFeedback, and runtime
+theme switching; the real `telegram.org` script is blocked in tests.
+
+The specs verify rendering (including the `[object HTMLDivElement]`
+regression), themes via computed styles (light/dark/custom), layout (no
+horizontal overflow, ≥44 px touch targets), a11y basics, the full 20-step
+user scenario (fact, file upload, task + calendar, bottom sheet, ru→en,
+reload persistence, controlled API error), and browser-console health
+(uncaught exceptions and unexpected failed same-origin requests fail the
+test). Reference screenshots (for human review only) are written to the
+gitignored `test-artifacts/screenshots/` directory.
+
+After a manual deploy, verify the public URL read-only:
+
+```bash
+BASE_URL=https://telegram-assistant.bacer.ru bash scripts/public_smoke.sh
+```
 
 ## Shutdown
 

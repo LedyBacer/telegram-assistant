@@ -1,7 +1,11 @@
 # Final Report — Smart Personal Assistant / Motivator
 
 Date: 2026-09-22
-Status: all 17 milestones complete; SPEC §31 Definition of Done verified;
+Status: all 18 milestones complete; SPEC §31 Definition of Done verified;
+Mini App production-hardening pass (vanilla ES-module frontend,
+`[object HTMLDivElement]` root-cause fix, Telegram-native theming, Flatpickr,
+bottom sheet, full UI states, Playwright E2E harness, read-only public smoke
+script) implemented and verified end-to-end;
 production-ready per-user internationalization (i18n) added and verified;
 focused production runtime-hardening pass (MissingGreenlet fix, onboarding
 i18n completion, Qwen3.5/llama.cpp NL parsing, loopback-only API bind,
@@ -42,8 +46,11 @@ Features implemented (SPEC §1–§30):
 - **Morning digest** — per-(user, local date) idempotent scheduling with a
   daily pass in the worker; deterministic state-derived motivation line;
   real Telegram delivery with re-queue on failure.
-- **Mini App** — vanilla-JS + Tailwind SPA (today/upcoming/new/workouts/
-  files/facts/settings tabs) served statically; auth by Telegram initData
+- **Mini App** — vanilla-JS ES-module Mini App (today/upcoming/new/workouts/
+  files/facts/settings views; no framework, no build step; Telegram-native
+  `--tg-theme-*` theming, Flatpickr date/time, bottom-sheet selects;
+  verified by a Playwright E2E harness — see Milestone 18) served
+  statically; auth by Telegram initData
   HMAC verified with the bot token (constant-time compare, `auth_date`
   freshness with future-skew tolerance, strict user validation, bots
   rejected); authed `/api/v1` endpoints, all user-scoped.
@@ -313,3 +320,87 @@ Verification state after Milestone 17: **257 tests passing, Ruff clean,
 imports OK, `.env.example` loads into `Settings`, `docker compose config`
 valid, ru/en locale parity, working tree clean, nothing pushed to any
 remote.**
+
+## 9. Milestone 18 — Mini App production-hardening pass (2026-09-23)
+
+Turned the prototype Mini App into a small, coherent, Telegram-native app and
+proves it with realistic browser E2E tests. Frontend and test infrastructure
+only; backend touched in three focused places.
+
+1. **Frontend rewritten as small vanilla ES modules.**
+   `miniapp/{index.html, styles.css, app.js, js/{api,telegram,ui,state}.js}`
+   plus vendored Flatpickr — no framework, no build pipeline, no Tailwind.
+   `js/telegram.js` is a small WebApp abstraction (ready/expand/theme/
+   BackButton/haptics) that no-ops outside Telegram; `js/ui.js` provides safe
+   DOM construction and shared components; `js/api.js` is the same-origin
+   fetch client; `js/state.js` holds app state (language, theme, cache).
+2. **`[object HTMLDivElement]` root-cause fix.** The bug was inserting a DOM
+   node into a text-producing context; rendering now uses a safe `el()`
+   constructor with user-authored content (titles, filenames, fact text)
+   inserted only as text nodes — no `innerHTML` for untrusted data. A
+   dedicated E2E step asserts the exact rendered text and the absence of the
+   string `object` in the DOM.
+3. **Entry point in FastAPI.** `GET /` returns a **307** redirect to
+   `/miniapp`; `GET /miniapp` serves `index.html` (200); all asset URLs in
+   the shell are absolute `/miniapp/...` paths (the page is served without a
+   trailing slash).
+4. **Telegram-native theming.** All colors derive from ~13 `--tg-theme-*`
+   CSS variables copied from `Telegram.WebApp.themeParams` at boot and on
+   `themeChanged` (light, dark, and custom client themes; `:root` fallbacks
+   for a plain browser). No hardcoded brand colors. Verified programmatically
+   via computed styles under three injected themes — no visual inspection
+   claims (the model has no vision; screenshots are review-only artifacts).
+5. **Flatpickr replaces native pickers** (24-hour, ru/en locale follows the
+   app language, themed through the same variables) and a **bottom
+   sheet/action sheet replaces native `<select>`** (selected state with
+   `aria-selected`, cancel, outside-click and Escape close, keyboard focus).
+6. **Complete UI state.** Every data screen renders loading / empty /
+  populated / error states; a controlled injected 500 (E2E) proves the error
+   state without touching server code.
+7. **Focused backend fixes.** (a) Calendar `list_items` anchors on
+   `coalesce(starts_at, due_at)` so due-date-only items appear in
+   today/upcoming/range views; (b) a focused `POST /api/v1/files` multipart
+   endpoint + `register_local_upload()` so the Files screen (and E2E) can
+   upload — `_run_pipeline` reads local bytes when `telegram_file_id` is
+   `None`; (c) test-only auth: `ASSISTANT_TEST_AUTH=1` makes `create_app()`
+   override the `get_current_user` dependency with a deterministic test user.
+   The override is purely in-process and env-gated; a production request
+   without the env var gets **401** without valid `initData` (verified
+   against a live server on port 8199: `401` for `/api/v1/me` and
+   `/api/v1/items`, `307`/`200` for the public pages).
+8. **Playwright E2E harness (dev/test only).** Playwright 1.63 + Chromium as
+   a `devDependency`; the Dockerfile stays Python-only, so the production
+   image contains no Playwright/Chromium. Isolated stack on port 8123:
+   `e2e/global-setup.ts` (wired as Playwright `globalSetup`) creates,
+   migrates, and resets the `assistant_e2e` database with a **single**
+   `TRUNCATE ... RESTART IDENTITY CASCADE` statement (per-table TRUNCATE is
+   refused by the FK graph) before every run. Viewport 390x844, ru-RU, UTC.
+   The Telegram WebApp client is stubbed via `page.addInitScript`
+   (deterministic `initData`, `themeParams`, `ready()/expand()`,
+   BackButton, HapticFeedback, runtime theme switching); the real
+   `telegram.org` script is blocked. Four specs: a11y basics, the 20-step
+   user scenario (redirect → whoami → facts → file upload → task with
+   Flatpickr due date → calendar → priority bottom sheet → ru→en switch →
+   reload persistence → controlled 500 error state), theme computed-style
+   checks, and screenshot capture. A console guard fails the run on uncaught
+   page exceptions, unexpected console errors, and failed same-origin
+   requests (URL-less generic "Failed to load resource" console duplicates
+   are skipped because the response handler is authoritative at URL level).
+   Programmatic assertions cover no horizontal overflow at 390 px, ≥44 px
+   touch targets, and `ready()/expand()` counters. Six reference screenshots
+   are written to the gitignored `test-artifacts/screenshots/` directory.
+9. **`scripts/public_smoke.sh`** — read-only post-deploy check (GET-only:
+   root 307/302, `/miniapp` + 8 assets 200, `/healthz` 200, shell references
+   the entry modules); exits non-zero on any failure.
+10. **Documentation.** README gains the ES-module architecture section,
+    theming/Flatpickr/bottom-sheet notes, the "Adding translations"
+    workflow, and the E2E + smoke-test sections; `PROGRESS.md` updated;
+    `.gitignore` covers `test-artifacts/` and `node_modules/`.
+
+Verification state after Milestone 18: **263 tests passing (fresh
+`assistant_test` DB), Ruff clean, `docker compose config` valid, full
+Playwright E2E suite 4/4 at 390x844, `scripts/public_smoke.sh` PASS,
+production-auth negative check 401 without `ASSISTANT_TEST_AUTH`, 6
+reference screenshots in gitignored `test-artifacts/screenshots/`
+(review-only — no visual-inspection claims), working tree clean, nothing
+pushed to any remote.**
