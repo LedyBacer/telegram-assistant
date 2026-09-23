@@ -195,29 +195,33 @@ async def list_items(
     *,
     start: datetime,
     end: datetime,
-    status: ItemStatus = ItemStatus.scheduled,
+    status: ItemStatus | None = ItemStatus.scheduled,
     limit: int = _ITEM_LIMIT,
 ) -> list[CalendarItem]:
-    """List scheduled items anchored to [start, end) via ``starts_at`` (or
+    """List items anchored to [start, end) via ``starts_at`` (or
     ``due_at`` when the item has no explicit start).
 
     The Mini App calendar groups items by their anchor date — the start when
     set, otherwise the due date. The query must mirror that, or a task created
-    with only a due date would vanish from the month view.
+    with only a due date would vanish from the month view. Pass ``status=None``
+    to include every status (the month view keeps completed/cancelled items
+    visible so they can be cleaned up).
     """
     start_utc = _to_utc(start, _user_tz(user))
     end_utc = _to_utc(end, _user_tz(user))
     anchor = func.coalesce(CalendarItem.starts_at, CalendarItem.due_at)
+    where = [
+        CalendarItem.user_id == user.id,
+        anchor >= start_utc,
+        anchor < end_utc,
+    ]
+    if status is not None:
+        where.append(CalendarItem.status == status.value)
     items = (
         (
             await session.execute(
                 select(CalendarItem)
-                .where(
-                    CalendarItem.user_id == user.id,
-                    CalendarItem.status == status.value,
-                    anchor >= start_utc,
-                    anchor < end_utc,
-                )
+                .where(*where)
                 .order_by(anchor)
                 .limit(limit)
             )
@@ -283,10 +287,14 @@ async def list_range(
     start: datetime,
     end: datetime,
 ) -> list[CalendarItem]:
-    """List scheduled items within an explicit date range."""
+    """List all items (any status) within an explicit date range.
+
+    The Mini App month view relies on this: completed/cancelled items must
+    stay on their day so the UI can show a status badge and offer deletion.
+    """
     if end <= start:
         raise ValueError("end must be after start.")
-    return await list_items(session, user, start=start, end=end)
+    return await list_items(session, user, start=start, end=end, status=None)
 
 
 def _user_tz(user: User) -> ZoneInfo:

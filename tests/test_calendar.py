@@ -147,6 +147,31 @@ async def test_list_today_and_upcoming(session: AsyncSession) -> None:
     assert {i.id for i in ranged} == {today_item.id, tomorrow_item.id}
 
 
+async def test_list_range_includes_completed(session: AsyncSession) -> None:
+    """The Mini App month view keeps completed items on their day."""
+    user = await _user(session)
+    now_local = datetime.now(BERLIN)
+    item = await cal.create_item(
+        session,
+        user,
+        title="Done",
+        starts_at=now_local.replace(hour=9, minute=0, second=0, microsecond=0)
+        .astimezone(UTC),
+    )
+    await cal.complete_item(session, user, item.id)
+    await session.commit()
+
+    start = (now_local - timedelta(days=1)).astimezone(UTC)
+    end = (now_local + timedelta(days=1)).astimezone(UTC)
+    ranged = await cal.list_range(session, user, start=start, end=end)
+    assert [i.id for i in ranged] == [item.id]
+    assert ranged[0].status == ItemStatus.completed.value
+
+    # The scheduled-only listing still excludes it.
+    scheduled = await cal.list_items(session, user, start=start, end=end)
+    assert scheduled == []
+
+
 async def test_list_range_validation(session: AsyncSession) -> None:
     user = await _user(session)
     now = datetime.now(UTC)

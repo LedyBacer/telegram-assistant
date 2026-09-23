@@ -477,19 +477,23 @@ textarea.field-input {
   -webkit-appearance: none;
   position: relative;
   width: 50px;
-  height: 30px;
+  /* 44px hit target; the 30px track is drawn centered inside it. */
+  height: 44px;
   flex: 0 0 auto;
   margin: 0;
   border: 0;
-  border-radius: 999px;
   background: var(--hint);
+  background-size: 100% 30px;
+  background-position: center;
+  background-repeat: no-repeat;
   cursor: pointer;
   transition: background 0.15s ease;
   -webkit-tap-highlight-color: transparent;
 }
 
 .switch:checked {
-  background: var(--tg-theme-button-color);
+  /* background-color (not the shorthand): keep the centered 30px track. */
+  background-color: var(--tg-theme-button-color);
 }
 
 .switch:focus-visible {
@@ -500,7 +504,8 @@ textarea.field-input {
 .switch::before {
   content: "";
   position: absolute;
-  top: 3px;
+  /* Track top is (44-30)/2 = 7px; knob keeps a 3px inset inside the track. */
+  top: 10px;
   left: 3px;
   width: 24px;
   height: 24px;
