@@ -24,13 +24,15 @@ function authHeaders() {
  * @param {string} path  e.g. "/api/v1/items"
  * @param {"GET"|"POST"|"PATCH"|"PUT"|"DELETE"} [method]
  * @param {object} [body]   JSON body (POST/PATCH)
+ * @param {AbortSignal} [signal] cancels the request (stale renders)
  * @returns {Promise<any|null>} parsed JSON, or null on 204
  */
-export async function api(path, method = "GET", body) {
+export async function api(path, method = "GET", body, signal) {
   const options = {
     method,
     headers: authHeaders(),
   };
+  if (signal) options.signal = signal;
   if (body !== undefined) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
@@ -57,14 +59,16 @@ export async function api(path, method = "GET", body) {
  * Multipart upload helper (Files screen).
  * @param {string} path
  * @param {File} file
+ * @param {AbortSignal} [signal]
  */
-export async function apiUpload(path, file) {
+export async function apiUpload(path, file, signal) {
   const form = new FormData();
   form.append("file", file);
   const res = await fetch(path, {
     method: "POST",
     headers: authHeaders(),
     body: form,
+    ...(signal ? { signal } : {}),
   });
   if (res.status === 401) throw new ApiError("auth", 401);
   if (!res.ok) {

@@ -29,6 +29,11 @@ export function createConsoleGuard(page: Page, base: string) {
     // The CDN script is blocked on purpose; its "Failed to load resource"
     // console error carries the telegram.org URL as the message location.
     if (msg.location().url.startsWith("https://telegram.org")) return;
+    // The app cancels in-flight fetches via AbortController when a stale
+    // render is superseded (P27); the browser surfaces that as a resource
+    // error containing ERR_ABORTED, which is controlled, not a real failure.
+    if (/^Failed to load resource/.test(text) && text.includes("ERR_ABORTED"))
+      return;
     // Generic "Failed to load resource" messages carry no URL; the same-origin
     // response/requestfailed handlers already decide (allow vs record) for the
     // underlying failure, so only report URL-less messages here when they are
@@ -47,6 +52,8 @@ export function createConsoleGuard(page: Page, base: string) {
     const url = req.url();
     if (url.startsWith("https://telegram.org")) return; // blocked on purpose
     if (!url.startsWith(base)) return; // only same-origin assets matter
+    // Controlled aborts (stale render superseded, P27) are not failures.
+    if (req.failure()?.errorText === "net::ERR_ABORTED") return;
     if (isIgnored(url)) return;
     const type = req.resourceType();
     const text = req.failure()?.errorText ?? "failed";

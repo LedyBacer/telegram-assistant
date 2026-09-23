@@ -1,12 +1,40 @@
 # Progress
 
-Status: V3 PRIORITY 25 COMPLETE (private-chats-only — router-level
-`F.chat.type == "private"` filters keep every bot handler private-only;
-a guard router wired before the main router answers group/channel
-messages and callbacks with a localized rejection, and the rejection
-path never creates a user, item, reminder, or FSM state).
-Next: V3 Priority 26 (Mini App V3 — stale-render races, timezone via
-state.me.settings.timezone, ...).
+Status: V3 PRIORITY 27 COMPLETE (Mini App stale-render race fixed —
+render-generation token + per-render AbortController; every view commits
+DOM only if it is the active generation; console guard tolerates
+controlled `net::ERR_ABORTED` cancellations; Playwright regression test).
+P26 (do-not-redesign constraint) is carried by every change in this
+Mini App block: styles/components/navigation preserved, no framework.
+Next: V3 Priority 28 (timezone-correct display via
+state.me.settings.timezone).
+
+## V3 — Priority 27: Mini App stale-render race
+
+A view that resolved *after* the user switched tabs overwrote the newer
+screen (slow Today response clobbering a fast Actions screen).
+
+- `miniapp/app.js`: `render()` now bumps a monotonic `renderGeneration`
+  and aborts the previous generation's `AbortController`. Every view is
+  `(view, gen, signal)`: the `signal` cancels in-flight fetches, and
+  `if (isStale(gen)) return;` guards every DOM commit (and the settings
+  view's proactive card is built/committed under the same rule; its
+  failure still cannot break the core settings screen). The `render()`
+  catch renders a localized error state only for the active generation.
+- `miniapp/js/api.js`: `api()` and `apiUpload()` accept an optional
+  `AbortSignal`.
+- `e2e/helpers/console-guard.ts`: controlled aborts are no longer
+  failures — `requestfailed` with `net::ERR_ABORTED` and the browser's
+  `Failed to load resource ... ERR_ABORTED` console entry are ignored
+  (the app cancels in-flight fetches by design; a real failure of a
+  *completed* request is still reported).
+- `e2e/tests/stale-render.e2e.ts` (new): delays the Today month-range
+  request 1.5 s, switches tabs rapidly in both directions, asserts the
+  stale view never reaches the DOM and the active nav stays marked, and
+  that the un-delayed happy path still renders the calendar.
+
+Verified: full E2E suite 7 passed (including the new stale-render
+regression); `uv run ruff check .` clean (no Python changed).
 
 ## V3 — Priority 25: Restrict the bot to private chats
 

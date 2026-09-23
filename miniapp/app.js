@@ -132,12 +132,28 @@ const VIEWS = {
   settings: viewSettings,
 };
 
+// Render generation (V3 P27): every render() owns a monotonic generation
+// token and an AbortController. An async view may commit its DOM only if its
+// generation is still the active one — a response that resolves after the
+// user switched tabs must not overwrite the newer screen. Stale in-flight
+// requests are aborted.
+let renderGeneration = 0;
+let renderAbort = null;
+
+const isStale = (gen) => gen !== renderGeneration;
+
 async function render() {
+  renderGeneration += 1;
+  renderAbort?.abort();
+  renderAbort = new AbortController();
+  const gen = renderGeneration;
+  const signal = renderAbort.signal;
   buildNav();
   viewEl.replaceChildren(loading());
   try {
-    await VIEWS[state.tab](viewEl);
+    await VIEWS[state.tab](viewEl, gen, signal);
   } catch (e) {
+    if (isStale(gen)) return;
     const key = e && e.status === 401 ? "miniapp.status_auth" : "miniapp.error_load";
     viewEl.replaceChildren(errorState(S(key), () => render()));
   }
@@ -221,14 +237,18 @@ function ensureCalendarState() {
   if (!state.selectedDate) state.selectedDate = dateKey(new Date());
 }
 
-async function viewToday(view) {
+async function viewToday(view, gen, signal) {
   ensureCalendarState();
   const { y, m } = state.month;
   const start = new Date(y, m, 1, 0, 0, 0, 0);
   const end = new Date(y, m + 1, 0, 23, 59, 59, 999);
   const items = await api(
-    `/api/v1/items?start=${start.toISOString()}&end=${end.toISOString()}`
+    `/api/v1/items?start=${start.toISOString()}&end=${end.toISOString()}`,
+    "GET",
+    undefined,
+    signal
   );
+  if (isStale(gen)) return;
 
   const byDay = new Map();
   for (const item of items) {
@@ -330,8 +350,14 @@ function buildMonthGrid(y, m, byDay) {
 /* Upcoming                                                            */
 /* ------------------------------------------------------------------ */
 
-async function viewUpcoming(view) {
-  const items = await api("/api/v1/calendar/upcoming?days=7");
+async function viewUpcoming(view, gen, signal) {
+  const items = await api(
+    "/api/v1/calendar/upcoming?days=7",
+    "GET",
+    undefined,
+    signal
+  );
+  if (isStale(gen)) return;
   view.replaceChildren(
     items.length
       ? el("div", { class: "list" }, ...items.map(itemCard))
@@ -368,8 +394,9 @@ const ACTION_STATUS_TONES = {
   expired: "muted",
 };
 
-async function viewActions(view) {
-  const actions = await api("/api/v1/actions?limit=20");
+async function viewActions(view, gen, signal) {
+  const actions = await api("/api/v1/actions?limit=20", "GET", undefined, signal);
+  if (isStale(gen)) return;
   view.replaceChildren(
     actions.length
       ? el("div", { class: "list" }, ...actions.map(actionCard))
@@ -563,11 +590,12 @@ function pickerBtn(label, valueText, onTap) {
 /* Workouts                                                            */
 /* ------------------------------------------------------------------ */
 
-async function viewWorkouts(view) {
+async function viewWorkouts(view, gen, signal) {
   const [stats, logs] = await Promise.all([
-    api("/api/v1/workouts/stats"),
-    api("/api/v1/workouts?limit=10"),
+    api("/api/v1/workouts/stats", "GET", undefined, signal),
+    api("/api/v1/workouts?limit=10", "GET", undefined, signal),
   ]);
+  if (isStale(gen)) return;
 
   const statsCard = card(
     el("h2", { class: "view-title" }, S("miniapp.workouts_stats")),
@@ -754,8 +782,9 @@ const FILE_STATE_TONES = {
   rejected: "error",
 };
 
-async function viewFiles(view) {
-  const files = await api("/api/v1/files?limit=20");
+async function viewFiles(view, gen, signal) {
+  const files = await api("/api/v1/files?limit=20", "GET", undefined, signal);
+  if (isStale(gen)) return;
 
   const fileInput = el("input", {
     type: "file",
@@ -853,8 +882,9 @@ const FACT_STATE_TONES = {
   superseded: "muted",
 };
 
-async function viewFacts(view) {
-  const facts = await api("/api/v1/facts?limit=50");
+async function viewFacts(view, gen, signal) {
+  const facts = await api("/api/v1/facts?limit=50", "GET", undefined, signal);
+  if (isStale(gen)) return;
 
   const valueInput = input({
     placeholder: S("miniapp.facts_value_ph"),
@@ -1026,17 +1056,18 @@ function replaceForm(f) {
 /* Settings                                                            */
 /* ------------------------------------------------------------------ */
 
-async function viewSettings(view) {
+async function viewSettings(view, gen, signal) {
   const settings = state.me.settings;
 
   // Proactive settings are a separate card; a failure there must not break
   // the core settings screen.
   let proactiveCard = null;
   try {
-    proactiveCard = await buildProactiveCard();
+    proactiveCard = await buildProactiveCard(signal);
   } catch {
     /* card omitted */
   }
+  if (isStale(gen)) return;
 
   view.replaceChildren(
     card(
@@ -1091,8 +1122,13 @@ async function viewSettings(view) {
 }
 
 /** Proactive-notifications card backed by /api/v1/proactive-settings. */
-async function buildProactiveCard() {
-  const ps = await api("/api/v1/proactive-settings");
+async function buildProactiveCard(signal) {
+  const ps = await api(
+    "/api/v1/proactive-settings",
+    "GET",
+    undefined,
+    signal
+  );
   const patch = async (body) => {
     try {
       await api("/api/v1/proactive-settings", "PATCH", body);
