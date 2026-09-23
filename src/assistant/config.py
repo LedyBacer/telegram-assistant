@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     # candidates are always kept regardless of this bound.
     retrieval_max_distance: float = Field(default=0.9, ge=0.0, le=2.0)
 
+    # Adjacent-chunk merging (SPEC §13): retrieved chunks from the same file
+    # whose positions are within this many steps of each other are merged into
+    # one bounded excerpt (1 = strictly consecutive; a larger value bridges a
+    # small gap of un-retrieved chunks).
+    retrieval_merge_gap: int = Field(default=1, ge=0, le=50)
+
     # Contextual chat
     chat_history_messages: int = 10
 

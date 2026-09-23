@@ -600,13 +600,16 @@ async def test_rrf_recovers_lexical_candidate_outside_semantic_top_k(session) ->
         session, user, "entanglement details", provider=embedder, top_k=3
     )
 
-    # Vector-only top-3 would be exactly the abc.md chunks (all distance 0);
-    # gamma (vector rank 4) is recovered by the lexical list into the fused
-    # top-3 (gamma >= 1/62 + 1/64 beats delta = 1/63 + 1/64).
+    # gamma is a vector outlier (distance 1, dropped by the relevance bound)
+    # recalled purely by the lexical arm; RRF keeps it alongside abc.md. The
+    # three consecutive abc.md chunks (positions 0..2) now merge into a single
+    # proximity span, so the fused result is [abc.md span, gamma.md].
     names = [r.file_name for r in results]
     assert "gamma.md" in names
-    assert len(results) == 3
-    assert names.count("abc.md") == 2
+    assert len(results) == 2
+    assert names.count("abc.md") == 1
+    abc = next(r for r in results if r.file_name == "abc.md")
+    assert abc.position == 0 and abc.position_end == 2
 
 
 async def test_embedding_outage_degrades_to_lexical_only(session) -> None:
@@ -691,6 +694,56 @@ async def test_retrieval_merges_adjacent_chunks(session) -> None:
     assert len(results) == 1
     assert "part one" in results[0].text and "further" in results[0].text
     assert len(results[0].text) <= files.MERGED_TEXT_LIMIT
+    # The merged excerpt spans chunks 0..1, so the citation shows the range.
+    assert results[0].position == 0 and results[0].position_end == 1
+    assert files.format_citations(results) == "Sources: guide.md (parts 1–2)"
+
+
+def test_merge_adjacent_is_independent_of_score_order() -> None:
+    """P20 (SPEC §13): same-file consecutive chunks merge even when a higher
+    scoring chunk from another file sits between them in score order."""
+    chunks = [
+        files.RetrievedChunk(file_id=2, file_name="b.md", position=0, text="b", score=0.9),
+        files.RetrievedChunk(file_id=1, file_name="a.md", position=0, text="a0", score=0.5),
+        files.RetrievedChunk(file_id=1, file_name="a.md", position=1, text="a1", score=0.4),
+    ]
+    merged = files._merge_adjacent(chunks)
+    assert len(merged) == 2
+    a = next(c for c in merged if c.file_id == 1)
+    assert "a0" in a.text and "a1" in a.text
+    assert a.position == 0 and a.position_end == 1
+    # The higher-scoring b.md span comes first.
+    assert merged[0].file_id == 2
+
+
+def test_merge_adjacent_uses_configurable_gap(monkeypatch) -> None:
+    """P20 (SPEC §13): chunks bridge only within retrieval_merge_gap steps;
+    a wider gap merges across a small run of un-retrieved chunks."""
+    chunks = [
+        files.RetrievedChunk(file_id=1, file_name="a.md", position=0, text="a0", score=0.5),
+        files.RetrievedChunk(file_id=1, file_name="a.md", position=2, text="a2", score=0.4),
+    ]
+    # Default gap=1: positions 0 and 2 (a gap of 2) are NOT merged.
+    assert len(files._merge_adjacent(chunks)) == 2
+    # Widen the gap to 2: the missing position 1 is bridged into one span.
+    monkeypatch.setattr(get_settings(), "retrieval_merge_gap", 2)
+    merged = files._merge_adjacent(chunks)
+    assert len(merged) == 1
+    assert merged[0].position == 0 and merged[0].position_end == 2
+    assert "a0" in merged[0].text and "a2" in merged[0].text
+
+
+def test_citations_show_position_range_for_merged_span() -> None:
+    """P20 (SPEC §13): citations reflect file AND position proximity — a merged
+    span is annotated with its contiguous 1-based part range, a single chunk is
+    not."""
+    chunks = [
+        files.RetrievedChunk(
+            file_id=1, file_name="a.md", position=1, text="x", score=0.5, position_end=2
+        ),
+        files.RetrievedChunk(file_id=2, file_name="b.md", position=0, text="y", score=0.4),
+    ]
+    assert files.format_citations(chunks) == "Sources: a.md (parts 2–3), b.md"
 
 
 async def test_delete_file_removes_rows_job_and_disk(session, monkeypatch, tmp_path) -> None:

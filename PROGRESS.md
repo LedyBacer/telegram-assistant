@@ -1,11 +1,38 @@
 # Progress
 
-Status: V3 PRIORITY 19 COMPLETE (RAG V3 — improved lexical retrieval: the
-lexical arm now builds an OR-style, operator-safe tsquery, so a chunk matches
-when it contains ANY of the query's words (not all of them) and arbitrary user
-input can no longer be read as a tsquery operator; still PostgreSQL-only).
-Next: V3 Priority 20 (adjacent-chunk merging + citations — file + position
-proximity).
+Status: V3 PRIORITY 20 COMPLETE (RAG V3 — adjacent-chunk merging + citations:
+same-file retrieved chunks within a configurable position proximity are merged
+into one bounded excerpt (now independent of score order and correctly bridging
+the whole span), and citations reflect file AND position — a merged span is
+annotated with its contiguous 1-based part range).
+Next: V3 Priority 21 (file-ingestion resource safety — byte/text/chunk/batch
+bounds; async offload; streamed uploads).
+
+## V3 — Priority 20: adjacent-chunk merging + citations
+
+The old `_merge_adjacent` only merged a chunk when it was immediately after the
+*first* position of the span and the two chunks happened to be adjacent in the
+score-sorted list, so (a) same-file chunks separated by a higher-scoring chunk
+were never merged, and (b) a run of consecutive chunks collapsed only the first
+pair. Citations listed filenames only, with no position information.
+
+- **Proximity-based, order-independent merge**: chunks are grouped by file and
+  merged by position proximity within the new `settings.retrieval_merge_gap`
+  bound (default 1 = strictly consecutive; larger bridges a small gap of
+  un-retrieved chunks). Merged spans track `position_end` and are re-ordered by
+  their best constituent score.
+- **Position-aware citations**: `format_citations` groups by file and annotates
+  a file whose retrieved chunks span more than one position with its contiguous
+  1-based part range (``file.md (parts 2–3)``); single-position sources are
+  unchanged, so existing citation output is preserved.
+
+Tests (`test_files.py`): `test_merge_adjacent_is_independent_of_score_order`,
+`test_merge_adjacent_uses_configurable_gap`,
+`test_citations_show_position_range_for_merged_span`; the existing
+adjacent-merge and RRF-recovery tests were updated for the corrected span
+merging (three consecutive chunks now collapse to one span).
+Amended `docs/ASSUMPTIONS.md` #28.
+Verified: 409 pytest pass, Ruff clean.
 
 ## V3 — Priority 19: improved lexical retrieval
 

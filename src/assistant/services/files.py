@@ -67,7 +67,9 @@ class RetrievedChunk:
     ``score`` is the fused RRF score (higher is better). ``distance`` is the
     cosine distance of the chunk from the query in the vector arm (lower is
     better); it is ``None`` for chunks that were recalled lexically only
-    (keyword overlap, no vector score).
+    (keyword overlap, no vector score). ``position`` is the chunk's index in
+    the file; ``position_end`` is the index of the last chunk merged into this
+    excerpt (``None`` for a single, unmerged chunk — treat it as ``position``).
     """
 
     file_id: int
@@ -76,6 +78,7 @@ class RetrievedChunk:
     text: str
     score: float
     distance: float | None = None
+    position_end: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -674,25 +677,44 @@ def _fuse(
     return kept
 
 
+def _position_end(chunk: RetrievedChunk) -> int:
+    """The last position merged into ``chunk`` (its own index if unmerged)."""
+    return chunk.position_end if chunk.position_end is not None else chunk.position
+
+
 def _merge_adjacent(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
-    """Merge consecutive positions of the same file into one bounded chunk."""
-    merged: list[RetrievedChunk] = []
+    """Merge same-file chunks that are close in position into one excerpt.
+
+    Chunks from the same file whose positions are within
+    ``settings.retrieval_merge_gap`` steps of each other collapse into a single
+    bounded excerpt (text truncated to ``MERGED_TEXT_LIMIT``). The input is
+    score-sorted, so same-file chunks are not guaranteed to be contiguous —
+    they are grouped by file and merged by position proximity, then the merged
+    spans are re-ordered by their best constituent score. ``position_end``
+    records the span so citations can show a contiguous range.
+    """
+    gap = get_settings().retrieval_merge_gap
+    by_file: dict[int, list[RetrievedChunk]] = {}
     for chunk in chunks:
-        prev = merged[-1] if merged else None
-        if (
-            prev is not None
-            and prev.file_id == chunk.file_id
-            and chunk.position == prev.position + 1
-        ):
-            prev.text = f"{prev.text} {chunk.text}"[:MERGED_TEXT_LIMIT]
-            prev.score = max(prev.score, chunk.score)
-            if prev.distance is None or (
-                chunk.distance is not None and chunk.distance < prev.distance
-            ):
-                prev.distance = chunk.distance
-        else:
-            merged.append(
-                RetrievedChunk(
+        by_file.setdefault(chunk.file_id, []).append(chunk)
+
+    merged: list[RetrievedChunk] = []
+    for group in by_file.values():
+        group.sort(key=lambda c: c.position)
+        current: RetrievedChunk | None = None
+        for chunk in group:
+            if current is not None and chunk.position - _position_end(current) <= gap:
+                current.text = f"{current.text} {chunk.text}"[:MERGED_TEXT_LIMIT]
+                current.position_end = chunk.position
+                current.score = max(current.score, chunk.score)
+                if chunk.distance is not None and (
+                    current.distance is None or chunk.distance < current.distance
+                ):
+                    current.distance = chunk.distance
+            else:
+                if current is not None:
+                    merged.append(current)
+                current = RetrievedChunk(
                     file_id=chunk.file_id,
                     file_name=chunk.file_name,
                     position=chunk.position,
@@ -700,7 +722,10 @@ def _merge_adjacent(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
                     score=chunk.score,
                     distance=chunk.distance,
                 )
-            )
+        if current is not None:
+            merged.append(current)
+
+    merged.sort(key=lambda c: (-c.score, c.file_name, c.position))
     return merged
 
 
@@ -756,11 +781,22 @@ def format_citations(chunks: list[RetrievedChunk]) -> str:
     """Deterministic source line for bot responses (SPEC §6.3).
 
     Rendered by the application from retrieval metadata — it never depends
-    on the model repeating source names.
+    on the model repeating source names. Sources are grouped by file; a file
+    whose retrieved chunks span more than one position is annotated with the
+    contiguous 1-based part range (``file.md (parts 2–3)``), so the citation
+    reflects file *and* position proximity, not just the filename.
     """
-    seen: dict[int, str] = {}
+    seen: dict[int, tuple[str, int, int]] = {}
     for c in chunks:
-        seen.setdefault(c.file_id, c.file_name)
+        start, end = c.position, _position_end(c)
+        if c.file_id in seen:
+            name, s, e = seen[c.file_id]
+            seen[c.file_id] = (name, min(s, start), max(e, end))
+        else:
+            seen[c.file_id] = (c.file_name, start, end)
     if not seen:
         return ""
-    return "Sources: " + ", ".join(seen.values())
+    parts: list[str] = []
+    for name, start, end in seen.values():
+        parts.append(f"{name} (parts {start + 1}–{end + 1})" if end > start else name)
+    return "Sources: " + ", ".join(parts)
