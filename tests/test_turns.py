@@ -34,9 +34,11 @@ from assistant.models.users import User
 from assistant.services import actions as actions_service
 from assistant.services import calendar as calendar_service
 from assistant.services import facts as facts_service
+from assistant.services import files as files_service
 from assistant.services import turns as turns_service
 from assistant.services import workouts as workouts_service
 from assistant.services.users import upsert_user
+from test_files import _FakeEmbedder, _indexed_file
 
 
 async def _user(session: AsyncSession, user_id: int = 71) -> User:
@@ -294,18 +296,20 @@ async def test_read_tools_are_user_scoped(session: AsyncSession) -> None:
     )
     await session.commit()
 
-    out = await turns_service.run_read_tool(
+    out, chunks = await turns_service.run_read_tool(
         session, user, tool="calendar", limit=10
     )
     assert "Secret meeting" not in out
+    assert chunks == []
 
 
 async def test_read_tool_unknown_returns_placeholder(
     session: AsyncSession,
 ) -> None:
     user = await _user(session)
-    out = await turns_service.run_read_tool(session, user, tool="nope")
+    out, chunks = await turns_service.run_read_tool(session, user, tool="nope")
     assert out == "(unknown tool)"
+    assert chunks == []
 
 
 # ---------------------------------------------------------------------------
@@ -589,3 +593,129 @@ async def test_facts_only_turn_does_not_raise(session: AsyncSession) -> None:
     # No reply text, but a fact was proposed -> no empty-turn error.
     assert result.reply == ""
     assert len(result.proposed_facts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Conditional document retrieval (SPEC §6)
+# ---------------------------------------------------------------------------
+
+
+async def test_ordinary_turn_makes_no_embedding_calls(
+    session: AsyncSession,
+) -> None:
+    """Ordinary chat must not invoke the embedding provider (SPEC §6)."""
+    user = await _user(session)
+    # A stored document exists; the greeting shares no words with it.
+    await _indexed_file(
+        session, user, filename="quantum-notes.md",
+        texts=["quantum entanglement basics"],
+    )
+    provider = _FakeProvider(AssistantTurn(reply="Hello!"))
+
+    result = await turns_service.run_turn(
+        session, user, "hello", provider=provider
+    )
+    await session.commit()
+
+    assert result.reply == "Hello!"
+    assert provider.embed_calls == 0
+    assert result.retrieved_chunks == []
+
+
+async def test_documents_tool_retrieves_with_deterministic_citations(
+    session: AsyncSession,
+) -> None:
+    """The documents read tool triggers retrieval; citations come from
+    retrieval metadata, not the model (SPEC §6.3)."""
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="warranty.txt",
+        texts=["the warranty covers repairs for two years"],
+    )
+    turn = AssistantTurn(
+        data_requests=[
+            ReadToolRequest(tool="documents", query="warranty repairs", limit=5)
+        ]
+    )
+    provider = _FakeProvider(
+        turn, reply="Your warranty covers repairs for two years."
+    )
+
+    result = await turns_service.run_turn(
+        session,
+        user,
+        "what does my warranty document say about repairs?",
+        provider=provider,
+    )
+    await session.commit()
+
+    assert result.reply == "Your warranty covers repairs for two years."
+    assert provider.chat_calls == 1
+    assert len(result.retrieved_chunks) == 1
+    chunk = result.retrieved_chunks[0]
+    assert chunk.file_name == "warranty.txt"
+    assert "warranty" in provider.chat_system
+    # Deterministic, application-rendered citation (SPEC §6.3).
+    assert files_service.format_citations(result.retrieved_chunks) == "Sources: warranty.txt"
+
+
+async def test_documents_tool_no_overlap_makes_no_embedding_call(
+    session: AsyncSession,
+) -> None:
+    """The lexical gate: no word overlap -> no results, zero embeddings."""
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="quantum-notes.md",
+        texts=["quantum entanglement basics"],
+    )
+    out, chunks = await turns_service.run_read_tool(
+        session, user, tool="documents", query="good morning"
+    )
+    assert out == "(no data)"
+    assert chunks == []
+
+
+async def test_documents_tool_survives_embedding_outage(session: AsyncSession) -> None:
+    """An embedding outage degrades to lexical-only retrieval (SPEC §6)."""
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="warranty.txt",
+        texts=["the warranty covers repairs for two years"],
+    )
+
+    async def _down(**kwargs) -> list[float]:
+        raise AIProviderError("embedding server down")
+
+    embedder = _FakeEmbedder()
+    embedder.embed_query = _down  # type: ignore[method-assign]
+    out, chunks = await turns_service.run_read_tool(
+        session,
+        user,
+        tool="documents",
+        query="warranty repairs",
+        limit=5,
+        provider=embedder,
+    )
+    assert out != "(no data)"
+    assert len(chunks) == 1
+    assert chunks[0].file_name == "warranty.txt"
+
+
+async def test_documents_tool_is_user_scoped(session: AsyncSession) -> None:
+    user = await _user(session, user_id=71)
+    other = await _user(session, user_id=72)
+    await _indexed_file(
+        session, other, filename="theirs.txt",
+        texts=["secret warranty terms about repairs"],
+    )
+    out, chunks = await turns_service.run_read_tool(
+        session, user, tool="documents", query="warranty repairs"
+    )
+    assert out == "(no data)"
+    assert chunks == []

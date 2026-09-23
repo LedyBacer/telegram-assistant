@@ -988,7 +988,14 @@ async def on_text(
             return
         await _delete_thinking(thinking_status)
         if result.reply:
-            await message.answer(result.reply, reply_markup=main_menu_kb(lang))
+            text = result.reply
+            if result.retrieved_chunks:
+                # Deterministic provenance (SPEC §6.3): rendered from
+                # retrieval metadata, never left to the model.
+                citations = files_service.format_citations(result.retrieved_chunks)
+                if citations:
+                    text = f"{text}\n\n{citations}"
+            await message.answer(text, reply_markup=main_menu_kb(lang))
         for action in result.proposed_actions:
             await message.answer(
                 t(lang, "action.propose", summary=action.summary),

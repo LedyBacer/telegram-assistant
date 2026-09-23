@@ -7,8 +7,12 @@ recorded so a stuck file is inspectable, and a failing stage is re-queued by
 the worker with backoff (failures are visible on the ``user_files`` row and
 retryable).
 
-Retrieval is hybrid (semantic vector similarity + keyword relevance) and is
-always scoped to the requesting user. Document text is untrusted user data.
+Retrieval is conditional and genuinely hybrid (SPEC §6): a PostgreSQL
+lexical full-text gate (language-neutral ``simple`` text-search config) must
+match before the embedding provider is ever called; when it does, lexical
+and vector candidate sets are fused with Reciprocal Rank Fusion. An
+embedding outage degrades to lexical-only results. Retrieval is always
+scoped to the requesting user. Document text is untrusted user data.
 """
 
 from __future__ import annotations
@@ -19,8 +23,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import cast, delete, func, literal, select
+from sqlalchemy.dialects.postgresql import REGCONFIG
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.ai import AIProvider, AIProviderError, get_ai_provider
@@ -476,12 +482,150 @@ _register_handler()
 
 
 # ---------------------------------------------------------------------------
-# Hybrid retrieval
+# Conditional hybrid retrieval (SPEC §6)
 # ---------------------------------------------------------------------------
 
+#: Reciprocal Rank Fusion constant (Cormack et al., 2009).
+RRF_K = 60
+#: Independent candidates fetched per list (lexical and vector) before fusion.
+CANDIDATE_LIMIT = 10
+#: Minimum fused RRF score; a candidate ranked at the tail of one list.
+RRF_MIN_SCORE = 1.0 / (RRF_K + CANDIDATE_LIMIT)
+#: Merged adjacent chunks are truncated so the context stays bounded.
+MERGED_TEXT_LIMIT = 800
 
-def _escape_ilike(term: str) -> str:
-    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+# The language-neutral text-search config (SPEC §6.1), cast to regconfig so
+# PostgreSQL resolves to_tsvector/plainto_tsquery (a bare string literal is
+# not an implicit cast target for the function overload).
+_TS_CONFIG = cast(literal("simple"), REGCONFIG)
+
+
+def _tsvector() -> Any:
+    return func.to_tsvector(_TS_CONFIG, FileChunk.text)
+
+
+def _tsquery(query: str) -> Any:
+    # plainto_tsquery parses the raw text as natural language (words are
+    # ANDed, operators are ignored), so arbitrary user input cannot raise.
+    return func.plainto_tsquery(_TS_CONFIG, literal(query))
+
+
+async def _lexical_hits(
+    session: AsyncSession, user: User, query: str
+) -> int:
+    """Count of the user's chunks with lexical overlap with the query."""
+    match = _tsvector().op("@@")(_tsquery(query))
+    count = await session.scalar(
+        select(func.count()).select_from(FileChunk).where(
+            FileChunk.user_id == user.id, match
+        )
+    )
+    return int(count or 0)
+
+
+async def _lexical_candidates(
+    session: AsyncSession, user: User, query: str
+) -> list[tuple[FileChunk, str]]:
+    """User chunks matching the query lexically, ranked by ts_rank desc."""
+    rank = func.ts_rank(_tsvector(), _tsquery(query)).label("lex_rank")
+    rows = (
+        (
+            await session.execute(
+                select(FileChunk, UserFile.original_filename, rank)
+                .join(UserFile, FileChunk.file_id == UserFile.id)
+                .where(
+                    FileChunk.user_id == user.id,
+                    _tsvector().op("@@")(_tsquery(query)),
+                )
+                .order_by(rank.desc(), FileChunk.position.asc())
+                .limit(CANDIDATE_LIMIT)
+            )
+        )
+        .all()
+    )
+    return [(chunk, name) for chunk, name, _ in rows]
+
+
+async def _vector_candidates(
+    session: AsyncSession,
+    user: User,
+    query: str,
+    provider: AIProvider,
+) -> list[tuple[FileChunk, str]]:
+    """User chunks nearest the query embedding (cosine distance asc)."""
+    query_vec = await provider.embed_query(query=query)
+    distance = FileChunk.embedding.cosine_distance(query_vec).label("distance")
+    rows = (
+        (
+            await session.execute(
+                select(FileChunk, UserFile.original_filename)
+                .join(UserFile, FileChunk.file_id == UserFile.id)
+                .where(
+                    FileChunk.user_id == user.id,
+                    FileChunk.embedding.is_not(None),
+                )
+                .order_by(distance.asc(), FileChunk.position.asc())
+                .limit(CANDIDATE_LIMIT)
+            )
+        )
+        .all()
+    )
+    return [(chunk, name) for chunk, name in rows]
+
+
+def _fuse(
+    lexical: list[tuple[FileChunk, str]],
+    vector: list[tuple[FileChunk, str]],
+) -> list[RetrievedChunk]:
+    """Reciprocal Rank Fusion of the two ranked candidate lists."""
+    fused: dict[int, RetrievedChunk] = {}
+
+    def _add(chunk: FileChunk, name: str, rank: int) -> None:
+        entry = fused.get(chunk.id)
+        if entry is None:
+            entry = RetrievedChunk(
+                file_id=chunk.file_id,
+                file_name=name,
+                position=chunk.position,
+                text=chunk.text,
+                score=0.0,
+            )
+            fused[chunk.id] = entry
+        entry.score += 1.0 / (RRF_K + rank)
+
+    for rank, (chunk, name) in enumerate(lexical, start=1):
+        _add(chunk, name, rank)
+    for rank, (chunk, name) in enumerate(vector, start=1):
+        _add(chunk, name, rank)
+
+    kept = [c for c in fused.values() if c.score >= RRF_MIN_SCORE]
+    kept.sort(key=lambda c: (-c.score, c.file_name, c.position))
+    return kept
+
+
+def _merge_adjacent(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    """Merge consecutive positions of the same file into one bounded chunk."""
+    merged: list[RetrievedChunk] = []
+    for chunk in chunks:
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and prev.file_id == chunk.file_id
+            and chunk.position == prev.position + 1
+        ):
+            prev.text = f"{prev.text} {chunk.text}"[:MERGED_TEXT_LIMIT]
+            prev.score = max(prev.score, chunk.score)
+        else:
+            merged.append(
+                RetrievedChunk(
+                    file_id=chunk.file_id,
+                    file_name=chunk.file_name,
+                    position=chunk.position,
+                    text=chunk.text,
+                    score=chunk.score,
+                )
+            )
+    return merged
 
 
 async def retrieve_chunks(
@@ -492,64 +636,48 @@ async def retrieve_chunks(
     top_k: int = 5,
     provider: AIProvider | None = None,
 ) -> list[RetrievedChunk]:
-    """Hybrid retrieval scoped to the user (SPEC §13).
+    """Conditional hybrid retrieval scoped to the user (SPEC §6, §13).
 
-    Ranks the user's indexed chunks by semantic cosine similarity to the query
-    embedding, with a small boost for chunks that also match the query as a
-    substring. Returns the top ``top_k`` with their source filename for
-    citation. Document text is treated as untrusted data, never instructions.
+    1. A lexical full-text gate (PostgreSQL ``simple`` config) must match at
+       least one of the user's chunks; otherwise the query has no lexical
+       overlap and we return ``[]`` WITHOUT calling the embedding provider
+       (ordinary chat never embeds).
+    2. Lexical and vector candidate sets are fused with Reciprocal Rank
+       Fusion, so a lexically-matching chunk can win even when it is not in
+       the semantic top-K.
+    3. An embedding outage (``AIProviderError``) degrades to lexical-only
+       results instead of breaking the turn.
+    4. Adjacent chunks from the same file are merged and the context stays
+       bounded to ``top_k``.
+
+    Scores are RRF scores (higher is better). Citations are derived
+    deterministically from the returned metadata via :func:`format_citations`.
     """
     query = (query or "").strip()
     if not query or top_k <= 0:
         return []
     provider = provider or get_ai_provider()
-    # The provider applies the E5 query prefix; the user's visible query is
-    # left unmodified.
-    query_vec = await provider.embed_query(query=query)
 
-    distance = FileChunk.embedding.cosine_distance(query_vec).label("distance")
-    semantic = (
-        select(FileChunk, UserFile.original_filename, distance)
-        .join(UserFile, FileChunk.file_id == UserFile.id)
-        .where(
-            FileChunk.user_id == user.id,
-            FileChunk.embedding.is_not(None),
-        )
-        .order_by(distance.asc())
-        .limit(top_k)
-    )
-    results: dict[int, RetrievedChunk] = {}
-    for chunk, filename, dist in (await session.execute(semantic)).all():
-        results[chunk.id] = RetrievedChunk(
-            file_id=chunk.file_id,
-            file_name=filename,
-            position=chunk.position,
-            text=chunk.text,
-            score=1.0 - float(dist),
-        )
+    if await _lexical_hits(session, user, query) == 0:
+        return []
 
-    # Keyword boost for chunks that already rank semantically.
-    term = query[:120]
-    keyword_ids = (
-        await session.scalars(
-            select(FileChunk.id)
-            .where(
-                FileChunk.user_id == user.id,
-                FileChunk.text.ilike(f"%{_escape_ilike(term)}%"),
-            )
-            .limit(top_k)
-        )
-    ).all()
-    for cid in keyword_ids:
-        if cid in results:
-            results[cid].score += 0.25
+    lexical = await _lexical_candidates(session, user, query)
+    vector: list[tuple[FileChunk, str]] = []
+    try:
+        vector = await _vector_candidates(session, user, query, provider)
+    except AIProviderError:
+        logger.warning("embedding provider unavailable; using lexical-only retrieval")
 
-    ordered = sorted(results.values(), key=lambda r: r.score, reverse=True)
-    return ordered[:top_k]
+    fused = _fuse(lexical, vector)
+    return _merge_adjacent(fused)[:top_k]
 
 
 def format_citations(chunks: list[RetrievedChunk]) -> str:
-    """One line per distinct source file, for bot responses (SPEC §13)."""
+    """Deterministic source line for bot responses (SPEC §6.3).
+
+    Rendered by the application from retrieval metadata — it never depends
+    on the model repeating source names.
+    """
     seen: dict[int, str] = {}
     for c in chunks:
         seen.setdefault(c.file_id, c.file_name)

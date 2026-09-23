@@ -42,7 +42,9 @@ class ReadToolRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    tool: Literal["calendar", "reminders", "workouts", "files", "facts"]
+    tool: Literal[
+        "calendar", "reminders", "workouts", "files", "documents", "facts"
+    ]
     query: str | None = Field(default=None, max_length=200)
     limit: int = Field(default=5, ge=1, le=20)
 

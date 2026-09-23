@@ -1,8 +1,10 @@
 """Contextual AI chat (SPEC §15).
 
 Context is built *selectively* per turn — recent messages, today's and
-upcoming tasks, pending reminders, recent workouts, confirmed facts, and a
-few retrieved file chunks — never the whole database. Document excerpts and
+upcoming tasks, pending reminders, recent workouts, and confirmed facts —
+never the whole database. Document retrieval is conditional (SPEC §6): it is
+only performed when the orchestration layer explicitly requests it, so
+ordinary chat never calls the embedding provider. Document excerpts and
 stored facts are untrusted data: they are rendered into the system prompt as
 context only.
 """
@@ -70,8 +72,14 @@ async def build_context(
     query: str,
     *,
     provider: AIProvider | None = None,
+    retrieve: bool = False,
 ) -> ChatContext:
-    """Assemble the bounded context block for one turn (read-only)."""
+    """Assemble the bounded context block for one turn (read-only).
+
+    ``retrieve=False`` (the default) means no file retrieval and therefore no
+    embedding request (SPEC §6); pass ``retrieve=True`` only when document
+    context is genuinely wanted for this turn.
+    """
     settings = get_settings()
     recent = (
         await session.scalars(
@@ -97,13 +105,14 @@ async def build_context(
     )
     ctx.fact_lines = await facts_service.confirmed_lines(session, user)
 
-    chunks = await files_service.retrieve_chunks(
-        session, user, query, top_k=FILE_CHUNK_CONTEXT_LIMIT, provider=provider
-    )
-    ctx.file_excerpts = [
-        f"{c.file_name} (excerpt): {c.text[:400]}" for c in chunks
-    ]
-    ctx.citations = files_service.format_citations(chunks)
+    if retrieve:
+        chunks = await files_service.retrieve_chunks(
+            session, user, query, top_k=FILE_CHUNK_CONTEXT_LIMIT, provider=provider
+        )
+        ctx.file_excerpts = [
+            f"{c.file_name} (excerpt): {c.text[:400]}" for c in chunks
+        ]
+        ctx.citations = files_service.format_citations(chunks)
     return ctx
 
 

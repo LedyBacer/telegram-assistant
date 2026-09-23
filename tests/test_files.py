@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.ai import AIProviderError
 from assistant.bot.handlers import on_document
 from assistant.config import get_settings
 from assistant.models.files import EMBEDDING_DIMENSIONS, FileChunk, FileState, UserFile
@@ -436,7 +437,8 @@ async def test_cancelled_ingest_does_not_commit_chunks(
 # ---------------------------------------------------------------------------
 
 
-async def test_retrieval_filters_by_user_and_boosts_keywords(session) -> None:
+async def test_retrieval_is_user_scoped_and_fuses_hybrid(session) -> None:
+    """Scores are RRF scores; results never cross user boundaries (SPEC §6)."""
     user = await _user(session, user_id=51)
     other = await _user(session, user_id=52)
 
@@ -444,7 +446,11 @@ async def test_retrieval_filters_by_user_and_boosts_keywords(session) -> None:
         session,
         user,
         filename="quantum-notes.md",
-        texts=["quantum entanglement basics", "coffee brewing guide"],
+        texts=["quantum entanglement basics"],
+    )
+    # No lexical overlap, but the vector list still ranks it 2nd.
+    await _indexed_file(
+        session, user, filename="coffee.txt", texts=["coffee brewing guide"]
     )
     # The other user has an identical "quantum" chunk that must never leak.
     await _indexed_file(
@@ -455,18 +461,107 @@ async def test_retrieval_filters_by_user_and_boosts_keywords(session) -> None:
         session, user, "quantum entanglement", provider=_FakeEmbedder()
     )
 
-    assert len(results) == 2
-    assert all(r.file_name == "quantum-notes.md" for r in results)
-    top = results[0]
-    assert top.text == "quantum entanglement basics"
-    # Cosine similarity 1.0 + keyword boost 0.25.
-    assert top.score == pytest.approx(1.25)
-    # The coffee chunk ranks lower (semantic score 0, no keyword match).
-    assert results[1].text == "coffee brewing guide"
-    assert results[1].score == pytest.approx(0.0)
+    assert [r.file_name for r in results] == ["quantum-notes.md", "coffee.txt"]
+    # Rank 1 in BOTH the lexical and vector lists -> 1/61 + 1/61.
+    assert results[0].score == pytest.approx(2 / (files.RRF_K + 1))
+    # Rank 2 in the vector list only -> 1/62.
+    assert results[1].score == pytest.approx(1 / (files.RRF_K + 2))
 
-    assert files.format_citations(results) == "Sources: quantum-notes.md"
+    assert files.format_citations(results) == "Sources: quantum-notes.md, coffee.txt"
     assert await files.retrieve_chunks(session, user, "   ", provider=_FakeEmbedder()) == []
+
+
+async def test_lexical_gate_avoids_embedding_provider(session) -> None:
+    """No lexical overlap -> empty result and ZERO embedding calls (SPEC §6)."""
+    user = await _user(session)
+    await _indexed_file(
+        session, user, filename="quantum-notes.md", texts=["quantum entanglement basics"]
+    )
+    embedder = _FakeEmbedder()
+
+    results = await files.retrieve_chunks(session, user, "good morning", provider=embedder)
+
+    assert results == []
+    assert embedder.query_calls == []
+
+
+async def test_rrf_recovers_lexical_candidate_outside_semantic_top_k(session) -> None:
+    """A lexical candidate ranked outside the semantic top-K can still make
+    the fused result (SPEC §6, §13).
+
+    gamma matches the query lexically (same ts_rank as the others, but last
+    by position) and is the WORST semantic match (marker 0 -> distance 1),
+    so the pure vector top-3 is [alpha, beta, delta] — gamma is excluded.
+    RRF with the lexical list puts gamma ahead of delta.
+    """
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="abc.md",
+        texts=[
+            "entanglement details alpha",
+            "entanglement details beta",
+            "entanglement details delta",
+        ],
+    )
+    await _indexed_file(
+        session, user, filename="gamma.md", texts=["entanglement details quantum"]
+    )
+
+    embedder = _FakeEmbedder()
+    results = await files.retrieve_chunks(
+        session, user, "entanglement details", provider=embedder, top_k=3
+    )
+
+    # Vector-only top-3 would be exactly the abc.md chunks (all distance 0);
+    # gamma (vector rank 4) is recovered by the lexical list into the fused
+    # top-3 (gamma >= 1/62 + 1/64 beats delta = 1/63 + 1/64).
+    names = [r.file_name for r in results]
+    assert "gamma.md" in names
+    assert len(results) == 3
+    assert names.count("abc.md") == 2
+
+
+async def test_embedding_outage_degrades_to_lexical_only(session) -> None:
+    """An embedding outage must not break retrieval (SPEC §6, §13)."""
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="warranty.txt",
+        texts=["the warranty covers repairs for two years"],
+    )
+
+    class _DownEmbedder(_FakeEmbedder):
+        async def embed_query(self, *, query: str) -> list[float]:
+            raise AIProviderError("embedding server down")
+
+    results = await files.retrieve_chunks(
+        session, user, "warranty repairs", provider=_DownEmbedder()
+    )
+
+    assert len(results) == 1
+    assert results[0].file_name == "warranty.txt"
+    # Lexical rank 1 -> 1/(RRF_K+1).
+    assert results[0].score == pytest.approx(1 / (files.RRF_K + 1))
+
+
+async def test_retrieval_merges_adjacent_chunks(session) -> None:
+    """Consecutive positions of one file collapse into a bounded excerpt."""
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="guide.md",
+        texts=["quantum entanglement part one", "further quantum entanglement notes"],
+    )
+
+    results = await files.retrieve_chunks(session, user, "quantum entanglement", provider=_FakeEmbedder())
+
+    assert len(results) == 1
+    assert "part one" in results[0].text and "further" in results[0].text
+    assert len(results[0].text) <= files.MERGED_TEXT_LIMIT
 
 
 async def test_delete_file_removes_rows_job_and_disk(session, monkeypatch, tmp_path) -> None:

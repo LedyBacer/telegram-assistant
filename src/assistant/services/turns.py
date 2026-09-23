@@ -47,17 +47,21 @@ from assistant.services import actions as actions_service
 from assistant.services import calendar as calendar_service
 from assistant.services import chat as chat_service
 from assistant.services import facts as facts_service
+from assistant.services import files as files_service
 from assistant.services import reminders as reminders_service
 from assistant.services import workouts as workouts_service
 
 #: Hard bound on read tools per turn (the second model call is one-shot).
 MAX_DATA_TOOLS = 3
+#: Bounded excerpt limit for the documents tool (context stays small, §6.2).
+DOCUMENTS_TOOL_LIMIT = 5
 
 TOOL_DESCRIPTIONS: dict[str, str] = {
     "calendar": "today's and upcoming calendar items (with ids)",
     "reminders": "pending reminders (with ids)",
     "workouts": "recent workout logs",
     "files": "stored files (name, state, size)",
+    "documents": "search the text of stored documents for relevant excerpts",
     "facts": "confirmed user facts",
 }
 
@@ -73,6 +77,9 @@ class TurnResult:
     skipped_actions: list[ActionProposal] = field(default_factory=list)
     # New proposed (not yet confirmed) memory facts, deduped (SPEC §14).
     proposed_facts: list[UserFact] = field(default_factory=list)
+    # Chunks retrieved by the documents tool this turn; the caller renders
+    # citations from them deterministically (SPEC §6.3).
+    retrieved_chunks: list[files_service.RetrievedChunk] = field(default_factory=list)
     model_calls: int = 0
 
 
@@ -107,11 +114,14 @@ async def run_read_tool(
     tool: str,
     query: str | None = None,
     limit: int = 5,
-) -> str:
+    provider: AIProvider | None = None,
+) -> tuple[str, list[files_service.RetrievedChunk]]:
     """Run one bounded, read-only tool over the existing services.
 
-    Returns a compact text block (never raises for empty data — it renders
-    "(no data)") so the result can be folded straight into a prompt.
+    Returns ``(text, chunks)``: a compact text block (never raises for empty
+    data — it renders "(no data)") that folds straight into a prompt, plus
+    the retrieved chunks (non-empty only for the ``documents`` tool) so the
+    caller can render deterministic citations (SPEC §6.3).
     """
     if tool == "calendar":
         today = (await calendar_service.list_today(session, user))[:limit]
@@ -119,7 +129,7 @@ async def run_read_tool(
         lines = [
             f"today: {_item_line(i)}" for i in today
         ] + [f"upcoming: {_item_line(i)}" for i in upcoming]
-        return "\n".join(lines) if lines else "(no data)"
+        return ("\n".join(lines) if lines else "(no data)", [])
     if tool == "reminders":
         reminders = await reminders_service.list_reminders(
             session, user, status=ReminderStatus.pending, limit=limit
@@ -127,7 +137,7 @@ async def run_read_tool(
         lines = [
             f"id={r.id} {r.message} at {_fmt_dt(r.fire_at)}" for r in reminders
         ]
-        return "\n".join(lines) if lines else "(no data)"
+        return ("\n".join(lines) if lines else "(no data)", [])
     if tool == "workouts":
         logs = await workouts_service.list_workouts(session, user, limit=limit)
         lines = [
@@ -136,7 +146,7 @@ async def run_read_tool(
             + f", {_fmt_dt(w.started_at)}"
             for w in logs
         ]
-        return "\n".join(lines) if lines else "(no data)"
+        return ("\n".join(lines) if lines else "(no data)", [])
     if tool == "files":
         files = (
             (
@@ -154,11 +164,23 @@ async def run_read_tool(
             f"{f.original_filename} (state={f.state.value}, {f.size_bytes} bytes)"
             for f in files
         ]
-        return "\n".join(lines) if lines else "(no data)"
+        return ("\n".join(lines) if lines else "(no data)", [])
+    if tool == "documents":
+        # Conditional retrieval (SPEC §6): the lexical gate inside
+        # retrieve_chunks means a no-overlap query costs zero embeddings.
+        chunks = await files_service.retrieve_chunks(
+            session,
+            user,
+            query or "",
+            top_k=min(limit, DOCUMENTS_TOOL_LIMIT),
+            provider=provider,
+        )
+        lines = [f"{c.file_name} (excerpt): {c.text[:400]}" for c in chunks]
+        return ("\n".join(lines) if lines else "(no data)", list(chunks))
     if tool == "facts":
         lines = await facts_service.confirmed_lines(session, user)
-        return "\n".join(f"- {line}" for line in lines) if lines else "(no data)"
-    return "(unknown tool)"
+        return ("\n".join(f"- {line}" for line in lines) if lines else "(no data)", [])
+    return ("(unknown tool)", [])
 
 
 def _tools_doc() -> str:
@@ -237,11 +259,25 @@ async def run_turn(
     model_calls = 1
 
     reply = turn.reply
+    retrieved: list[files_service.RetrievedChunk] = []
     if turn.data_requests and not reply:
-        blocks = [
-            f"[{req.tool}]\n{await run_read_tool(session, user, tool=req.tool, query=req.query, limit=req.limit)}"
-            for req in _dedupe_data_requests(turn.data_requests)
-        ]
+        blocks = []
+        for req in _dedupe_data_requests(turn.data_requests):
+            text, chunks = await run_read_tool(
+                session,
+                user,
+                tool=req.tool,
+                query=req.query,
+                limit=req.limit,
+                provider=provider,
+            )
+            blocks.append(f"[{req.tool}]\n{text}")
+            for chunk in chunks:
+                if not any(
+                    r.file_id == chunk.file_id and r.position == chunk.position
+                    for r in retrieved
+                ):
+                    retrieved.append(chunk)
         reply = await provider.chat(
             system=TURN_FINAL_SYSTEM.format(
                 tool_results="\n\n".join(blocks) if blocks else "(none)",
@@ -311,5 +347,6 @@ async def run_turn(
         proposed_actions=proposed,
         skipped_actions=skipped,
         proposed_facts=proposed_facts,
+        retrieved_chunks=retrieved,
         model_calls=model_calls,
     )

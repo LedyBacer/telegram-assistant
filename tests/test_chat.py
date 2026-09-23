@@ -159,9 +159,29 @@ async def test_render_context_empty_is_placeholder(session: AsyncSession) -> Non
     assert chat_service.render_context(ctx) == "(no additional context)"
 
 
-# ---------------------------------------------------------------------------
-# Chat turn
-# ---------------------------------------------------------------------------
+async def test_build_context_retrieve_only_when_requested(session: AsyncSession) -> None:
+    """retrieve=False (default) never embeds; retrieve=True pulls excerpts
+    and deterministic citations (SPEC §6)."""
+    from test_files import _indexed_file  # noqa: PLC0415
+
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="warranty.txt",
+        texts=["the warranty covers repairs for two years"],
+    )
+    provider = _FakeProvider()
+
+    ctx_default = await chat_service.build_context(session, user, "hello", provider=provider)
+    assert ctx_default.file_excerpts == []
+    assert provider.embed_calls == 0
+
+    ctx = await chat_service.build_context(
+        session, user, "warranty repairs", provider=provider, retrieve=True
+    )
+    assert len(ctx.file_excerpts) == 1
+    assert ctx.citations == "Sources: warranty.txt"
 
 
 async def test_chat_persists_both_messages_and_uses_context(
@@ -220,6 +240,34 @@ async def test_chat_rejects_blank_text(session: AsyncSession) -> None:
     user = await _user(session)
     with pytest.raises(ValueError, match="required"):
         await chat_service.chat(session, user, "   ", provider=_FakeProvider())
+
+
+class _EmbeddingDownProvider(_FakeProvider):
+    """Chat works, but every embedding call fails (outage simulation)."""
+
+    async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
+        raise AIProviderError("embedding server down")
+
+    async def embed_query(self, *, query: str) -> list[float]:
+        raise AIProviderError("embedding server down")
+
+
+async def test_embedding_outage_does_not_break_unrelated_chat(
+    session: AsyncSession,
+) -> None:
+    """Ordinary chat never calls the embedding provider, so an embedding
+    outage cannot break it (SPEC §6, §13)."""
+    user = await _user(session)
+    provider = _EmbeddingDownProvider(reply="hi there!")
+
+    reply = await chat_service.chat(session, user, "hello", provider=provider)
+    await session.commit()
+
+    assert reply == "hi there!"
+    assert provider.embed_calls == 0
+    assert (
+        len((await session.scalars(select(ChatMessage))).all()) == 2
+    )
 
 
 # ---------------------------------------------------------------------------
