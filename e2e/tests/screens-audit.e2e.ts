@@ -165,16 +165,21 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   // --- Settings: language, timezone, digest time, motivation --------------
   await goTab(page, "settings");
   const rows = page.locator("#view button.settings-row");
-  // Three tappable rows: language, timezone, digest time.
-  await expect(rows).toHaveCount(3);
+  // 7 tappable rows: language, timezone, digest time + the proactive card's
+  // quiet-from, quiet-until, max-per-day, min-interval rows.
+  await expect(rows).toHaveCount(7);
   // Digest row shows an HH:MM value.
   const digestValue = (await rows.nth(2).locator(".settings-row-value").innerText()).trim();
   expect(digestValue).toMatch(/^\d{2}:\d{2}$/);
   // Timezone row shows a non-empty value.
   expect((await rows.nth(1).locator(".settings-row-value").innerText()).trim()).not.toBe("");
-  // The motivation switch is a real role=switch checkbox.
-  const sw = page.locator('#view input.switch[role="switch"]');
-  await expect(sw).toHaveCount(1);
+  // Four role=switch checkboxes: motivation (main card) + the three
+  // proactive-settings switches.
+  const swAll = page.locator('#view input.switch[role="switch"]');
+  await expect(swAll).toHaveCount(4);
+  // The main settings card renders before the proactive card, so the
+  // motivation switch is first in DOM order.
+  const sw = swAll.first();
   // Digest row opens the Flatpickr time picker (24h, no date inputs).
   await rows.nth(2).click();
   await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
@@ -207,7 +212,7 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   await assertNoHorizontalOverflow(page);
 
   // --- Touch targets hold on every screen --------------------------------
-  for (const tab of ["today", "upcoming", "new", "workouts", "files", "facts", "settings"]) {
+  for (const tab of ["today", "actions", "upcoming", "new", "workouts", "files", "facts", "settings"]) {
     await goTab(page, tab);
     const small = await page.evaluate(() => {
       const els = Array.from(

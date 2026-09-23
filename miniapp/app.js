@@ -42,6 +42,7 @@ const whoEl = document.getElementById("who");
 
 const TABS = [
   ["today", "miniapp.tab_today"],
+  ["actions", "miniapp.tab_actions"],
   ["upcoming", "miniapp.tab_upcoming"],
   ["new", "miniapp.tab_new"],
   ["workouts", "miniapp.tab_workouts"],
@@ -122,6 +123,7 @@ function updateBackButton() {
 
 const VIEWS = {
   today: viewToday,
+  actions: viewActions,
   upcoming: viewUpcoming,
   new: viewNew,
   workouts: viewWorkouts,
@@ -334,6 +336,85 @@ async function viewUpcoming(view) {
     items.length
       ? el("div", { class: "list" }, ...items.map(itemCard))
       : empty(S("miniapp.empty_upcoming"))
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Actions (pending proposals inbox)                                   */
+/* ------------------------------------------------------------------ */
+
+const ACTION_KIND_ICONS = {
+  create_item: "✅",
+  update_item: "✏️",
+  complete_item: "✔️",
+  cancel_item: "⏸",
+  delete_item: "🗑",
+  create_reminder: "⏰",
+  cancel_reminder: "🔕",
+  replace_fact: "🧠",
+};
+const ACTION_STATUS_KEYS = {
+  proposed: "miniapp.action_proposed",
+  confirmed: "miniapp.action_proposed",
+  executed: "miniapp.action_executed",
+  rejected: "miniapp.action_rejected",
+  expired: "miniapp.action_expired",
+};
+const ACTION_STATUS_TONES = {
+  proposed: "normal",
+  confirmed: "normal",
+  executed: "ok",
+  rejected: "muted",
+  expired: "muted",
+};
+
+async function viewActions(view) {
+  const actions = await api("/api/v1/actions?limit=20");
+  view.replaceChildren(
+    actions.length
+      ? el("div", { class: "list" }, ...actions.map(actionCard))
+      : empty(S("miniapp.actions_empty"))
+  );
+}
+
+function actionCard(a) {
+  const meta = [];
+  if (a.expires_at) meta.push(S("miniapp.action_expires", { when: fmtDT(a.expires_at) }));
+  const status = el("span", { class: "item-meta" },
+    ...meta,
+    badge(S(ACTION_STATUS_KEYS[a.status] || a.status), ACTION_STATUS_TONES[a.status] || "muted"));
+
+  const actions = [];
+  if (a.status === "proposed") {
+    actions.push(
+      btn(S("miniapp.confirm"), async () => {
+        try {
+          await api(`/api/v1/actions/${a.id}/confirm`, "POST");
+          toast(S("miniapp.saved"));
+          render();
+        } catch (e) {
+          toast(e && e.status === 409 ? S("miniapp.action_stale") : S("miniapp.error_generic"), "error");
+        }
+      }, { variant: "primary" }),
+      btn(S("miniapp.reject"), async () => {
+        try {
+          await api(`/api/v1/actions/${a.id}/reject`, "POST");
+          toast(S("miniapp.saved"));
+          render();
+        } catch {
+          toast(S("miniapp.error_generic"), "error");
+        }
+      })
+    );
+  }
+
+  return card(
+    el("div", { class: "item-head" },
+      el("span", { class: "item-icon", "aria-hidden": "true" }, ACTION_KIND_ICONS[a.kind] || "⚡"),
+      el("span", { class: "item-title" }, a.summary),
+    ),
+    status,
+    el("div", { class: "item-actions" }, ...actions)
   );
 }
 
@@ -564,9 +645,63 @@ async function viewWorkouts(view) {
     logBtn
   );
 
+  // Schedule: a future calendar item + a reminder at the start time.
+  const schedNameInput = input({
+    placeholder: S("miniapp.workout_name_ph"),
+    "aria-label": S("miniapp.workout_schedule"),
+  });
+  let schedStart = null;
+  const schedStartBtn = pickerBtn(S("miniapp.when"), S("miniapp.not_set"), async () => {
+    const iso = await pickDateTime(schedStart);
+    if (iso) {
+      schedStart = iso;
+      schedStartBtn.querySelector(".picker-value").textContent = fmtDT(iso);
+    }
+  });
+  const schedMinutesInput = input({
+    type: "number",
+    min: "1",
+    placeholder: S("miniapp.minutes_ph"),
+    "aria-label": S("miniapp.minutes"),
+    inputmode: "numeric",
+  });
+  const schedBtn = btn(S("miniapp.schedule"), async () => {
+    const name = schedNameInput.value.trim();
+    if (!name) {
+      toast(S("miniapp.workout_name_required"), "error");
+      schedNameInput.focus();
+      return;
+    }
+    if (!schedStart) {
+      toast(S("miniapp.when_required"), "error");
+      return;
+    }
+    schedBtn.disabled = true;
+    try {
+      await api("/api/v1/workouts/schedule", "POST", {
+        name,
+        starts_at: schedStart,
+        duration_minutes: schedMinutesInput.value ? Number(schedMinutesInput.value) : null,
+      });
+      toast(S("miniapp.workout_scheduled"));
+      render();
+    } catch {
+      toast(S("miniapp.error_generic"), "error");
+      schedBtn.disabled = false;
+    }
+  }, { variant: "primary" });
+
+  const scheduleCard = card(
+    el("h2", { class: "view-title" }, S("miniapp.workout_schedule")),
+    field(S("miniapp.workout_name_ph"), schedNameInput),
+    el("div", { class: "form-row" }, field(S("miniapp.when"), schedStartBtn), field(S("miniapp.minutes"), schedMinutesInput)),
+    schedBtn
+  );
+
   view.replaceChildren(
     statsCard,
     logCard,
+    scheduleCard,
     el("h2", { class: "view-subtitle" }, S("miniapp.recent")),
     logs.length
       ? el("div", { class: "list" }, ...logs.map((w) => workoutCard(w)))
@@ -675,6 +810,17 @@ function fileCard(f) {
     el("div", { class: "item-meta" }, ...meta),
     f.error ? el("p", { class: "item-error" }, f.error) : null,
     el("div", { class: "item-actions" },
+      f.state === "failed"
+        ? btn(S("miniapp.file_retry"), async () => {
+            try {
+              await api(`/api/v1/files/${f.id}/retry`, "POST");
+              toast(S("miniapp.saved"));
+              render();
+            } catch {
+              toast(S("miniapp.error_generic"), "error");
+            }
+          }, { variant: "primary" })
+        : null,
       btn(S("miniapp.btn_delete"), async () => {
         const ok = await confirmDialog(S("miniapp.confirm_delete", { title: f.original_filename }));
         if (!ok) return;
@@ -751,7 +897,11 @@ async function viewFacts(view) {
   );
 }
 
+/* Inline "replace" form state: one fact at a time, survives re-renders. */
+let supersedingFactId = null;
+
 function factCard(f) {
+  const replaceable = f.status === "proposed" || f.status === "confirmed";
   const actions = [];
   if (f.status === "proposed") {
     actions.push(
@@ -772,6 +922,14 @@ function factCard(f) {
         } catch {
           toast(S("miniapp.error_generic"), "error");
         }
+      })
+    );
+  }
+  if (replaceable) {
+    actions.push(
+      btn(S("miniapp.fact_replace"), () => {
+        supersedingFactId = supersedingFactId === f.id ? null : f.id;
+        render();
       })
     );
   }
@@ -797,7 +955,46 @@ function factCard(f) {
     ),
     // The fact value is user content: always rendered as a text node.
     el("p", { class: "fact-value" }, f.value),
+    supersedingFactId === f.id
+      ? replaceForm(f)
+      : null,
     el("div", { class: "item-actions" }, ...actions)
+  );
+}
+
+/** Inline form proposing a replacement value (POST /facts/{id}/supersede). */
+function replaceForm(f) {
+  const inputNode = input({
+    placeholder: S("miniapp.fact_replace_ph"),
+    "aria-label": S("miniapp.fact_replace_ph"),
+  });
+  const save = btn(S("miniapp.save"), async () => {
+    const value = inputNode.value.trim();
+    if (!value) {
+      toast(S("miniapp.fact_value_required"), "error");
+      inputNode.focus();
+      return;
+    }
+    save.disabled = true;
+    try {
+      await api(`/api/v1/facts/${f.id}/supersede`, "POST", { value });
+      supersedingFactId = null;
+      toast(S("miniapp.proposed"));
+      render();
+    } catch {
+      toast(S("miniapp.error_generic"), "error");
+      save.disabled = false;
+    }
+  }, { variant: "primary" });
+  return el("div", { class: "replace-form" },
+    inputNode,
+    el("div", { class: "item-actions" },
+      save,
+      btn(S("miniapp.btn_cancel"), () => {
+        supersedingFactId = null;
+        render();
+      })
+    )
   );
 }
 
@@ -807,6 +1004,15 @@ function factCard(f) {
 
 async function viewSettings(view) {
   const settings = state.me.settings;
+
+  // Proactive settings are a separate card; a failure there must not break
+  // the core settings screen.
+  let proactiveCard = null;
+  try {
+    proactiveCard = await buildProactiveCard();
+  } catch {
+    /* card omitted */
+  }
 
   view.replaceChildren(
     card(
@@ -849,13 +1055,60 @@ async function viewSettings(view) {
         toast(S("miniapp.settings_saved"));
         render();
       }),
-      motivationRow(settings.motivation_enabled, async (next) => {
+      switchRow(S("miniapp.settings_motivation"), settings.motivation_enabled, async (next) => {
         const saved = await api("/api/v1/settings", "PATCH", { motivation_enabled: next });
         state.me.settings = saved;
         toast(S("miniapp.settings_saved"));
         render();
       })
-    )
+    ),
+    proactiveCard
+  );
+}
+
+/** Proactive-notifications card backed by /api/v1/proactive-settings. */
+async function buildProactiveCard() {
+  const ps = await api("/api/v1/proactive-settings");
+  const patch = async (body) => {
+    try {
+      await api("/api/v1/proactive-settings", "PATCH", body);
+      toast(S("miniapp.settings_saved"));
+    } catch {
+      toast(S("miniapp.error_generic"), "error");
+    }
+  };
+  return card(
+    el("h2", { class: "view-title" }, S("miniapp.proactive_title")),
+    switchRow(S("miniapp.proactive_enabled"), ps.enabled, (v) => patch({ enabled: v })),
+    switchRow(S("miniapp.proactive_weekly_review"), ps.weekly_review_enabled, (v) => patch({ weekly_review_enabled: v })),
+    switchRow(S("miniapp.proactive_workout_nudge"), ps.workout_nudge_enabled, (v) => patch({ workout_nudge_enabled: v })),
+    settingsRow(S("miniapp.proactive_quiet_from"), ps.quiet_hours_start.slice(0, 5), async () => {
+      const t = await pickTime(ps.quiet_hours_start.slice(0, 5));
+      if (t) patch({ quiet_hours_start: `${t}:00` });
+    }),
+    settingsRow(S("miniapp.proactive_quiet_until"), ps.quiet_hours_end.slice(0, 5), async () => {
+      const t = await pickTime(ps.quiet_hours_end.slice(0, 5));
+      if (t) patch({ quiet_hours_end: `${t}:00` });
+    }),
+    settingsRow(S("miniapp.proactive_max_per_day"), String(ps.max_nudges_per_day), async () => {
+      const chosen = await openSheet({
+        title: S("miniapp.proactive_max_per_day"),
+        value: String(ps.max_nudges_per_day),
+        options: [...Array(20).keys()].map((i) => ({ value: String(i + 1), label: String(i + 1) })),
+      });
+      if (chosen) patch({ max_nudges_per_day: Number(chosen) });
+    }),
+    settingsRow(S("miniapp.proactive_min_interval"), S("miniapp.minutes_value", { minutes: ps.min_interval_minutes }), async () => {
+      const chosen = await openSheet({
+        title: S("miniapp.proactive_min_interval"),
+        value: String(ps.min_interval_minutes),
+        options: [0, 15, 30, 60, 120, 240, 720].map((n) => ({
+          value: String(n),
+          label: n === 0 ? "0" : S("miniapp.minutes_value", { minutes: n }),
+        })),
+      });
+      if (chosen) patch({ min_interval_minutes: Number(chosen) });
+    })
   );
 }
 
@@ -879,17 +1132,17 @@ function settingsRow(label, valueText, onTap) {
 }
 
 /** A settings row with an on/off switch (a real checkbox input). */
-function motivationRow(checked, onChange) {
+function switchRow(label, checked, onChange) {
   const box = el("input", {
     type: "checkbox",
     class: "switch",
     role: "switch",
-    "aria-label": S("miniapp.settings_motivation"),
+    "aria-label": label,
     checked: checked ? "checked" : null,
   });
   box.addEventListener("change", () => onChange(box.checked));
   return el("div", { class: "settings-row settings-row-static" },
-    el("span", { class: "settings-row-label" }, S("miniapp.settings_motivation")),
+    el("span", { class: "settings-row-label" }, label),
     el("label", { class: "switch-wrap" }, box));
 }
 

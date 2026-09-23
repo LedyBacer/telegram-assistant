@@ -1,6 +1,27 @@
 # Progress
 
-Status: PRIORITY 10 COMPLETE (Mini App API extension). Added the API
+Status: PRIORITY 11 COMPLETE (Mini App integration of the V2 features).
+`miniapp/app.js` + locales + CSS: (1) new ⏳ Actions tab (second in the
+bottom nav) — pending-proposals inbox from `GET /actions`: kind icon,
+summary, "expires {when}" meta, status badge (pending/done/rejected/
+expired), Confirm/Reject buttons on proposed; 409 → localized
+"no longer applies" toast; (2) workout scheduling card (name + start
+datetime + optional minutes → `POST /workouts/schedule`); (3) "Retry
+indexing" button on failed file cards (`POST /files/{id}/retry`); (4)
+inline "Replace" form on proposed/confirmed fact cards
+(`POST /facts/{id}/supersede`, one open at a time, survives re-renders);
+(5) proactive-settings card in Settings (three role=switch rows:
+enabled/weekly review/workout nudge, quiet hours from/until via the
+time picker, max-per-day and min-interval via option sheets) with
+isolated fetch failure (a /proactive-settings error never breaks the
+core settings screen). `motivationRow` generalized to `switchRow`.
+21 new i18n keys per language (ru/en parity holds). E2E updated: a11y
+nav count 7→8, screens-audit settings rows 3→7 / switches 1→4,
+"actions" added to the touch-target loop. Verified: full pytest 351
+passing, Ruff clean, full Playwright suite 5/5 (incl. per-screen
+audit), ru/en locale parity.
+
+Prior: PRIORITY 10 COMPLETE (Mini App API extension). Added the API
 surface for the V2 features (all in `src/assistant/api/routes.py` +
 `schemas.py`, 12 new tests in `tests/test_api.py`): (1) pending-actions
 inbox — `GET /actions?status=&limit=` (proposed-first, newest),

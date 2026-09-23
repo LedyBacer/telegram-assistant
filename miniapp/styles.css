@@ -246,6 +246,13 @@ body {
   color: var(--hint);
 }
 
+.replace-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .item-desc,
 .fact-value {
   margin: 8px 0 0;

@@ -8,10 +8,10 @@ test("accessibility basics", async ({ page }) => {
 
   // Navigation: real <button> elements, each with a non-empty accessible name.
   const navBtns = page.locator(".bottomnav .nav-btn");
-  await expect(navBtns).toHaveCount(7);
+  await expect(navBtns).toHaveCount(8);
   const navTags = await navBtns.evaluateAll((els) => els.map((e) => e.tagName));
   expect(navTags.every((t) => t === "BUTTON")).toBe(true);
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 8; i++) {
     const name = await navBtns.nth(i).innerText();
     expect(name.trim(), `nav button ${i} has a visible label`).not.toBe("");
   }
