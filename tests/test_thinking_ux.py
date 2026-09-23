@@ -33,11 +33,12 @@ from assistant.ai import (
     OpenAIChatProvider,
     build_ai_provider,
 )
+from assistant.ai.schemas import AssistantTurn
 from assistant.bot import handlers
 from assistant.bot.handlers import on_text
 from assistant.bot.states import TaskDraftStates
 from assistant.config import Settings
-from assistant.services import chat as chat_service
+from assistant.services import turns as turns_service
 from assistant.services.users import upsert_user
 
 # ---------------------------------------------------------------------------
@@ -310,6 +311,14 @@ class _ChatProvider:
             raise self.error
         return self.reply
 
+    async def chat_structured(
+        self, *, system: str, messages: list[dict[str, str]], schema: type[Any]
+    ) -> Any:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return AssistantTurn(reply=self.reply)
+
     # Context assembly embeds the query even when the user has no files.
     async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
         return [[0.0] * 384 for _ in texts]
@@ -483,7 +492,7 @@ async def test_chat_thinking_status_lifecycle(
     await _user_with_lang(session, "en")
     monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(True))
     provider = _ChatProvider(reply="hello back")
-    monkeypatch.setattr(chat_service, "get_ai_provider", lambda: provider)
+    monkeypatch.setattr(turns_service, "get_ai_provider", lambda: provider)
     message, sent = _make_message("what's on my plate today?")
     state = _fake_state(None)
 
@@ -500,7 +509,7 @@ async def test_chat_no_status_when_thinking_disabled(
 ) -> None:
     await _user_with_lang(session, "ru")
     monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(False))
-    monkeypatch.setattr(chat_service, "get_ai_provider", lambda: _ChatProvider())
+    monkeypatch.setattr(turns_service, "get_ai_provider", lambda: _ChatProvider())
     message, sent = _make_message("привет")
     state = _fake_state(None)
 
@@ -516,7 +525,7 @@ async def test_chat_status_deleted_on_provider_error(
     await _user_with_lang(session, "ru")
     monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(True))
     monkeypatch.setattr(
-        chat_service,
+        turns_service,
         "get_ai_provider",
         lambda: _ChatProvider(error=AITimeoutError("timed out after 180 s")),
     )

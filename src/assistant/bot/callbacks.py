@@ -35,3 +35,10 @@ class FactCallback(CallbackData, prefix="fact"):
 
     action: str
     fact_id: int
+
+
+class ActionCallback(CallbackData, prefix="action"):
+    """Confirm/cancel a proposed mutation (a durable PendingAction, SPEC §3)."""
+
+    action: str
+    action_id: int

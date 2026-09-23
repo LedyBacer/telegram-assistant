@@ -48,6 +48,7 @@ EXPECTED_TABLES = {
     "user_facts",
     "background_jobs",
     "digests",
+    "pending_actions",
 }
 
 

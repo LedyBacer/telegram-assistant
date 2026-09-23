@@ -55,8 +55,10 @@ def _fmt_dt(value: datetime | None) -> str:
 
 
 def _item_line(item: CalendarItem) -> str:
+    # The id is rendered so the model can reference the entity in follow-up
+    # turns (e.g. "move it to 20:00" -> update_item payload, SPEC §3).
     return (
-        f"{item.title} [{item.kind.value}]"
+        f"id={item.id} {item.title} [{item.kind}]"
         + (f", starts {_fmt_dt(item.starts_at)}" if item.starts_at else "")
         + (f", due {_fmt_dt(item.due_at)}" if item.due_at else "")
     )
@@ -118,7 +120,9 @@ def render_context(ctx: ChatContext) -> str:
     if ctx.reminders:
         sections.append(
             "Pending reminders:\n- "
-            + "\n- ".join(f"{r.message} at {_fmt_dt(r.fire_at)}" for r in ctx.reminders)
+            + "\n- ".join(
+                f"id={r.id} {r.message} at {_fmt_dt(r.fire_at)}" for r in ctx.reminders
+            )
         )
     if ctx.workouts:
         sections.append(

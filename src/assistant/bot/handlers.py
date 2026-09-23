@@ -19,9 +19,11 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from assistant.actions.calendar import ActionStaleError
 from assistant.ai import AIProviderError, AITaskDraft, get_ai_provider
 from assistant.ai.prompts import DRAFT_SYSTEM
 from assistant.bot.callbacks import (
+    ActionCallback,
     DraftCallback,
     FactCallback,
     ItemCallback,
@@ -30,6 +32,7 @@ from assistant.bot.callbacks import (
     SettingsCallback,
 )
 from assistant.bot.keyboards import (
+    action_kb,
     draft_kb,
     fact_kb,
     items_kb,
@@ -52,11 +55,12 @@ from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.facts import FactStatus
 from assistant.models.files import FileState, UserFile
 from assistant.models.users import User
+from assistant.services import actions as actions_service
 from assistant.services import calendar as calendar_service
-from assistant.services import chat as chat_service
 from assistant.services import facts as facts_service
 from assistant.services import files as files_service
 from assistant.services import reminders as reminders_service
+from assistant.services import turns as turns_service
 from assistant.services import workouts as workouts_service
 from assistant.services.users import upsert_user
 
@@ -707,6 +711,47 @@ async def on_draft(
     await callback.answer()
 
 
+@router.callback_query(ActionCallback.filter())
+async def on_action(
+    callback: CallbackQuery,
+    callback_data: ActionCallback,
+    session: AsyncSession,
+) -> None:
+    """Confirm/cancel a proposed mutation (SPEC §3).
+
+    Confirmation marks the durable action ``confirmed`` and executes it in
+    the same transaction; execution is idempotent and re-validates the
+    payload, ownership, and entity state. A stale target expires the action
+    instead of running.
+    """
+    user = await _ensure_user(session, callback.from_user)
+    lang = _user_lang(user)
+    action_id = callback_data.action_id
+    if callback_data.action == "confirm":
+        try:
+            action = await actions_service.confirm_action(
+                session, user, action_id
+            )
+            action, _result = await actions_service.execute_action(
+                session, user, action_id
+            )
+            text = t(lang, "action.done", summary=action.summary)
+        except ActionStaleError:
+            text = t(lang, "action.expired")
+        except ValueError:
+            text = t(lang, "action.unavailable")
+    elif callback_data.action == "cancel":
+        try:
+            await actions_service.reject_action(session, user, action_id)
+            text = t(lang, "action.rejected")
+        except ValueError:
+            text = t(lang, "action.unavailable")
+    else:
+        text = t(lang, "common.main_menu")
+    await callback.message.edit_text(text, reply_markup=main_menu_kb(lang))
+    await callback.answer()
+
+
 @router.callback_query(ItemCallback.filter())
 async def on_item(
     callback: CallbackQuery,
@@ -905,8 +950,10 @@ async def on_text(
     else:
         thinking_status = await _send_thinking(message, lang)
         try:
-            reply = await chat_service.chat(session, user, text)
+            result = await turns_service.run_turn(session, user, text)
         except AIProviderError:
+            # The engine persists nothing on provider failure: keep the
+            # user message and explain the outage in the user's language.
             await _delete_thinking(thinking_status)
             session.add(
                 ChatMessage(
@@ -921,5 +968,30 @@ async def on_text(
                 reply_markup=main_menu_kb(lang),
             )
             return
+        except LocalizableError as exc:
+            # Malformed/empty model output fails safely (SPEC §2): the user
+            # message is persisted and a localized fallback is shown.
+            await _delete_thinking(thinking_status)
+            session.add(
+                ChatMessage(
+                    user_id=user.id,
+                    role=ChatRole.user.value,
+                    content=text,
+                    source="telegram",
+                )
+            )
+            await session.flush()
+            await message.answer(
+                t(lang, exc.key, **exc.params),
+                reply_markup=main_menu_kb(lang),
+            )
+            return
         await _delete_thinking(thinking_status)
-        await message.answer(reply, reply_markup=main_menu_kb(lang))
+        await message.answer(result.reply, reply_markup=main_menu_kb(lang))
+        for action in result.proposed_actions:
+            await message.answer(
+                t(lang, "action.propose", summary=action.summary),
+                reply_markup=action_kb(action.id, lang),
+            )
+        if result.skipped_actions:
+            await message.answer(t(lang, "action.skipped"))

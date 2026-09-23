@@ -1,9 +1,9 @@
-"""Pydantic schemas for model-produced structured output (SPEC §6, §15)."""
+"""Pydantic schemas for model-produced structured output (SPEC §3, §6, §15)."""
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,3 +30,53 @@ class AITaskDraft(BaseModel):
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     # Human-readable notes about anything the model had to guess.
     ambiguities: list[str] = Field(default_factory=list)
+
+
+class ReadToolRequest(BaseModel):
+    """A request for the model to fetch app data through a bounded read tool.
+
+    Read tools are deterministic lookups over existing services (calendar,
+    reminders, workouts, files, facts). The engine enforces the bound and
+    never loops (SPEC §2, §3).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool: Literal["calendar", "reminders", "workouts", "files", "facts"]
+    query: str | None = Field(default=None, max_length=200)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class ActionProposal(BaseModel):
+    """A proposed mutation the user must confirm before it is executed.
+
+    The engine re-validates ``payload`` against the registered kind's schema
+    and only then stores it as a durable ``PendingAction`` (SPEC §3). The
+    model never applies a mutation directly.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1, max_length=64)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    # Short human-readable description shown to the user for confirmation.
+    summary: str = Field(min_length=1, max_length=200)
+
+
+class AssistantTurn(BaseModel):
+    """The typed assistant-turn protocol (SPEC §3, §11).
+
+    A single model request returns one of these shapes (fields combined as
+    needed): a direct ``reply``, ``data_requests`` to pull app data,
+    ``actions`` to propose mutations, or a ``clarification`` question when
+    the request is ambiguous. At most one extra model call is made (to fold
+    tool results into a final reply), so the turn is bounded and never runs
+    an unbounded ReAct loop (SPEC §2).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reply: str | None = Field(default=None, max_length=4000)
+    data_requests: list[ReadToolRequest] = Field(default_factory=list, max_length=4)
+    actions: list[ActionProposal] = Field(default_factory=list, max_length=3)
+    clarification: str | None = Field(default=None, max_length=1000)

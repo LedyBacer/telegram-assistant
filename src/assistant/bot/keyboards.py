@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 
 from assistant.bot.callbacks import (
+    ActionCallback,
     DraftCallback,
     FactCallback,
     ItemCallback,
@@ -112,6 +113,28 @@ def draft_kb(language: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=t(language, "draft.cancel"),
                     callback_data=DraftCallback(action="cancel").pack(),
+                ),
+            ]
+        ]
+    )
+
+
+def action_kb(action_id: int, language: str) -> InlineKeyboardMarkup:
+    """Confirm/cancel a proposed mutation (a durable PendingAction, SPEC §3)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t(language, "action.confirm"),
+                    callback_data=ActionCallback(
+                        action="confirm", action_id=action_id
+                    ).pack(),
+                ),
+                InlineKeyboardButton(
+                    text=t(language, "action.cancel"),
+                    callback_data=ActionCallback(
+                        action="cancel", action_id=action_id
+                    ).pack(),
                 ),
             ]
         ]

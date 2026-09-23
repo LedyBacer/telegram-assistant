@@ -106,6 +106,16 @@
   "draft.cancel": "❌ Cancel",
   "item.cancel": "🚫",
 
+  "action.propose": "Proposed change: {summary}\nConfirm to apply, or cancel.",
+  "action.confirm": "✅ Confirm",
+  "action.cancel": "❌ Cancel",
+  "action.done": "Done: {summary}",
+  "action.rejected": "Change cancelled.",
+  "action.expired": "That change is no longer available (the item it referred to changed).",
+  "action.unavailable": "That change is no longer available.",
+  "action.skipped": "I couldn't prepare one or more of the requested changes. Please rephrase.",
+  "chat.empty_turn": "I'm not sure I understood. Could you rephrase?",
+
   "reminders.created": "Reminder created.",
   "reminders.notification": "Reminder: {message}",
 

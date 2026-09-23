@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.ai import AIProviderError
+from assistant.ai.schemas import AssistantTurn
 from assistant.bot import handlers
 from assistant.bot.handlers import on_text
 from assistant.bot.states import TaskDraftStates
@@ -22,6 +23,7 @@ from assistant.services import calendar as calendar_service
 from assistant.services import chat as chat_service
 from assistant.services import facts as facts_service
 from assistant.services import reminders as reminders_service
+from assistant.services import turns as turns_service
 from assistant.services import workouts as workouts_service
 from assistant.services.users import upsert_user
 
@@ -33,10 +35,15 @@ async def _user(session: AsyncSession, user_id: int = 71) -> User:
 
 
 class _FakeProvider:
-    """Records the last prompt; returns a fixed reply."""
+    """Records the last prompt; returns a fixed reply / structured turn."""
 
-    def __init__(self, reply: str = "ok-reply") -> None:
+    def __init__(
+        self,
+        reply: str = "ok-reply",
+        turn: AssistantTurn | None = None,
+    ) -> None:
         self.reply = reply
+        self.turn = turn or AssistantTurn(reply=reply)
         self.system: str | None = None
         self.messages: list[dict[str, str]] | None = None
         self.embed_calls = 0
@@ -45,6 +52,13 @@ class _FakeProvider:
         self.system = system
         self.messages = list(messages)
         return self.reply
+
+    async def chat_structured(
+        self, *, system: str, messages: list[dict[str, str]], schema
+    ):
+        self.system = system
+        self.messages = list(messages)
+        return self.turn
 
     async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
         self.embed_calls += 1
@@ -58,6 +72,11 @@ class _FakeProvider:
 class _FailingProvider:
     async def chat(self, *, system: str, messages: list[dict[str, str]]) -> str:
         raise AIProviderError("chat completion failed: down")
+
+    async def chat_structured(
+        self, *, system: str, messages: list[dict[str, str]], schema
+    ):
+        raise AIProviderError("structured completion failed: down")
 
     async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
         return [[0.0] * EMBEDDING_DIMENSIONS for _ in texts]
@@ -242,7 +261,7 @@ def _no_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_on_text_uses_contextual_chat(session: AsyncSession, monkeypatch) -> None:
     _no_thinking(monkeypatch)
     monkeypatch.setattr(
-        chat_service, "get_ai_provider", lambda: _FakeProvider(reply="chat-reply")
+        turns_service, "get_ai_provider", lambda: _FakeProvider(reply="chat-reply")
     )
     message = _fake_text_message("what do I have today?")
     await on_text(message, session, _fake_state())
@@ -261,7 +280,7 @@ async def test_on_text_provider_down_gives_fallback(session: AsyncSession, monke
 
     _no_thinking(monkeypatch)
     monkeypatch.setattr(
-        chat_service, "get_ai_provider", lambda: _FailingProvider()
+        turns_service, "get_ai_provider", lambda: _FailingProvider()
     )
     message = _fake_text_message("hello there")
     await on_text(message, session, _fake_state())
@@ -279,7 +298,7 @@ async def test_on_text_still_routes_fsm_states(session: AsyncSession, monkeypatc
     await session.commit()
 
     monkeypatch.setattr(
-        chat_service, "get_ai_provider", lambda: _FakeProvider(reply="chat-reply")
+        turns_service, "get_ai_provider", lambda: _FakeProvider(reply="chat-reply")
     )
     state = SimpleNamespace(
         get_state=AsyncMock(return_value=TaskDraftStates.confirm),
