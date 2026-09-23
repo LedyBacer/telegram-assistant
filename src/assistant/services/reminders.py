@@ -96,7 +96,11 @@ async def create_item_reminders(
     if item.starts_at is None:
         return []
     created: list[Reminder] = []
+    seen: set[int] = set()
     for offset in offsets_minutes:
+        if offset in seen:
+            continue
+        seen.add(offset)
         fire_at = item.starts_at - timedelta(minutes=offset)
         reminder = await create_reminder(
             session,
@@ -180,7 +184,7 @@ async def list_reminders(
     stmt = (
         select(Reminder)
         .where(Reminder.user_id == user.id)
-        .order_by(Reminder.fire_at)
+        .order_by(Reminder.fire_at, Reminder.id)
         .limit(limit)
     )
     if status is not None:

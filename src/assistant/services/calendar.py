@@ -67,13 +67,17 @@ async def create_item(
         raise ValueError("Description is too long (max 4000 characters).")
 
     tz = _user_tz(user)
+    starts_utc = _to_utc(starts_at, tz)
+    ends_utc = _to_utc(ends_at, tz)
+    if starts_utc is not None and ends_utc is not None and ends_utc < starts_utc:
+        raise ValueError("ends_at must be after starts_at.")
     item = CalendarItem(
         user_id=user.id,
         kind=kind.value,
         title=title.strip(),
         description=description,
-        starts_at=_to_utc(starts_at, tz),
-        ends_at=_to_utc(ends_at, tz),
+        starts_at=starts_utc,
+        ends_at=ends_utc,
         due_at=_to_utc(due_at, tz),
         priority=priority.value,
         status=ItemStatus.scheduled.value,
@@ -146,6 +150,12 @@ async def update_item(
         item.due_at = _to_utc(due_at, tz)
     if priority is not UNSET:
         item.priority = priority.value
+    if (
+        item.starts_at is not None
+        and item.ends_at is not None
+        and item.ends_at < item.starts_at
+    ):
+        raise ValueError("ends_at must be after starts_at.")
     if starts_changed or title_changed:
         # Shared invariant (SPEC §4.2): linked reminders track starts_at and
         # the item's title, regardless of which surface performed the update.
@@ -240,7 +250,7 @@ async def list_items(
             await session.execute(
                 select(CalendarItem)
                 .where(*where)
-                .order_by(anchor)
+                .order_by(anchor, CalendarItem.id)
                 .limit(limit)
             )
         )

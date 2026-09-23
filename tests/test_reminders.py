@@ -253,3 +253,34 @@ async def test_list_reminders_orders_by_fire_at(session: AsyncSession) -> None:
     assert [r.id for r in all_rems] == [r2.id, r1.id]
     pending = await rem.list_reminders(session, user, status=ReminderStatus.pending)
     assert {r.id for r in pending} == {r1.id, r2.id}
+
+
+# ---------------------------------------------------------------------------
+# Domain hardening (P14): dedupe + deterministic ordering
+# ---------------------------------------------------------------------------
+
+
+async def test_create_item_reminders_dedupes_offsets(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await cal.create_item(
+        session,
+        user,
+        title="Meeting",
+        starts_at=FIRE_AT,
+    )
+    await session.commit()
+    created = await rem.create_item_reminders(
+        session, user, item, offsets_minutes=[0, 0, 30]
+    )
+    await session.commit()
+    assert len(created) == 2
+    assert sorted(r.offset_minutes for r in created) == [0, 30]
+
+
+async def test_list_reminders_tiebreak_by_id(session: AsyncSession) -> None:
+    user = await _user(session)
+    r1 = await rem.create_reminder(session, user, fire_at=FIRE_AT, message="one")
+    r2 = await rem.create_reminder(session, user, fire_at=FIRE_AT, message="two")
+    await session.commit()
+    rows = await rem.list_reminders(session, user)
+    assert [r.id for r in rows] == sorted([r1.id, r2.id])

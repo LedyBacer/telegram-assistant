@@ -304,3 +304,55 @@ async def test_clearing_start_cancels_linked_reminders(session: AsyncSession) ->
     assert created[0].status == ReminderStatus.cancelled.value
     job = await session.get(BackgroundJob, created[0].job_id)
     assert job.status == JobStatus.cancelled.value
+
+
+# ---------------------------------------------------------------------------
+# Domain hardening (P14): temporal invariants + deterministic ordering
+# ---------------------------------------------------------------------------
+
+
+async def test_create_item_rejects_end_before_start(session: AsyncSession) -> None:
+    user = await _user(session)
+    with pytest.raises(ValueError, match="ends_at"):
+        await cal.create_item(
+            session,
+            user,
+            title="Bad range",
+            starts_at=datetime(2026, 10, 1, 14, 0, tzinfo=UTC),
+            ends_at=datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+        )
+
+
+async def test_update_item_rejects_end_before_start(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await cal.create_item(
+        session,
+        user,
+        title="Range",
+        starts_at=datetime(2026, 10, 1, 14, 0, tzinfo=UTC),
+        ends_at=datetime(2026, 10, 1, 15, 0, tzinfo=UTC),
+    )
+    await session.commit()
+    with pytest.raises(ValueError, match="ends_at"):
+        await cal.update_item(
+            session,
+            user,
+            item.id,
+            ends_at=datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+        )
+    await session.commit()
+
+
+async def test_list_items_tiebreak_by_id(session: AsyncSession) -> None:
+    user = await _user(session)
+    same_start = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    a = await cal.create_item(session, user, title="A", starts_at=same_start)
+    b = await cal.create_item(session, user, title="B", starts_at=same_start)
+    await session.commit()
+    items = await cal.list_items(
+        session,
+        user,
+        start=datetime(2026, 10, 1, 0, 0, tzinfo=UTC),
+        end=datetime(2026, 10, 2, 0, 0, tzinfo=UTC),
+    )
+    assert [i.id for i in items] == sorted([a.id, b.id])

@@ -1,10 +1,31 @@
 # Progress
 
-Status: V3 PRIORITY 13 COMPLETE (typed-data mutation previews: the
-user-facing confirm/done text for every mutation kind is now derived
-deterministically from the validated payload — datetimes rendered in the
-user's timezone — instead of trusting the model's free-text summary).
-Next: V3 Priority 14 (calendar/reminder domain hardening).
+Status: V3 PRIORITY 14 COMPLETE (calendar/reminder domain hardening:
+temporal invariants are enforced — an item's end can no longer precede its
+start on create or update — and item/reminder listings are deterministically
+ordered with an id tie-break; item-linked reminders dedupe repeated offsets).
+Next: V3 Priority 15 (memory V3 replacement lifecycle).
+
+## V3 — Priority 14: calendar/reminder domain hardening
+
+Focused, low-risk hardening of the two most-mutated entities.
+
+- **Temporal invariant**: `create_item` and `update_item` now reject
+  `ends_at < starts_at` (after UTC normalization), so an item can never be
+  stored with an inverted time range. Checked against the effective
+  (post-update) values in `update_item`.
+- **Deterministic ordering**: `list_items` orders by `anchor, id` and
+  `list_reminders` by `fire_at, id`, so listings with equal anchors/fires are
+  stable across calls (previously `ORDER BY anchor` alone was
+  nondeterministic).
+- **Reminder dedupe**: `create_item_reminders` skips repeated offsets, so
+  passing `[0, 0, 30]` no longer enqueues two reminders at the same fire time.
+
+No migration.
+Tests (`test_calendar.py` "Domain hardening (P14)" — create/update end-before-
+start rejection, list tie-break; `test_reminders.py` "Domain hardening (P14)" —
+offset dedupe, list tie-break).
+Verified: 391 pytest pass, Ruff clean.
 
 ## V3 — Priority 13: mutation previews from typed data
 
