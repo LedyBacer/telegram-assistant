@@ -37,6 +37,7 @@ from assistant.services import facts as facts_service
 from assistant.services import files as files_service
 from assistant.services import turns as turns_service
 from assistant.services import workouts as workouts_service
+from assistant.services.turns import TurnState
 from assistant.services.users import upsert_user
 from test_files import _FakeEmbedder, _indexed_file
 
@@ -356,6 +357,155 @@ async def test_provider_failure_re_raises(session: AsyncSession) -> None:
     with pytest.raises(AIProviderError, match="structured down"):
         await turns_service.run_turn(session, user, "hello", provider=provider)
     await session.commit()
+    assert (await session.scalars(select(ChatMessage))).all() == []
+
+
+# ---------------------------------------------------------------------------
+# Engine: formal turn state machine
+# ---------------------------------------------------------------------------
+
+
+async def test_state_direct_reply(session: AsyncSession) -> None:
+    user = await _user(session)
+    provider = _FakeProvider(AssistantTurn(reply="ok"))
+    result = await turns_service.run_turn(
+        session, user, "hi", provider=provider
+    )
+    await session.commit()
+    assert result.state is TurnState.DIRECT_REPLY
+    assert result.model_calls == 1
+    assert provider.structured_calls == 1
+    assert provider.chat_calls == 0
+
+
+async def test_state_tool_fold(session: AsyncSession) -> None:
+    user = await _user(session)
+    await _seed(session, user)
+    turn = AssistantTurn(data_requests=[ReadToolRequest(tool="calendar")])
+    provider = _FakeProvider(turn, reply="folded")
+    result = await turns_service.run_turn(
+        session, user, "what's on my calendar?", provider=provider
+    )
+    await session.commit()
+    assert result.state is TurnState.TOOL_FOLD
+    assert result.model_calls == 2
+    assert provider.chat_calls == 1
+    assert result.reply == "folded"
+
+
+async def test_state_clarification(session: AsyncSession) -> None:
+    user = await _user(session)
+    provider = _FakeProvider(AssistantTurn(clarification="Which one?"))
+    result = await turns_service.run_turn(
+        session, user, "move it", provider=provider
+    )
+    await session.commit()
+    assert result.state is TurnState.CLARIFICATION
+    assert result.model_calls == 1
+    assert result.reply == "Which one?"
+
+
+async def test_state_empty_with_proposal_succeeds(session: AsyncSession) -> None:
+    user = await _user(session)
+    turn = AssistantTurn(
+        actions=[
+            ActionProposal(
+                kind="create_item",
+                payload={"title": "Gym", "kind": "task"},
+                summary="Create task: Gym",
+            )
+        ]
+    )
+    result = await turns_service.run_turn(
+        session, user, "gym tomorrow", provider=_FakeProvider(turn)
+    )
+    await session.commit()
+    assert result.state is TurnState.EMPTY
+    assert result.reply == ""
+    assert len(result.proposed_actions) == 1
+    # No assistant message is persisted for a proposals-only turn.
+    roles = [m.role for m in (await session.scalars(select(ChatMessage))).all()]
+    assert roles == [ChatRole.user.value]
+
+
+async def test_classification_priority() -> None:
+    # Fixed, total priority: tool fold > reply > clarification > empty.
+    assert (
+        turns_service._classify_turn(
+            AssistantTurn(
+                reply="answered", data_requests=[ReadToolRequest(tool="facts")]
+            )
+        )
+        is TurnState.DIRECT_REPLY
+    )
+    assert (
+        turns_service._classify_turn(
+            AssistantTurn(
+                reply="", data_requests=[ReadToolRequest(tool="facts")]
+            )
+        )
+        is TurnState.TOOL_FOLD
+    )
+    # A blank (whitespace-only) reply counts as no reply -> the model's
+    # data requests are honoured with the one fold call.
+    assert (
+        turns_service._classify_turn(
+            AssistantTurn(
+                reply="   ", data_requests=[ReadToolRequest(tool="facts")]
+            )
+        )
+        is TurnState.TOOL_FOLD
+    )
+    assert (
+        turns_service._classify_turn(
+            AssistantTurn(clarification="Which?")
+        )
+        is TurnState.CLARIFICATION
+    )
+    assert (
+        turns_service._classify_turn(AssistantTurn(clarification="  "))
+        is TurnState.EMPTY
+    )
+    assert turns_service._classify_turn(AssistantTurn()) is TurnState.EMPTY
+
+
+async def test_reply_wins_over_data_requests_end_to_end(
+    session: AsyncSession,
+) -> None:
+    """DIRECT_REPLY is terminal: a reply ignores any data_requests — no
+    read tools run and no second model call is made."""
+    user = await _user(session)
+    await _seed(session, user)
+    turn = AssistantTurn(
+        reply="I already know your calendar.",
+        data_requests=[ReadToolRequest(tool="calendar")],
+    )
+    provider = _FakeProvider(turn)
+    result = await turns_service.run_turn(
+        session, user, "calendar?", provider=provider
+    )
+    await session.commit()
+    assert result.state is TurnState.DIRECT_REPLY
+    assert result.model_calls == 1
+    assert provider.structured_calls == 1
+    assert provider.chat_calls == 0
+    assert result.reply == "I already know your calendar."
+    assert result.retrieved_chunks == []
+
+
+async def test_tool_fold_blank_fold_without_clarification_raises(
+    session: AsyncSession,
+) -> None:
+    """TOOL_FOLD whose fold comes back blank (and no clarification)
+    degrades to the EMPTY failure path: nothing is persisted."""
+    user = await _user(session)
+    turn = AssistantTurn(data_requests=[ReadToolRequest(tool="facts")])
+    provider = _FakeProvider(turn, reply="   ")
+    with pytest.raises(LocalizableError) as exc:
+        await turns_service.run_turn(session, user, "what do you know?", provider=provider)
+    assert exc.value.key == "chat.empty_turn"
+    await session.commit()
+    assert provider.chat_calls == 1
     assert (await session.scalars(select(ChatMessage))).all() == []
 
 

@@ -1,8 +1,44 @@
 # Progress
 
-Status: V3 PRIORITY 7 COMPLETE (no DB transaction spans AI/network I/O —
-the bot turn lifecycle is now Phase A/B/C like the worker job handlers).
-Next: V3 Priority 8 (conversational engine V3 formal turn state machine).
+Status: V3 PRIORITY 8 COMPLETE (conversational engine now follows a formal
+turn state machine — one terminal state per turn, exposed on TurnResult).
+Next: V3 Priority 9 (lookup→mutation within the bounded two-call
+architecture).
+
+## V3 — Priority 8: formal turn state machine
+
+The bounded two-call engine (`turns.run_turn`) previously branched on
+ad-hoc field combinations (`if turn.data_requests and not reply`). It now
+follows an explicit, documented state machine (module docstring in
+`src/assistant/services/turns.py`):
+
+- **`TurnState`** (StrEnum) — exactly one terminal state per turn after the
+  single structured call: `TOOL_FOLD`, `DIRECT_REPLY`, `CLARIFICATION`,
+  `EMPTY`.
+- **`_classify_turn`** — deterministic total priority: (1) `data_requests`
+  with no non-blank `reply` → `TOOL_FOLD`; (2) non-blank `reply` →
+  `DIRECT_REPLY` (wins over any `data_requests` — a reply means the model
+  answered from context, so the data requests are ignored); (3) non-blank
+  `clarification` → `CLARIFICATION`; (4) otherwise `EMPTY`.
+- **Transitions**: `TOOL_FOLD` is the only state that triggers the one
+  bounded second model call; every state is terminal — the turn never
+  re-enters the structured state, so the engine cannot loop. `EMPTY` (or a
+  blank fold with no clarification) raises `chat.empty_turn` unless the
+  turn proposed actions/facts, and Phase C is aborted before any write.
+- `TurnResult.state` exposes the settled state for observability/tests.
+
+Behavioral hardening: a whitespace-only `reply` alongside `data_requests`
+now counts as "no reply" (previously truthy, skipping the tools); a blank
+fold without clarification degrades to the same localized empty-turn
+error instead of persisting a blank assistant message.
+
+Tests (8 new): per-state end-to-end transitions
+(`test_state_direct_reply` / `_tool_fold` / `_clarification` /
+`_empty_with_proposal_succeeds`), the pure classification priority
+(`test_classification_priority`), `DIRECT_REPLY` ignoring `data_requests`
+end-to-end (`test_reply_wins_over_data_requests_end_to_end`), and the blank
+fold degradation (`test_tool_fold_blank_fold_without_clarification_raises`).
+Verified: 368 pytest pass, Ruff clean.
 
 ## V3 — Priority 7: remove long DB transactions around AI/network I/O
 

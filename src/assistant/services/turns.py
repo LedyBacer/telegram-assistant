@@ -15,12 +15,44 @@ Mutations are never applied here: a proposal is validated against the
 registered action kind's payload schema and stored as a durable
 :class:`~assistant.models.pending_actions.PendingAction`; the user confirms
 it, and execution happens in :mod:`assistant.services.actions`.
+
+Formal turn state machine
+-------------------------
+
+Lifecycle::
+
+    START
+      -> CONTEXT (Phase A: bounded context, short read tx)
+      -> STRUCTURED (Phase B: one structured call -> typed AssistantTurn)
+      -> state classified by :func:`_classify_turn`, exactly one of:
+
+         TOOL_FOLD     run the bounded read tools, then exactly ONE plain
+                       call folding their results into the final reply.
+                       Terminal: the folded reply is the assistant message.
+         DIRECT_REPLY  non-blank reply already present. Terminal: the
+                       reply is the assistant message.
+         CLARIFICATION no reply, non-blank clarification question.
+                       Terminal: the question is the assistant message.
+         EMPTY         no usable text. Raises ``chat.empty_turn`` unless
+                       the turn proposed actions/facts (then no assistant
+                       message is persisted).
+
+      -> PERSIST (Phase C: proposals, facts, messages, short write tx)
+      -> DONE
+
+    Any AIProviderError in Phase A/B aborts the turn: nothing from Phase C
+    is committed and the caller's session stays clean for its own fallback.
+
+Each state is terminal — a turn never re-enters the structured state, so
+the engine cannot loop. The ``TurnState`` of the turn is exposed on
+:class:`TurnResult` for observability.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import ValidationError
@@ -66,12 +98,50 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+class TurnState(StrEnum):
+    """Terminal state of a turn after the single structured call.
+
+    Exactly one state per turn; see the module docstring for the full
+    lifecycle. States are terminal — the engine never branches back to
+    another model call except the single TOOL_FOLD fold.
+    """
+
+    TOOL_FOLD = "tool_fold"
+    DIRECT_REPLY = "direct_reply"
+    CLARIFICATION = "clarification"
+    EMPTY = "empty"
+
+
+def _classify_turn(turn: AssistantTurn) -> TurnState:
+    """Classify a typed turn into exactly one state (deterministic).
+
+    Priority is fixed and total:
+
+    1. ``TOOL_FOLD`` — the model asked for app data it lacks: it has
+       ``data_requests`` and no non-blank ``reply``.
+    2. ``DIRECT_REPLY`` — a non-blank ``reply`` is present (it wins over
+       any ``data_requests``: a reply means the model answered from the
+       context it already had; the data requests are ignored).
+    3. ``CLARIFICATION`` — no reply, but a non-blank clarification.
+    4. ``EMPTY`` — none of the above.
+    """
+    if turn.data_requests and not (turn.reply and turn.reply.strip()):
+        return TurnState.TOOL_FOLD
+    if turn.reply and turn.reply.strip():
+        return TurnState.DIRECT_REPLY
+    if turn.clarification and turn.clarification.strip():
+        return TurnState.CLARIFICATION
+    return TurnState.EMPTY
+
+
 @dataclass(slots=True)
 class TurnResult:
     """The engine's outcome for one turn (written in Phase C and committed
     by :func:`run_turn`; the caller's final commit is a no-op)."""
 
     reply: str
+    # Terminal state the turn settled in (see :class:`TurnState`).
+    state: TurnState = TurnState.DIRECT_REPLY
     proposed_actions: list[PendingAction] = field(default_factory=list)
     # Proposals that failed re-validation and were NOT stored, with a short
     # machine reason (localized by the caller).
@@ -238,6 +308,13 @@ async def run_turn(
     - **Phase C** — short write transaction: persist proposals, proposed
       facts, and the chat messages, then ``commit()``.
 
+    The turn follows the formal state machine in the module docstring: the
+    single structured call is classified into exactly one terminal
+    :class:`TurnState` (``TOOL_FOLD`` / ``DIRECT_REPLY`` / ``CLARIFICATION``
+    / ``EMPTY``); only ``TOOL_FOLD`` triggers the one bounded second model
+    call, and the settled state is exposed on the returned
+    :class:`TurnResult`.
+
     Persists the user message and the assistant reply. Raises
     :class:`LocalizableError` (``chat.empty_turn``) when the model produced
     no usable output, and re-raises ``AIProviderError`` so the caller can
@@ -276,10 +353,13 @@ async def run_turn(
         schema=AssistantTurn,
     )
     model_calls = 1
+    state = _classify_turn(turn)
 
     reply = turn.reply
     retrieved: list[files_service.RetrievedChunk] = []
-    if turn.data_requests and not reply:
+    if state is TurnState.TOOL_FOLD:
+        # The only state that makes the second (fold) model call; the
+        # other states are terminal after this structured call.
         blocks = []
         for req in _dedupe_data_requests(turn.data_requests):
             tool_text, chunks = await run_read_tool(
@@ -338,6 +418,10 @@ async def run_turn(
         if created is not None:
             proposed_facts.append(created)
 
+    # EMPTY state (and a TOOL_FOLD fold that came back blank with no
+    # clarification) degrades safely: proposals/facts alone are a valid
+    # turn, otherwise a localized empty-turn error (Phase C is aborted
+    # before any write).
     final = reply if reply and reply.strip() else turn.clarification
     if final is None:
         if proposed_facts or proposed:
@@ -365,6 +449,7 @@ async def run_turn(
     await session.commit()
     return TurnResult(
         reply=final,
+        state=state,
         proposed_actions=proposed,
         skipped_actions=skipped,
         proposed_facts=proposed_facts,
