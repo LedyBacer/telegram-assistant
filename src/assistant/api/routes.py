@@ -612,10 +612,17 @@ async def confirm_action(
                 session, user, action_id
             )
     except ActionStaleError as exc:
+        # execute_action marked the action ``expired`` in this transaction;
+        # persist it before raising, because the session dependency rolls
+        # back uncommitted work when the handler exits with an exception
+        # (the action would otherwise stay proposed forever).
+        await session.commit()
         raise HTTPException(
             status_code=409, detail="proposal no longer applies to current data"
         ) from exc
     except ValueError as exc:
+        # Same: a malformed payload expires the action in-transaction.
+        await session.commit()
         raise _bad_request(exc) from exc
     await session.commit()
     return ActionOut.model_validate(action)
