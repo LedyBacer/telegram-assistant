@@ -120,6 +120,61 @@ async def register_upload(
     return file
 
 
+async def register_local_upload(
+    session: AsyncSession,
+    user: User,
+    *,
+    original_filename: str,
+    mime_type: str,
+    data: bytes,
+) -> UserFile:
+    """Register a Mini App upload (raw bytes) and enqueue ingestion.
+
+    The bytes are written to a server-generated storage path. There is no
+    Telegram file to download, so the ingestion pipeline reads the stored
+    bytes directly (``telegram_file_id`` is ``None`` and
+    ``extra.local_upload`` is set — see :func:`_run_pipeline`).
+    """
+    settings = get_settings()
+    size_bytes = len(data)
+    file = UserFile(
+        user_id=user.id,
+        storage_key=uuid.uuid4().hex,
+        telegram_file_id=None,
+        original_filename=(original_filename or "unnamed")[:255],
+        mime_type=(mime_type or "application/octet-stream")[:127],
+        size_bytes=size_bytes,
+        state=FileState.queued.value,
+    )
+    session.add(file)
+
+    reason = _rejection_reason(file.mime_type, size_bytes, settings.max_upload_size_bytes)
+    if reason is not None:
+        file.state = FileState.rejected.value
+        file.error = reason.key[:1000]
+        file.extra = {**(file.extra or {}), "rejection": dict(reason.params)}
+        await session.flush()
+        return file
+
+    path = _storage_path(file.storage_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    file.extra = {**(file.extra or {}), "local_upload": True}
+    await session.flush()
+
+    job = await create_job(
+        session,
+        type=FILES_INGEST_JOB_TYPE,
+        payload={"file_id": file.id},
+        user_id=user.id,
+        idempotency_key=f"file:{file.id}",
+        max_attempts=settings.job_max_attempts,
+    )
+    file.job_id = job.id
+    await session.flush()
+    return file
+
+
 def _rejection_reason(
     mime_type: str, size_bytes: int | None, max_bytes: int
 ) -> LocalizableError | None:
@@ -299,8 +354,12 @@ async def _run_pipeline(session: AsyncSession, file: UserFile) -> None:
 
     await _set_file_state(session, file, FileState.downloading)
     if file.telegram_file_id is None:
-        raise FileUploadError("File has no Telegram file id to download from.")
-    await _download_telegram_file(file.telegram_file_id, destination)
+        # Mini App upload: the bytes were already written to ``destination`` by
+        # ``register_local_upload``; skip the Telegram download.
+        if not (file.extra or {}).get("local_upload"):
+            raise FileUploadError("File has no Telegram file id to download from.")
+    else:
+        await _download_telegram_file(file.telegram_file_id, destination)
 
     await _set_file_state(session, file, FileState.extracting)
     data = destination.read_bytes()

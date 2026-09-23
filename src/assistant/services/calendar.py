@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.models.calendar_items import (
@@ -198,9 +198,16 @@ async def list_items(
     status: ItemStatus = ItemStatus.scheduled,
     limit: int = _ITEM_LIMIT,
 ) -> list[CalendarItem]:
-    """List scheduled items whose ``starts_at`` falls within [start, end)."""
+    """List scheduled items anchored to [start, end) via ``starts_at`` (or
+    ``due_at`` when the item has no explicit start).
+
+    The Mini App calendar groups items by their anchor date — the start when
+    set, otherwise the due date. The query must mirror that, or a task created
+    with only a due date would vanish from the month view.
+    """
     start_utc = _to_utc(start, _user_tz(user))
     end_utc = _to_utc(end, _user_tz(user))
+    anchor = func.coalesce(CalendarItem.starts_at, CalendarItem.due_at)
     items = (
         (
             await session.execute(
@@ -208,10 +215,10 @@ async def list_items(
                 .where(
                     CalendarItem.user_id == user.id,
                     CalendarItem.status == status.value,
-                    CalendarItem.starts_at >= start_utc,
-                    CalendarItem.starts_at < end_utc,
+                    anchor >= start_utc,
+                    anchor < end_utc,
                 )
-                .order_by(CalendarItem.starts_at)
+                .order_by(anchor)
                 .limit(limit)
             )
         )

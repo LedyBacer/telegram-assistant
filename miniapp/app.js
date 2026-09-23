@@ -1,556 +1,920 @@
-/* Smart Assistant Mini App: vanilla JS + Tailwind (SPEC §18).
- * Every request sends the raw Telegram.WebApp.initData; the backend verifies
- * its HMAC signature before trusting the identity. All user-supplied strings
- * are rendered through textContent, never innerHTML.
- * All UI strings come from the backend locale dictionary (single source of
- * truth: /api/v1/i18n/{locale}); nothing is hard-coded here. */
-(() => {
-  "use strict";
+/* Smart Assistant Mini App — entry point (vanilla ES modules, no build).
+ *
+ * Structure: js/telegram.js (only window.Telegram access) · js/api.js (API
+ * client) · js/state.js (state + i18n) · js/ui.js (DOM/UI kit). This file
+ * owns navigation and the section views. Every screen renders through the
+ * safe el() builder; user content is always appended as text.
+ */
 
-  const tg = window.Telegram?.WebApp;
-  if (tg) {
-    tg.ready();
-    tg.expand();
+import { api, apiUpload } from "./js/api.js";
+import {
+  applyTheme,
+  initWebApp,
+  onThemeChanged,
+  backButtonShow,
+  backButtonHide,
+  backButtonOn,
+  haptic,
+} from "./js/telegram.js";
+import { state, S, loadMe, setLanguage, localeCode } from "./js/state.js";
+import {
+  el,
+  card,
+  badge,
+  btn,
+  field,
+  input,
+  loading,
+  empty,
+  errorState,
+  toast,
+  openSheet,
+  confirmDialog,
+  pickDateTime,
+  pickTime,
+  fmtDT,
+  fmtBytes,
+} from "./js/ui.js";
+
+const viewEl = document.getElementById("view");
+const navEl = document.getElementById("nav");
+const whoEl = document.getElementById("who");
+
+const TABS = [
+  ["today", "miniapp.tab_today"],
+  ["upcoming", "miniapp.tab_upcoming"],
+  ["new", "miniapp.tab_new"],
+  ["workouts", "miniapp.tab_workouts"],
+  ["files", "miniapp.tab_files"],
+  ["facts", "miniapp.tab_facts"],
+  ["settings", "miniapp.tab_settings"],
+];
+
+const TIMEZONES = [
+  "UTC",
+  "Europe/Berlin",
+  "Europe/Madrid",
+  "Europe/Paris",
+  "Europe/London",
+  "Europe/Kyiv",
+  "Europe/Moscow",
+  "America/New_York",
+  "America/Chicago",
+  "America/Los_Angeles",
+  "Asia/Tokyo",
+  "Asia/Shanghai",
+  "Asia/Karachi",
+  "Asia/Dubai",
+  "Australia/Sydney",
+];
+
+const PRIORITY_TONES = { high: "high", normal: "normal", low: "low" };
+const PRIORITY_LABELS = {
+  high: "miniapp.new_high",
+  normal: "miniapp.new_normal",
+  low: "miniapp.new_low",
+};
+
+/* ------------------------------------------------------------------ */
+/* Navigation                                                          */
+/* ------------------------------------------------------------------ */
+
+function buildNav() {
+  navEl.replaceChildren(
+    ...TABS.map(([key, keyStr]) =>
+      el(
+        "button",
+        {
+          type: "button",
+          class: `nav-btn${key === state.tab ? " is-active" : ""}`,
+          "aria-current": key === state.tab ? "page" : null,
+          "data-tab": key,
+          onclick: () => {
+            if (state.tab === key) return;
+            state.tab = key;
+            haptic();
+            render();
+          },
+        },
+        el("span", { class: "nav-icon", "aria-hidden": "true" }, iconFor(key)),
+        el("span", { class: "nav-label" }, S(keyStr))
+      )
+    )
+  );
+  updateBackButton();
+}
+
+/** Emojis are part of the localized tab strings; keep an iconless fallback. */
+function iconFor(key) {
+  const label = S(TABS.find(([k]) => k === key)?.[1] ?? key);
+  const match = label.match(/^(\p{Extended_Pictographic}+)/u);
+  return match ? match[1] : "•";
+}
+
+function updateBackButton() {
+  if (state.tab === "today") backButtonHide();
+  else backButtonShow();
+}
+
+/* ------------------------------------------------------------------ */
+/* View dispatch                                                       */
+/* ------------------------------------------------------------------ */
+
+const VIEWS = {
+  today: viewToday,
+  upcoming: viewUpcoming,
+  new: viewNew,
+  workouts: viewWorkouts,
+  files: viewFiles,
+  facts: viewFacts,
+  settings: viewSettings,
+};
+
+async function render() {
+  buildNav();
+  viewEl.replaceChildren(loading());
+  try {
+    await VIEWS[state.tab](viewEl);
+  } catch (e) {
+    const key = e && e.status === 401 ? "miniapp.status_auth" : "miniapp.error_load";
+    viewEl.replaceChildren(errorState(S(key), () => render()));
   }
-  const INIT_DATA = tg?.initData || "";
+}
 
-  const statusEl = document.getElementById("status");
-  const viewEl = document.getElementById("view");
-  const tabsEl = document.getElementById("tabs");
-  const whoEl = document.getElementById("who");
+/* ------------------------------------------------------------------ */
+/* Items (shared card)                                                 */
+/* ------------------------------------------------------------------ */
 
-  /* Locale dictionary, loaded from the API for the user's language. */
-  let STR = {};
-  const S = (key, params) =>
-    String(STR[key] !== undefined ? STR[key] : key).replace(
-      /\{(\w+)\}/g,
-      (m, k) => (params && params[k] !== undefined ? String(params[k]) : m)
-    );
-
-  const TAB_KEYS = [
-    ["today", "miniapp.tab_today"],
-    ["upcoming", "miniapp.tab_upcoming"],
-    ["new", "miniapp.tab_new"],
-    ["workouts", "miniapp.tab_workouts"],
-    ["files", "miniapp.tab_files"],
-    ["facts", "miniapp.tab_facts"],
-    ["settings", "miniapp.tab_settings"],
-  ];
-  let tab = "today";
-  let me = null;
-
-  /* ------------------------------------------------------------------ */
-  /* API helpers                                                         */
-  /* ------------------------------------------------------------------ */
-
-  async function api(path, method = "GET", body) {
-    const res = await fetch(path, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Telegram-Init-Data": INIT_DATA,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    if (res.status === 401) {
-      throw new Error(S("miniapp.status_auth"));
-    }
-    if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
-      try {
-        const data = await res.json();
-        if (data.detail) detail = String(data.detail);
-      } catch {
-        /* keep default detail */
-      }
-      throw new Error(detail);
-    }
-    if (res.status === 204) return null;
-    return res.json();
-  }
-
-  function setStatus(text, isError = false) {
-    statusEl.textContent = text;
-    statusEl.className = isError ? "text-red-400" : "text-slate-400";
-    if (!isError) {
-      setTimeout(() => {
-        if (statusEl.textContent === text) {
-          statusEl.textContent = "";
+function itemCard(item) {
+  const actions = [];
+  if (item.status === "scheduled") {
+    actions.push(
+      btn(S("miniapp.btn_done"), async () => {
+        try {
+          await api(`/api/v1/items/${item.id}/complete`, "POST");
+          toast(S("miniapp.saved"));
+          render();
+        } catch {
+          toast(S("miniapp.error_generic"), "error");
         }
-      }, 4000);
-    }
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* DOM helpers                                                         */
-  /* ------------------------------------------------------------------ */
-
-  function el(tag, attrs = {}, ...children) {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(attrs)) {
-      if (key === "class") node.className = value;
-      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-      else if (value !== null && value !== undefined) node.setAttribute(key, value);
-    }
-    for (const child of children.flat()) {
-      if (child === null || child === undefined) continue;
-      node.append(child.nodeType ? child : document.createTextNode(String(child)));
-    }
-    return node;
-  }
-
-  const card = (children) =>
-    el("div", { class: "bg-slate-900 rounded-xl p-3 space-y-2 border border-slate-800" }, children);
-
-  const badge = (text, color) =>
-    el("span", { class: `text-xs px-2 py-0.5 rounded-full ${color}` }, text);
-
-  const btn = (label, onClick, cls = "bg-slate-800 hover:bg-slate-700") =>
-    el(
-      "button",
-      { class: `text-sm px-3 py-1.5 rounded-lg ${cls}`, onclick: onClick },
-      label
+      }, { variant: "primary" })
     );
+    actions.push(
+      btn(S("miniapp.btn_cancel"), async () => {
+        try {
+          await api(`/api/v1/items/${item.id}/cancel`, "POST");
+          toast(S("miniapp.saved"));
+          render();
+        } catch {
+          toast(S("miniapp.error_generic"), "error");
+        }
+      })
+    );
+  }
+  actions.push(
+    btn(S("miniapp.btn_delete"), async () => {
+      const ok = await confirmDialog(S("miniapp.confirm_delete", { title: item.title }));
+      if (!ok) return;
+      try {
+        await api(`/api/v1/items/${item.id}`, "DELETE");
+        toast(S("miniapp.deleted"));
+        render();
+      } catch {
+        toast(S("miniapp.error_generic"), "error");
+      }
+    }, { variant: "danger" })
+  );
 
-  const input = (attrs) =>
-    el("input", Object.assign({ class: "w-full bg-slate-800 rounded-lg px-3 py-2 text-sm" }, attrs));
+  const meta = [];
+  if (item.starts_at) meta.push(el("span", {}, S("miniapp.item_starts", { when: fmtDT(item.starts_at) })));
+  if (item.due_at) meta.push(el("span", {}, S("miniapp.item_due", { when: fmtDT(item.due_at) })));
+  if (item.status !== "scheduled") {
+    meta.push(badge(S(`miniapp.status_${item.status}`), item.status === "completed" ? "ok" : "muted"));
+  }
 
-  const select = (options, value) => {
-    const node = el(
-      "select",
-      { class: "w-full bg-slate-800 rounded-lg px-3 py-2 text-sm" },
-      options.map(([optValue, label]) =>
-        el("option", { value: optValue, ...(optValue === value ? { selected: "selected" } : {}) }, label)
+  return card(
+    el("div", { class: "item-head" },
+      el("span", { class: "item-icon", "aria-hidden": "true" }, item.kind === "event" ? "📌" : "✅"),
+      el("span", { class: "item-title" }, item.title),
+      badge(S(PRIORITY_LABELS[item.priority] || PRIORITY_LABELS.normal), PRIORITY_TONES[item.priority] || "normal")
+    ),
+    meta.length ? el("div", { class: "item-meta" }, ...meta) : null,
+    item.description ? el("p", { class: "item-desc" }, item.description) : null,
+    el("div", { class: "item-actions" }, ...actions)
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Calendar (Today)                                                    */
+/* ------------------------------------------------------------------ */
+
+const pad2 = (n) => String(n).padStart(2, "0");
+const dateKey = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+function ensureCalendarState() {
+  if (!state.month) {
+    const now = new Date();
+    state.month = { y: now.getFullYear(), m: now.getMonth() };
+  }
+  if (!state.selectedDate) state.selectedDate = dateKey(new Date());
+}
+
+async function viewToday(view) {
+  ensureCalendarState();
+  const { y, m } = state.month;
+  const start = new Date(y, m, 1, 0, 0, 0, 0);
+  const end = new Date(y, m + 1, 0, 23, 59, 59, 999);
+  const items = await api(
+    `/api/v1/items?start=${start.toISOString()}&end=${end.toISOString()}`
+  );
+
+  const byDay = new Map();
+  for (const item of items) {
+    const anchor = item.starts_at || item.due_at;
+    if (!anchor) continue;
+    const d = new Date(anchor);
+    if (Number.isNaN(d.getTime())) continue;
+    const key = dateKey(d);
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(item);
+  }
+
+  const grid = buildMonthGrid(y, m, byDay);
+  const dayItems = byDay.get(state.selectedDate) || [];
+  const dayHeader = el("h2", { class: "view-subtitle" },
+    new Intl.DateTimeFormat(localeCode(), {
+      weekday: "long", day: "numeric", month: "long",
+    }).format(new Date(`${state.selectedDate}T00:00:00`))
+  );
+
+  view.replaceChildren(
+    grid,
+    dayHeader,
+    dayItems.length
+      ? el("div", { class: "list" }, ...dayItems.map(itemCard))
+      : empty(S("miniapp.calendar_empty_day"))
+  );
+}
+
+function buildMonthGrid(y, m, byDay) {
+  const first = new Date(y, m, 1);
+  const firstWeekday = (first.getDay() + 6) % 7; // Monday-based
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const todayKey = dateKey(new Date());
+
+  const weekdays = [...Array(7).keys()].map((i) =>
+    el("span", { class: "cal-weekday", "aria-hidden": "true" },
+      new Intl.DateTimeFormat(localeCode(), { weekday: "narrow" }).format(new Date(2021, 0, 4 + i)))
+  );
+
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i++) {
+    cells.push(el("span", { class: "cal-day is-out", "aria-hidden": "true" }));
+  }
+  for (let day = 1; day <= daysInMonth; day++) {
+    const key = dateKey(new Date(y, m, day));
+    cells.push(
+      el(
+        "button",
+        {
+          type: "button",
+          class: [
+            "cal-day",
+            key === todayKey ? "is-today" : "",
+            key === state.selectedDate ? "is-selected" : "",
+            byDay.has(key) ? "has-events" : "",
+          ].filter(Boolean).join(" "),
+          "data-date": key,
+          "aria-label": new Intl.DateTimeFormat(localeCode(), { day: "numeric", month: "long", year: "numeric" }).format(new Date(y, m, day)),
+          "aria-pressed": key === state.selectedDate ? "true" : "false",
+          onclick: () => {
+            state.selectedDate = key;
+            haptic();
+            render();
+          },
+        },
+        el("span", { class: "cal-day-num" }, String(day)),
+        el("span", { class: "cal-day-dot", "aria-hidden": "true" })
       )
     );
-    node.value = value;
-    return node;
+  }
+
+  const shift = (delta) => {
+    const d = new Date(y, m + delta, 1);
+    state.month = { y: d.getFullYear(), m: d.getMonth() };
+    render();
+  };
+  const monthLabel = new Intl.DateTimeFormat(localeCode(), { month: "long", year: "numeric" }).format(first);
+
+  return el("div", { class: "calendar" },
+    el("div", { class: "cal-header" },
+      btn("‹", () => shift(-1), { variant: "ghost", ariaLabel: S("miniapp.cal_prev") }),
+      el("span", { class: "cal-month" }, monthLabel),
+      btn("›", () => shift(1), { variant: "ghost", ariaLabel: S("miniapp.cal_next") }),
+      btn(S("miniapp.cal_today"), () => {
+        const now = new Date();
+        state.month = { y: now.getFullYear(), m: now.getMonth() };
+        state.selectedDate = dateKey(now);
+        haptic();
+        render();
+      }, { variant: "ghost" })
+    ),
+    el("div", { class: "cal-weekdays" }, ...weekdays),
+    el("div", { class: "cal-grid" }, ...cells)
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Upcoming                                                            */
+/* ------------------------------------------------------------------ */
+
+async function viewUpcoming(view) {
+  const items = await api("/api/v1/calendar/upcoming?days=7");
+  view.replaceChildren(
+    items.length
+      ? el("div", { class: "list" }, ...items.map(itemCard))
+      : empty(S("miniapp.empty_upcoming"))
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* New task / event                                                    */
+/* ------------------------------------------------------------------ */
+
+async function viewNew(view) {
+  const formState = {
+    title: "",
+    description: "",
+    kind: "task",
+    priority: "normal",
+    startsAt: null,
+    dueAt: null,
+    reminders: "",
   };
 
-  const fmtDT = (iso) =>
-    iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+  const titleInput = input({
+    placeholder: S("miniapp.new_title_ph"),
+    "aria-label": S("miniapp.new_title"),
+  });
+  const descInput = input({
+    placeholder: S("miniapp.new_description_ph"),
+    "aria-label": S("miniapp.new_description"),
+  });
+  const remindInput = input({
+    placeholder: S("miniapp.new_reminders_ph"),
+    "aria-label": S("miniapp.new_reminders"),
+    inputmode: "numeric",
+  });
 
-  const PRIORITY_COLORS = {
-    high: "bg-red-500/20 text-red-300",
-    normal: "bg-slate-600/40 text-slate-300",
-    low: "bg-slate-700/40 text-slate-400",
-  };
-
-  /* ------------------------------------------------------------------ */
-  /* Item rendering + actions                                            */
-  /* ------------------------------------------------------------------ */
-
-  function itemCard(item) {
-    const actions = [];
-    if (item.status === "scheduled") {
-      actions.push(
-        btn(S("miniapp.btn_done"), async () => {
-          try {
-            await api(`/api/v1/items/${item.id}/complete`, "POST");
-            await render();
-          } catch (e) {
-            setStatus(e.message, true);
-          }
-        }, "bg-emerald-600 hover:bg-emerald-500"),
-        btn(S("miniapp.btn_cancel"), async () => {
-          try {
-            await api(`/api/v1/items/${item.id}/cancel`, "POST");
-            await render();
-          } catch (e) {
-            setStatus(e.message, true);
-          }
-        }),
-        btn(S("miniapp.btn_delete"), async () => {
-          try {
-            await api(`/api/v1/items/${item.id}`, "DELETE");
-            await render();
-          } catch (e) {
-            setStatus(e.message, true);
-          }
-        }, "bg-red-900/60 hover:bg-red-800")
-      );
-    }
-    return card([
-      el(
-        "div",
-        { class: "flex items-center justify-between gap-2" },
-        el("div", { class: "flex items-center gap-2 min-w-0" },
-          el("span", {}, item.kind === "event" ? "📌" : "✅"),
-          el("span", { class: "font-medium truncate" }, item.title)
-        ),
-        badge(item.priority, PRIORITY_COLORS[item.priority] || PRIORITY_COLORS.normal)
-      ),
-      el("div", { class: "text-xs text-slate-400 space-x-2" },
-        item.starts_at ? el("span", {}, S("miniapp.item_starts", { when: fmtDT(item.starts_at) })) : null,
-        item.due_at ? el("span", {}, S("miniapp.item_due", { when: fmtDT(item.due_at) })) : null,
-        item.status !== "scheduled" ? badge(item.status, "bg-slate-700 text-slate-300") : null
-      ),
-      actions.length ? el("div", { class: "flex gap-2" }, actions) : null
-    ]);
-  }
-
-  const empty = (text) => el("p", { class: "text-slate-500 text-sm" }, text);
-
-  /* ------------------------------------------------------------------ */
-  /* Views                                                               */
-  /* ------------------------------------------------------------------ */
-
-  async function viewToday() {
-    const items = await api("/api/v1/calendar/today");
-    viewEl.append(items.length ? items.map(itemCard) : empty(S("miniapp.empty_today")));
-  }
-
-  async function viewUpcoming() {
-    const items = await api("/api/v1/calendar/upcoming?days=7");
-    viewEl.append(items.length ? items.map(itemCard) : empty(S("miniapp.empty_upcoming")));
-  }
-
-  function viewNew() {
-    const title = input({ type: "text", placeholder: S("miniapp.new_title_ph") });
-    const kind = select([["task", S("miniapp.new_task")], ["event", S("miniapp.new_event")]], "task");
-    const starts = input({ type: "datetime-local" });
-    const due = input({ type: "datetime-local" });
-    const priority = select(
-      [["low", S("miniapp.new_low")], ["normal", S("miniapp.new_normal")], ["high", S("miniapp.new_high")]],
-      "normal"
-    );
-    const remind = input({
-      type: "text",
-      placeholder: S("miniapp.new_reminders_ph")
-    });
-
-    viewEl.append(
-      card([
-        el("h2", { class: "font-semibold" }, S("miniapp.new_title")),
-        title,
-        el("div", { class: "grid grid-cols-2 gap-2" }, kind, priority),
-        el("div", { class: "grid grid-cols-1 gap-2" },
-          el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.new_starts"), starts),
-          el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.new_due"), due)
-        ),
-        el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.new_reminders"), remind),
-        btn(S("miniapp.save"), async () => {
-          const offsets = remind.value
-            .split(",")
-            .map((s) => s.trim())
-            .filter((s) => s !== "")
-            .map((s) => Number(s))
-            .filter((n) => Number.isInteger(n));
-          try {
-            await api("/api/v1/items", "POST", {
-              title: title.value,
-              kind: kind.value,
-              starts_at: starts.value ? new Date(starts.value).toISOString() : null,
-              due_at: due.value ? new Date(due.value).toISOString() : null,
-              priority: priority.value,
-              remind_offsets_minutes: offsets,
-            });
-            setStatus(S("miniapp.saved"));
-            tab = "today";
-            await render();
-          } catch (e) {
-            setStatus(e.message, true);
-          }
-        }, "bg-indigo-600 hover:bg-indigo-500")
-      ])
-    );
-  }
-
-  async function viewWorkouts() {
-    const [stats, logs] = await Promise.all([
-      api("/api/v1/workouts/stats"),
-      api("/api/v1/workouts?limit=10"),
-    ]);
-    viewEl.append(
-      card([
-        el("h2", { class: "font-semibold" }, S("miniapp.workouts_stats")),
-        el("div", { class: "grid grid-cols-2 gap-2 text-sm" },
-          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.total)), el("div", { class: "text-xs text-slate-400" }, S("miniapp.stats_total"))),
-          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.total_minutes)), el("div", { class: "text-xs text-slate-400" }, S("miniapp.stats_minutes"))),
-          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.this_week)), el("div", { class: "text-xs text-slate-400" }, S("miniapp.stats_week"))),
-          el("div", {}, el("div", { class: "text-2xl font-bold" }, String(stats.current_streak)), el("div", { class: "text-xs text-slate-400" }, S("miniapp.stats_streak")))
-        )
-      ])
-    );
-
-    const name = input({ type: "text", placeholder: S("miniapp.workout_name_ph") });
-    const when = input({ type: "datetime-local" });
-    const minutes = input({ type: "number", placeholder: S("miniapp.minutes_ph"), min: "1" });
-    const effort = select(
-      [
-        ["", S("miniapp.effort")],
-        ...Array.from({ length: 10 }, (_, i) => [String(i + 1), `${i + 1} / 10`]),
+  const kindBtn = pickerBtn(S("miniapp.new_kind"), S("miniapp.new_task"), async () => {
+    const chosen = await openSheet({
+      title: S("miniapp.new_kind"),
+      value: formState.kind,
+      options: [
+        { value: "task", label: S("miniapp.new_task") },
+        { value: "event", label: S("miniapp.new_event") },
       ],
-      ""
-    );
-    viewEl.append(
-      card([
-        el("h2", { class: "font-semibold" }, S("miniapp.workout_log")),
-        name,
-        el("div", { class: "grid grid-cols-2 gap-2" },
-          el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.when"), when),
-          el("label", { class: "text-xs text-slate-400 space-y-1" }, S("miniapp.minutes"), minutes)
-        ),
-        effort,
-        btn(S("miniapp.log"), async () => {
-          try {
-            await api("/api/v1/workouts", "POST", {
-              name: name.value,
-              started_at: when.value ? new Date(when.value).toISOString() : null,
-              duration_minutes: minutes.value ? Number(minutes.value) : null,
-              perceived_effort: effort.value ? Number(effort.value) : null,
-            });
-            setStatus(S("miniapp.workout_logged"));
-            await render();
-          } catch (e) {
-            setStatus(e.message, true);
-          }
-        }, "bg-indigo-600 hover:bg-indigo-500")
-      ])
-    );
-
-    viewEl.append(el("h2", { class: "font-semibold" }, S("miniapp.recent")));
-    viewEl.append(
-      logs.length
-        ? logs.map((w) =>
-            card([
-              el("div", { class: "flex justify-between" },
-                el("span", { class: "font-medium" }, w.name),
-                el("span", { class: "text-xs text-slate-400" }, fmtDT(w.started_at))
-              ),
-              el("div", { class: "text-xs text-slate-400" },
-                [w.duration_minutes ? S("miniapp.minutes_value", { minutes: w.duration_minutes }) : null,
-                 w.perceived_effort ? S("miniapp.effort_value", { value: w.perceived_effort }) : null]
-                  .filter(Boolean).join(" · ") || w.status
-              )
-            ])
-          )
-        : empty(S("miniapp.workouts_empty"))
-    );
-  }
-
-  async function viewFiles() {
-    const query = input({ type: "text", placeholder: S("miniapp.search_ph") });
-    const results = el("div", { class: "space-y-2" });
-    const doSearch = async () => {
-      const q = query.value.trim();
-      if (!q) return;
-      results.replaceChildren(empty(S("miniapp.searching")));
-      try {
-        const hits = await api(`/api/v1/files/search?q=${encodeURIComponent(q)}&top_k=5`);
-        results.replaceChildren(
-          hits.length
-            ? hits.map((c) =>
-                card([
-                  el("div", { class: "text-xs text-indigo-300" }, S("miniapp.search_chunk", { file: c.file_name, position: c.position + 1 })),
-                  el("p", { class: "text-sm text-slate-300" }, c.text.length > 300 ? c.text.slice(0, 300) + "…" : c.text)
-                ])
-              )
-            : empty(S("miniapp.search_empty"))
-        );
-      } catch (e) {
-        results.replaceChildren(empty(e.message));
-      }
-    };
-    viewEl.append(
-      card([
-        el("h2", { class: "font-semibold" }, S("miniapp.search")),
-        el("div", { class: "flex gap-2" }, query, btn(S("miniapp.search"), doSearch, "bg-indigo-600 hover:bg-indigo-500"))
-      ]),
-      results
-    );
-
-    const files = await api("/api/v1/files?limit=20");
-    viewEl.append(el("h2", { class: "font-semibold" }, S("miniapp.my_files")));
-    viewEl.append(
-      files.length
-        ? files.map((f) =>
-            card([
-              el("div", { class: "flex justify-between items-center gap-2" },
-                el("span", { class: "font-medium truncate" }, f.original_filename),
-                badge(f.state, f.state === "indexed" ? "bg-emerald-600/40 text-emerald-300" : f.state === "failed" || f.state === "rejected" ? "bg-red-600/40 text-red-300" : "bg-amber-600/40 text-amber-300")
-              ),
-              el("div", { class: "text-xs text-slate-400" },
-                fmtDT(f.created_at) + (f.error ? ` — ${f.error}` : "")),
-              el("div", {}, btn(S("miniapp.btn_delete"), async () => {
-                try {
-                  await api(`/api/v1/files/${f.id}`, "DELETE");
-                  await render();
-                } catch (e) {
-                  setStatus(e.message, true);
-                }
-              }, "bg-red-900/60 hover:bg-red-800"))
-            ])
-          )
-        : empty(S("miniapp.files_empty"))
-    );
-  }
-
-  async function viewFacts() {
-    const value = input({ type: "text", placeholder: S("miniapp.facts_value_ph") });
-    const category = input({ type: "text", placeholder: S("miniapp.facts_category_ph") });
-    viewEl.append(
-      card([
-        el("h2", { class: "font-semibold" }, S("miniapp.facts_add")),
-        value,
-        category,
-        btn(S("miniapp.propose"), async () => {
-          try {
-            await api("/api/v1/facts", "POST", {
-              value: value.value,
-              category: category.value || null,
-            });
-            setStatus(S("miniapp.proposed"));
-            await render();
-          } catch (e) {
-            setStatus(e.message, true);
-          }
-        }, "bg-indigo-600 hover:bg-indigo-500")
-      ])
-    );
-
-    const facts = await api("/api/v1/facts?limit=50");
-    viewEl.append(el("h2", { class: "font-semibold" }, S("miniapp.my_facts")));
-    viewEl.append(
-      facts.length
-        ? facts.map((f) =>
-            card([
-              el("div", { class: "flex justify-between items-center gap-2" },
-                el("span", { class: "text-xs text-slate-400" }, f.category),
-                badge(f.status, f.status === "confirmed" ? "bg-emerald-600/40 text-emerald-300" : f.status === "proposed" ? "bg-amber-600/40 text-amber-300" : "bg-slate-700 text-slate-400")
-              ),
-              el("p", { class: "text-sm" }, f.value),
-              el("div", { class: "flex gap-2" },
-                f.status === "proposed" ? btn(S("miniapp.confirm"), async () => {
-                  try {
-                    await api(`/api/v1/facts/${f.id}/confirm`, "POST");
-                    await render();
-                  } catch (e) {
-                    setStatus(e.message, true);
-                  }
-                }, "bg-emerald-600 hover:bg-emerald-500") : null,
-                f.status === "proposed" ? btn(S("miniapp.reject"), async () => {
-                  try {
-                    await api(`/api/v1/facts/${f.id}/reject`, "POST");
-                    await render();
-                  } catch (e) {
-                    setStatus(e.message, true);
-                  }
-                }) : null,
-                btn(S("miniapp.btn_delete"), async () => {
-                  try {
-                    await api(`/api/v1/facts/${f.id}`, "DELETE");
-                    await render();
-                  } catch (e) {
-                    setStatus(e.message, true);
-                  }
-                }, "bg-red-900/60 hover:bg-red-800")
-              )
-            ])
-          )
-        : empty(S("miniapp.facts_empty"))
-    );
-  }
-
-  async function viewSettings() {
-    const settings = me.settings;
-    const timezones = [
-      "UTC", "Europe/Berlin", "Europe/Madrid", "Europe/Paris", "Europe/London",
-      "Europe/Kyiv", "Europe/Moscow", "America/New_York", "America/Chicago",
-      "America/Los_Angeles", "Asia/Tokyo", "Asia/Shanghai", "Asia/Karachi",
-      "Australia/Sydney",
-    ];
-    const tz = select(timezones.map((z) => [z, z]), settings.timezone);
-    if (!timezones.includes(settings.timezone)) {
-      tz.append(el("option", { value: settings.timezone }, settings.timezone));
-      tz.value = settings.timezone;
+    });
+    if (chosen) {
+      formState.kind = chosen;
+      kindBtn.querySelector(".picker-value").textContent =
+        chosen === "task" ? S("miniapp.new_task") : S("miniapp.new_event");
     }
-    const digest = input({ type: "time", value: settings.digest_time.slice(0, 5) });
-    const motivation = el("input", { type: "checkbox" });
-    motivation.checked = settings.motivation_enabled;
-    const languages = await api("/api/v1/i18n/languages");
-    const language = select(
-      languages.map((l) => [l.code, l.label]),
-      settings.language
-    );
-
-    viewEl.append(
-      card([
-        el("h2", { class: "font-semibold" }, S("miniapp.settings")),
-        el("label", { class: "text-xs text-slate-400 space-y-1 block" }, S("miniapp.settings_timezone"), tz),
-        el("label", { class: "text-xs text-slate-400 space-y-1 block" }, S("miniapp.settings_digest"), digest),
-        el("label", { class: "text-xs text-slate-400 space-y-1 block" }, S("miniapp.settings_language"), language),
-        el("label", { class: "flex items-center gap-2 text-sm" }, motivation, S("miniapp.settings_motivation")),
-        btn(S("miniapp.save"), async () => {
-          try {
-            const saved = await api("/api/v1/settings", "PATCH", {
-              timezone: tz.value,
-              digest_time: digest.value,
-              motivation_enabled: motivation.checked,
-              language: language.value,
-            });
-            me.settings = saved;
-            // Reload the locale dictionary if the language changed so the
-            // whole UI switches immediately, without a divergent local copy.
-            if (saved.language && saved.language !== me.language) {
-              me.language = saved.language;
-              STR = await api(`/api/v1/i18n/${saved.language}`);
-            }
-            setStatus(S("miniapp.settings_saved"));
-            await render();
-          } catch (e) {
-            setStatus(e.message, true);
-          }
-        }, "bg-indigo-600 hover:bg-indigo-500")
-      ])
-    );
-  }
-
-  /* ------------------------------------------------------------------ */
-  /* Boot                                                                */
-  /* ------------------------------------------------------------------ */
-
-  const VIEWS = {
-    today: viewToday,
-    upcoming: viewUpcoming,
-    new: viewNew,
-    workouts: viewWorkouts,
-    files: viewFiles,
-    facts: viewFacts,
-    settings: viewSettings,
-  };
-
-  async function render() {
-    viewEl.replaceChildren();
-    tabsEl.replaceChildren();
-    for (const [key, keyStr] of TAB_KEYS) {
-      const active = key === tab;
-      tabsEl.append(
-        btn(S(keyStr), () => {
-          tab = key;
-          render();
-        }, active ? "bg-indigo-600 hover:bg-indigo-500" : "bg-slate-800 hover:bg-slate-700")
-      );
+  });
+  const priorityBtn = pickerBtn(S("miniapp.new_priority"), S("miniapp.new_normal"), async () => {
+    const chosen = await openSheet({
+      title: S("miniapp.new_priority"),
+      value: formState.priority,
+      options: [
+        { value: "low", label: S("miniapp.new_low") },
+        { value: "normal", label: S("miniapp.new_normal") },
+        { value: "high", label: S("miniapp.new_high") },
+      ],
+    });
+    if (chosen) {
+      formState.priority = chosen;
+      priorityBtn.querySelector(".picker-value").textContent = S(PRIORITY_LABELS[chosen]);
     }
-    await VIEWS[tab]();
-  }
+  });
+  const startsBtn = pickerBtn(S("miniapp.new_starts"), S("miniapp.not_set"), async () => {
+    const iso = await pickDateTime(formState.startsAt);
+    if (iso) {
+      formState.startsAt = iso;
+      startsBtn.querySelector(".picker-value").textContent = fmtDT(iso);
+    }
+  });
+  const dueBtn = pickerBtn(S("miniapp.new_due"), S("miniapp.not_set"), async () => {
+    const iso = await pickDateTime(formState.dueAt);
+    if (iso) {
+      formState.dueAt = iso;
+      dueBtn.querySelector(".picker-value").textContent = fmtDT(iso);
+    }
+  });
 
-  async function boot() {
-    if (!INIT_DATA) {
-      setStatus(S("miniapp.status_open"), true);
+  const saveBtn = btn(S("miniapp.save"), async () => {
+    formState.title = titleInput.value.trim();
+    formState.description = descInput.value.trim();
+    formState.reminders = remindInput.value;
+    if (!formState.title) {
+      toast(S("miniapp.new_title_required"), "error");
+      titleInput.focus();
       return;
     }
+    const offsets = formState.reminders
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s !== "")
+      .map((s) => Number(s))
+      .filter((n) => Number.isInteger(n));
+    saveBtn.disabled = true;
     try {
-      me = await api("/api/v1/me");
-      me.language = me.settings.language;
-      STR = await api(`/api/v1/i18n/${me.language}`);
-      whoEl.textContent = [me.user.first_name, me.user.last_name].filter(Boolean).join(" ");
-      setStatus("");
-      await render();
+      await api("/api/v1/items", "POST", {
+        title: formState.title,
+        kind: formState.kind,
+        description: formState.description || null,
+        starts_at: formState.startsAt,
+        due_at: formState.dueAt,
+        priority: formState.priority,
+        remind_offsets_minutes: offsets,
+      });
+      toast(S("miniapp.saved"));
+      state.tab = "today";
+      render();
     } catch (e) {
-      setStatus(e.message, true);
+      toast(e && e.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
+      saveBtn.disabled = false;
     }
-  }
+  }, { variant: "primary" });
 
-  boot();
-})();
+  view.replaceChildren(
+    card(
+      el("h2", { class: "view-title" }, S("miniapp.new_title")),
+      field(S("miniapp.new_title"), titleInput),
+      field(S("miniapp.new_description"), descInput),
+      el("div", { class: "form-row" }, field(S("miniapp.new_kind"), kindBtn), field(S("miniapp.new_priority"), priorityBtn)),
+      el("div", { class: "form-row" }, field(S("miniapp.new_starts"), startsBtn), field(S("miniapp.new_due"), dueBtn)),
+      field(S("miniapp.new_reminders"), remindInput),
+      saveBtn
+    )
+  );
+}
+
+/** A tap-to-open picker row (sheet or date picker), Telegram-like. */
+function pickerBtn(label, valueText, onTap) {
+  return el(
+    "button",
+    {
+      type: "button",
+      class: "picker-field",
+      "aria-haspopup": "dialog",
+      "aria-label": label,
+      onclick: () => {
+        haptic();
+        onTap();
+      },
+    },
+    el("span", { class: "picker-value" }, valueText),
+    el("span", { class: "picker-icon", "aria-hidden": "true" }, "›")
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Workouts                                                            */
+/* ------------------------------------------------------------------ */
+
+async function viewWorkouts(view) {
+  const [stats, logs] = await Promise.all([
+    api("/api/v1/workouts/stats"),
+    api("/api/v1/workouts?limit=10"),
+  ]);
+
+  const statsCard = card(
+    el("h2", { class: "view-title" }, S("miniapp.workouts_stats")),
+    el("div", { class: "stats-grid" },
+      statCell(String(stats.total), S("miniapp.stats_total")),
+      statCell(String(stats.total_minutes), S("miniapp.stats_minutes")),
+      statCell(String(stats.this_week), S("miniapp.stats_week")),
+      statCell(String(stats.current_streak), S("miniapp.stats_streak"))
+    )
+  );
+
+  const nameInput = input({
+    placeholder: S("miniapp.workout_name_ph"),
+    "aria-label": S("miniapp.workout_log"),
+  });
+  const minutesInput = input({
+    type: "number",
+    min: "1",
+    placeholder: S("miniapp.minutes_ph"),
+    "aria-label": S("miniapp.minutes"),
+    inputmode: "numeric",
+  });
+  const whenBtn = pickerBtn(S("miniapp.when"), S("miniapp.now"), async () => {
+    const iso = await pickDateTime(null);
+    if (iso) whenBtn.querySelector(".picker-value").textContent = fmtDT(iso);
+  });
+  const effortBtn = pickerBtn(S("miniapp.effort"), S("miniapp.not_set"), async () => {
+    const chosen = await openSheet({
+      title: S("miniapp.effort"),
+      options: [
+        { value: "", label: S("miniapp.not_set") },
+        ...[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => ({
+          value: String(n),
+          label: `${n} / 10`,
+        })),
+      ],
+    });
+    if (chosen !== null)
+      effortBtn.querySelector(".picker-value").textContent =
+        chosen === "" ? S("miniapp.not_set") : `${chosen} / 10`;
+  });
+
+  const logBtn = btn(S("miniapp.log"), async () => {
+    const name = nameInput.value.trim();
+    if (!name) {
+      toast(S("miniapp.workout_name_required"), "error");
+      nameInput.focus();
+      return;
+    }
+    logBtn.disabled = true;
+    try {
+      await api("/api/v1/workouts", "POST", {
+        name,
+        duration_minutes: minutesInput.value ? Number(minutesInput.value) : null,
+        perceived_effort: effortValue(),
+      });
+      toast(S("miniapp.workout_logged"));
+      render();
+    } catch {
+      toast(S("miniapp.error_generic"), "error");
+      logBtn.disabled = false;
+    }
+    function effortValue() {
+      const v = effortBtn.querySelector(".picker-value").textContent;
+      const match = v.match(/^(\d+)/);
+      return match ? Number(match[1]) : null;
+    }
+  }, { variant: "primary" });
+
+  const logCard = card(
+    el("h2", { class: "view-title" }, S("miniapp.workout_log")),
+    field(S("miniapp.workout_name_ph"), nameInput),
+    el("div", { class: "form-row" }, field(S("miniapp.when"), whenBtn), field(S("miniapp.minutes"), minutesInput)),
+    field(S("miniapp.effort"), effortBtn),
+    logBtn
+  );
+
+  view.replaceChildren(
+    statsCard,
+    logCard,
+    el("h2", { class: "view-subtitle" }, S("miniapp.recent")),
+    logs.length
+      ? el("div", { class: "list" }, ...logs.map((w) => workoutCard(w)))
+      : empty(S("miniapp.workouts_empty"))
+  );
+}
+
+function statCell(value, label) {
+  return el("div", { class: "stat-cell" },
+    el("div", { class: "stat-value" }, value),
+    el("div", { class: "stat-label" }, label));
+}
+
+function workoutCard(w) {
+  const meta = [];
+  if (w.duration_minutes) meta.push(S("miniapp.minutes_value", { minutes: w.duration_minutes }));
+  if (w.perceived_effort) meta.push(S("miniapp.effort_value", { value: w.perceived_effort }));
+  if (w.started_at) meta.unshift(fmtDT(w.started_at));
+  return card(
+    el("div", { class: "item-head" },
+      el("span", { class: "item-icon", "aria-hidden": "true" }, "💪"),
+      el("span", { class: "item-title" }, w.name)
+    ),
+    meta.length ? el("div", { class: "item-meta" }, ...meta) : null
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Files                                                               */
+/* ------------------------------------------------------------------ */
+
+const FILE_STATE_KEYS = {
+  queued: "miniapp.state_queued",
+  downloading: "miniapp.state_downloading",
+  extracting: "miniapp.state_extracting",
+  chunking: "miniapp.state_chunking",
+  embedding: "miniapp.state_embedding",
+  indexed: "miniapp.state_indexed",
+  failed: "miniapp.state_failed",
+  rejected: "miniapp.state_rejected",
+};
+const FILE_STATE_TONES = {
+  queued: "muted",
+  downloading: "muted",
+  extracting: "muted",
+  chunking: "muted",
+  embedding: "muted",
+  indexed: "ok",
+  failed: "error",
+  rejected: "error",
+};
+
+async function viewFiles(view) {
+  const files = await api("/api/v1/files?limit=20");
+
+  const fileInput = el("input", {
+    type: "file",
+    class: "file-input",
+    id: "file-upload-input",
+    "aria-label": S("miniapp.upload"),
+  });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    uploadBtn.disabled = true;
+    uploadLabel.textContent = S("miniapp.uploading");
+    try {
+      await apiUpload("/api/v1/files", file);
+      toast(S("miniapp.uploaded", { name: file.name }));
+      render();
+    } catch {
+      toast(S("miniapp.upload_failed"), "error");
+      uploadBtn.disabled = false;
+      uploadLabel.textContent = S("miniapp.upload");
+      fileInput.value = "";
+    }
+  });
+  const uploadLabel = el("span", { class: "btn-label" }, S("miniapp.upload"));
+  const uploadBtn = el(
+    "button",
+    { type: "button", class: "btn btn-primary upload-btn", "aria-label": S("miniapp.upload") },
+    el("span", { class: "upload-icon", "aria-hidden": "true" }, "⬆"),
+    uploadLabel
+  );
+  uploadBtn.addEventListener("click", () => fileInput.click());
+
+  view.replaceChildren(
+    card(
+      el("h2", { class: "view-title" }, S("miniapp.my_files")),
+      el("div", { class: "upload-row" }, uploadBtn, fileInput),
+      files.length
+        ? el("div", { class: "list" }, ...files.map(fileCard))
+        : empty(S("miniapp.files_empty"))
+    )
+  );
+}
+
+function fileCard(f) {
+  const meta = [fmtBytes(f.size_bytes || 0), fmtDT(f.created_at)].filter(Boolean);
+  return card(
+    el("div", { class: "item-head" },
+      el("span", { class: "item-icon", "aria-hidden": "true" }, "📄"),
+      el("span", { class: "item-title file-name" }, f.original_filename),
+      badge(S(FILE_STATE_KEYS[f.state] || f.state), FILE_STATE_TONES[f.state] || "muted")
+    ),
+    el("div", { class: "item-meta" }, ...meta),
+    f.error ? el("p", { class: "item-error" }, f.error) : null,
+    el("div", { class: "item-actions" },
+      btn(S("miniapp.btn_delete"), async () => {
+        const ok = await confirmDialog(S("miniapp.confirm_delete", { title: f.original_filename }));
+        if (!ok) return;
+        try {
+          await api(`/api/v1/files/${f.id}`, "DELETE");
+          toast(S("miniapp.deleted"));
+          render();
+        } catch {
+          toast(S("miniapp.error_generic"), "error");
+        }
+      }, { variant: "danger" })
+    )
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Facts                                                               */
+/* ------------------------------------------------------------------ */
+
+const FACT_STATE_KEYS = {
+  proposed: "miniapp.fact_proposed",
+  confirmed: "miniapp.fact_confirmed",
+  rejected: "miniapp.fact_rejected",
+};
+const FACT_STATE_TONES = {
+  proposed: "muted",
+  confirmed: "ok",
+  rejected: "error",
+};
+
+async function viewFacts(view) {
+  const facts = await api("/api/v1/facts?limit=50");
+
+  const valueInput = input({
+    placeholder: S("miniapp.facts_value_ph"),
+    "aria-label": S("miniapp.facts_add"),
+  });
+  const categoryInput = input({
+    placeholder: S("miniapp.facts_category_ph"),
+    "aria-label": S("miniapp.facts_category"),
+  });
+  const proposeBtn = btn(S("miniapp.propose"), async () => {
+    const value = valueInput.value.trim();
+    if (!value) {
+      toast(S("miniapp.fact_value_required"), "error");
+      valueInput.focus();
+      return;
+    }
+    proposeBtn.disabled = true;
+    try {
+      await api("/api/v1/facts", "POST", {
+        value,
+        category: categoryInput.value.trim() || null,
+      });
+      toast(S("miniapp.proposed"));
+      render();
+    } catch {
+      toast(S("miniapp.error_generic"), "error");
+      proposeBtn.disabled = false;
+    }
+  }, { variant: "primary" });
+
+  view.replaceChildren(
+    card(
+      el("h2", { class: "view-title" }, S("miniapp.facts_add")),
+      field(S("miniapp.facts_value_ph"), valueInput),
+      field(S("miniapp.facts_category"), categoryInput),
+      proposeBtn
+    ),
+    el("h2", { class: "view-subtitle" }, S("miniapp.my_facts")),
+    facts.length
+      ? el("div", { class: "list" }, ...facts.map(factCard))
+      : empty(S("miniapp.facts_empty"))
+  );
+}
+
+function factCard(f) {
+  const actions = [];
+  if (f.status === "proposed") {
+    actions.push(
+      btn(S("miniapp.confirm"), async () => {
+        try {
+          await api(`/api/v1/facts/${f.id}/confirm`, "POST");
+          toast(S("miniapp.saved"));
+          render();
+        } catch {
+          toast(S("miniapp.error_generic"), "error");
+        }
+      }, { variant: "primary" }),
+      btn(S("miniapp.reject"), async () => {
+        try {
+          await api(`/api/v1/facts/${f.id}/reject`, "POST");
+          toast(S("miniapp.saved"));
+          render();
+        } catch {
+          toast(S("miniapp.error_generic"), "error");
+        }
+      })
+    );
+  }
+  actions.push(
+    btn(S("miniapp.btn_delete"), async () => {
+      const ok = await confirmDialog(S("miniapp.confirm_delete", { title: f.value }));
+      if (!ok) return;
+      try {
+        await api(`/api/v1/facts/${f.id}`, "DELETE");
+        toast(S("miniapp.deleted"));
+        render();
+      } catch {
+        toast(S("miniapp.error_generic"), "error");
+      }
+    }, { variant: "danger" })
+  );
+
+  return card(
+    el("div", { class: "item-head" },
+      el("span", { class: "item-icon", "aria-hidden": "true" }, "🧠"),
+      el("span", { class: "item-title fact-category" }, f.category),
+      badge(S(FACT_STATE_KEYS[f.status] || f.status), FACT_STATE_TONES[f.status] || "muted")
+    ),
+    // The fact value is user content: always rendered as a text node.
+    el("p", { class: "fact-value" }, f.value),
+    el("div", { class: "item-actions" }, ...actions)
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings                                                            */
+/* ------------------------------------------------------------------ */
+
+async function viewSettings(view) {
+  const settings = state.me.settings;
+
+  view.replaceChildren(
+    card(
+      el("h2", { class: "view-title" }, S("miniapp.settings")),
+      settingsRow(S("miniapp.settings_language"), S(settings.language === "en" ? "miniapp.lang_en" : "miniapp.lang_ru"), async () => {
+        const languages = await api("/api/v1/i18n/languages");
+        const chosen = await openSheet({
+          title: S("miniapp.settings_language"),
+          value: settings.language,
+          options: languages.map((l) => ({ value: l.code, label: l.label })),
+        });
+        if (!chosen) return;
+        const saved = await api("/api/v1/settings", "PATCH", { language: chosen });
+        state.me.settings = saved;
+        // Switch the whole UI immediately, without a reload.
+        await setLanguage(saved.language);
+        toast(S("miniapp.settings_saved"));
+        render();
+      }),
+      settingsRow(S("miniapp.settings_timezone"), settings.timezone, async () => {
+        const zones = settings.timezone && !TIMEZONES.includes(settings.timezone)
+          ? [settings.timezone, ...TIMEZONES]
+          : TIMEZONES;
+        const chosen = await openSheet({
+          title: S("miniapp.settings_timezone"),
+          value: settings.timezone,
+          options: zones.map((z) => ({ value: z, label: z })),
+        });
+        if (!chosen) return;
+        const saved = await api("/api/v1/settings", "PATCH", { timezone: chosen });
+        state.me.settings = saved;
+        toast(S("miniapp.settings_saved"));
+        render();
+      }),
+      settingsRow(S("miniapp.settings_digest"), (settings.digest_time || "08:00").slice(0, 5), async () => {
+        const chosen = await pickTime((settings.digest_time || "08:00:00").slice(0, 5));
+        if (!chosen) return;
+        const saved = await api("/api/v1/settings", "PATCH", { digest_time: `${chosen}:00` });
+        state.me.settings = saved;
+        toast(S("miniapp.settings_saved"));
+        render();
+      }),
+      motivationRow(settings.motivation_enabled, async (next) => {
+        const saved = await api("/api/v1/settings", "PATCH", { motivation_enabled: next });
+        state.me.settings = saved;
+        toast(S("miniapp.settings_saved"));
+        render();
+      })
+    )
+  );
+}
+
+/** A settings row that opens a sheet/picker on tap (Telegram-like). */
+function settingsRow(label, valueText, onTap) {
+  return el(
+    "button",
+    {
+      type: "button",
+      class: "settings-row",
+      "aria-haspopup": "dialog",
+      onclick: () => {
+        haptic();
+        onTap();
+      },
+    },
+    el("span", { class: "settings-row-label" }, label),
+    el("span", { class: "settings-row-value" }, valueText),
+    el("span", { class: "settings-row-icon", "aria-hidden": "true" }, "›")
+  );
+}
+
+/** A settings row with an on/off switch (a real checkbox input). */
+function motivationRow(checked, onChange) {
+  const box = el("input", {
+    type: "checkbox",
+    class: "switch",
+    role: "switch",
+    "aria-label": S("miniapp.settings_motivation"),
+    checked: checked ? "checked" : null,
+  });
+  box.addEventListener("change", () => onChange(box.checked));
+  return el("div", { class: "settings-row settings-row-static" },
+    el("span", { class: "settings-row-label" }, S("miniapp.settings_motivation")),
+    el("label", { class: "switch-wrap" }, box));
+}
+
+/* ------------------------------------------------------------------ */
+/* Boot                                                                */
+/* ------------------------------------------------------------------ */
+
+async function boot() {
+  initWebApp();
+  applyTheme();
+  onThemeChanged(() => {
+    // Theme changes re-style the app through CSS variables automatically.
+  });
+  backButtonOn(() => {
+    state.tab = "today";
+    render();
+  });
+  try {
+    const me = await loadMe();
+    whoEl.textContent = [me.user.first_name, me.user.last_name].filter(Boolean).join(" ");
+    await render();
+  } catch (e) {
+    const key = e && e.status === 401 ? "miniapp.status_auth" : "miniapp.status_open";
+    viewEl.replaceChildren(empty(S(key)));
+  }
+}
+
+boot();

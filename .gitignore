@@ -17,6 +17,11 @@ build/
 
 node_modules/
 
+# Playwright E2E artifacts (reference screenshots, traces, reports).
+test-artifacts/
+test-results/
+playwright-report/
+
 data/
 uploads/
 storage/

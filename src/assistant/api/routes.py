@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,7 @@ from assistant.api.schemas import (
     WorkoutOut,
     WorkoutStatsOut,
 )
+from assistant.config import get_settings
 from assistant.db import get_session
 from assistant.i18n import (
     DEFAULT_LANGUAGE,
@@ -299,6 +300,34 @@ async def list_files(
     return [FileOut.model_validate(f) for f in files]
 
 
+@router.post("/files", response_model=FileOut, status_code=201)
+async def upload_file(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> FileOut:
+    """Upload a file from the Mini App (raw bytes).
+
+    Mirrors the bot upload path but accepts multipart bytes directly, so the
+    Files screen can register + index a document end to end. The ingestion job
+    then reads the stored bytes (no Telegram download).
+    """
+    settings = get_settings()
+    data = await file.read()
+    if len(data) > settings.max_upload_size_bytes:
+        raise HTTPException(status_code=413, detail="file too large")
+    created = await files_service.register_local_upload(
+        session,
+        user,
+        original_filename=file.filename or "unnamed",
+        mime_type=file.content_type or "application/octet-stream",
+        data=data,
+    )
+    await session.commit()
+    await session.refresh(created)
+    return FileOut.model_validate(created)
+
+
 @router.delete("/files/{file_id}", status_code=204)
 async def delete_file(
     file_id: int,
@@ -459,7 +488,7 @@ async def delete_fact(
 
 
 @router.get("/settings", response_model=SettingsOut)
-async def get_settings(
+async def read_settings(
     user: User = Depends(get_current_user),
 ) -> SettingsOut:
     assert user.settings is not None  # upsert_user guarantees settings
