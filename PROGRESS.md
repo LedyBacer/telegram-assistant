@@ -1,9 +1,26 @@
 # Progress
 
-Status: V3 PRIORITIES 38–53 COMPLETE (P53: all 14 listed V2 behaviors
-verified intact — each has live regression coverage; 496 pytest + 14 E2E
-green, no code changes needed).
-Next: V3 Priority 55 (final verification + REPORT.md).
+Status: V3 COMPLETE — all priorities P1–P53 implemented (P54 is the
+implementation-order directive, satisfied), P55 Definition of Done met.
+Final state: 496 pytest + 14 Playwright E2E green, 22-step acceptance
+run fully green on 2026-09-24 (fresh Docker PostgreSQL, full migration
+chain, Compose build, Ruff, lock drift), `REPORT.md` rewritten as the
+evidence-based V3 final report. Working tree clean; nothing pushed.
+Next: nothing — V3 milestone is finished.
+
+## V3 — Priority 55: Definition of Done (final verification)
+
+- `bash scripts/acceptance.sh` (22 steps) executed end-to-end green on
+  2026-09-24: uv sync, Ruff, imports, lock-drift check, Compose config
+  + loopback port audit, `docker compose build`, fresh PostgreSQL
+  (`assistant` + `assistant_e2e`), `alembic upgrade head` from empty
+  database (9 revisions), full **496**-test pytest suite on the fresh
+  DB, **14/14** Playwright E2E specs, credential-free CI workflow
+  present, no required TODO/stub.
+- `REPORT.md` rewritten: evidence-based V3 final report (verification
+  table, known-limitations list, no production-readiness claims).
+- `PROGRESS.md` (this document) describes the final state.
+- `git status` clean after the final commit.
 
 ## V3 — Priority 53: preserve successful V2 behavior
 
