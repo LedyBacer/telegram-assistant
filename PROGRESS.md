@@ -252,10 +252,25 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   assertions), the `README.md` chat-only bullet, and `docs/ASSUMPTIONS.md`
   row 41. Verified: `tests/test_readiness.py` 5 passed; Ruff clean on the
   touched files.
+- **§40** The caller-supplied `X-Request-Id` is now **bounded** before it is
+  trusted for tracing. Previously `request.headers.get("X-Request-Id")` was
+  used verbatim, so a hostile/buggy caller could send an arbitrarily long id
+  (or one full of control/format characters) that the request-id middleware
+  then (a) echoes in the response header and (b) binds into the log context
+  and stamps onto **every** log line the request emits — a log-bloat and
+  log/header-injection vector. The new `_sanitize_request_id()` in
+  `src/assistant/api/main.py` accepts the incoming value only when it is ≤
+  128 chars and matches `^[A-Za-z0-9._-]+$`; anything else (including an
+  absent header) is replaced by a fresh `uuid4().hex`. A `_CONTEXT_KEYS`
+  audit found the tuple already complete for every correlation field the
+  codebase binds (`request_id`, `user_id`, `chat_id`, `job_id`, `job_type`,
+  plus `file_id`), so no field was added. Added 4 regression tests to
+  `tests/test_api.py` (reuse well-formed id, mint when absent, replace when
+  oversized, replace when it contains control/format chars). Verified: the 4
+  new tests pass; Ruff clean on the touched files.
 
-**Next (in order):** §40 logging correlation + X-Request-Id bounding;
-§4-8 lease safety, §9-11 proactivity, §12-16 turn protocol; §41-47 named
-regression tests, docs sync, Definition of Done.
+**Next (in order):** §4-8 lease safety, §9-11 proactivity, §12-16 turn
+protocol; §41-47 named regression tests, docs sync, Definition of Done.
 
 
 ## V3 — Priority 55: Definition of Done (final verification)

@@ -7,6 +7,7 @@ reads test values; no real Telegram/OpenAI credentials are used.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -59,6 +60,33 @@ async def client(session: AsyncSession) -> AsyncIterator[httpx.AsyncClient]:
 async def test_health(client: httpx.AsyncClient) -> None:
     assert (await client.get("/health")).json() == {"status": "ok"}
     assert (await client.get("/healthz")).json() == {"status": "ok"}
+
+
+async def test_request_id_reused_from_header(client: httpx.AsyncClient) -> None:
+    res = await client.get("/healthz", headers={"X-Request-Id": "my-trace-abc.1"})
+    assert res.headers["X-Request-Id"] == "my-trace-abc.1"
+
+
+async def test_request_id_minted_when_absent(client: httpx.AsyncClient) -> None:
+    res = await client.get("/healthz")
+    assert re.fullmatch(r"[0-9a-f]{32}", res.headers["X-Request-Id"])
+
+
+async def test_request_id_oversized_is_replaced(client: httpx.AsyncClient) -> None:
+    oversized = "a" * 200
+    res = await client.get("/healthz", headers={"X-Request-Id": oversized})
+    echoed = res.headers["X-Request-Id"]
+    assert echoed != oversized
+    assert re.fullmatch(r"[0-9a-f]{32}", echoed)
+
+
+async def test_request_id_with_control_chars_is_replaced(client: httpx.AsyncClient) -> None:
+    res = await client.get(
+        "/healthz", headers={"X-Request-Id": "evil\"id\nforged"}
+    )
+    echoed = res.headers["X-Request-Id"]
+    assert echoed != 'evil"id\nforged'
+    assert re.fullmatch(r"[0-9a-f]{32}", echoed)
 
 
 async def test_missing_init_data_is_401(client: httpx.AsyncClient) -> None:

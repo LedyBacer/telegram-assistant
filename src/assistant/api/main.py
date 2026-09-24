@@ -1,6 +1,7 @@
 """FastAPI application entry point: ``python -m assistant.api.main``."""
 
 import os
+import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -16,6 +17,24 @@ from assistant.api.routes import router as api_router
 from assistant.config import get_settings
 from assistant.db import dispose_engine
 from assistant.logging import log_context, setup_logging
+
+# A caller-supplied X-Request-Id is trusted for tracing only when it is short
+# and free of control/format characters; anything else is replaced by a minted
+# id. This bounds what a hostile or buggy caller can make the id contribute to
+# every log line it stamps and to the echoed response header (SPEC §23).
+_MAX_REQUEST_ID_LENGTH = 128
+_REQUEST_ID_CHARS = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _sanitize_request_id(incoming: str | None) -> str:
+    """Return ``incoming`` when it is a safe trace id, else a fresh ``uuid4``."""
+    if (
+        incoming
+        and len(incoming) <= _MAX_REQUEST_ID_LENGTH
+        and _REQUEST_ID_CHARS.fullmatch(incoming) is not None
+    ):
+        return incoming
+    return uuid.uuid4().hex
 
 
 @asynccontextmanager
@@ -43,10 +62,13 @@ def create_app() -> FastAPI:
 
     # Request/correlation id: reuse an incoming X-Request-Id (so a caller can
     # trace its request) or mint one; it is bound into the log context for the
-    # whole request and echoed back in the response header (SPEC §23).
+    # whole request and echoed back in the response header (SPEC §23). The
+    # incoming value is bounded (length + character allowlist) so a caller can
+    # neither bloat every log line the request emits nor inject control
+    # characters into the log/header stream.
     @app.middleware("http")
     async def _request_id_middleware(request: Request, call_next) -> JSONResponse:
-        request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+        request_id = _sanitize_request_id(request.headers.get("X-Request-Id"))
         with log_context(request_id=request_id):
             response = await call_next(request)
         response.headers["X-Request-Id"] = request_id
