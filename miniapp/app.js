@@ -248,9 +248,13 @@ function itemCard(item) {
     meta.push(badge(S(`miniapp.status_${item.status}`), item.status === "completed" ? "ok" : "muted"));
   }
 
+  const icon =
+    item.source === "workout" ? "🏋️" : item.kind === "event" ? "📌" : "✅";
+  const iconClass = item.source === "workout" ? "item-icon item-icon--workout" : "item-icon";
+
   return card(
     el("div", { class: "item-head" },
-      el("span", { class: "item-icon", "aria-hidden": "true" }, item.kind === "event" ? "📌" : "✅"),
+      el("span", { class: iconClass, "aria-hidden": "true" }, icon),
       el("span", { class: "item-title" }, item.title),
       badge(S(PRIORITY_LABELS[item.priority] || PRIORITY_LABELS.normal), PRIORITY_TONES[item.priority] || "normal")
     ),

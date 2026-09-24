@@ -241,6 +241,13 @@ body {
   font-size: 16px;
 }
 
+/* Workout identity (V5 §6.5): a scheduled workout item (source == "workout")
+   uses the workout icon, visually distinct from plain tasks/events, without
+   changing the persisted title. */
+.item-icon--workout {
+  font-size: 18px;
+}
+
 .item-title {
   flex: 1 1 auto;
   min-width: 0;

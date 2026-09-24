@@ -192,11 +192,12 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
   await schedCard.locator('input[type="number"]').fill("30");
   await schedCard.locator(".btn-primary", { hasText: "Запланировать" }).click();
   await expect(page.locator("#toast")).toContainText("Тренировка запланирована.");
-  // The scheduled workout is a calendar item titled "Workout: <name>".
   await goTab(page, "today");
-  await expect(
-    page.locator("#view .item-title", { hasText: `Workout: ${WORKOUT_NAME}` }),
-  ).toBeVisible();
+  // V5 §6.1/§6.5: the scheduled workout keeps its verbatim title (no
+  // "Workout:" prefix) and is identified by the workout icon.
+  const workoutCard = page.locator("#view .card", { hasText: WORKOUT_NAME }).first();
+  await expect(workoutCard.locator(".item-title")).toHaveText(WORKOUT_NAME);
+  await expect(workoutCard.locator(".item-icon--workout")).toBeVisible();
   await assertCleanText(page);
 
   // --- 3. File retry: a failed file re-queues for ingestion ---------------
