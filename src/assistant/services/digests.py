@@ -231,15 +231,15 @@ async def _handle_digest_send(session: AsyncSession, job: BackgroundJob) -> None
     chat_id = user.id
     await session.commit()  # release the connection before the network call
 
-    # Do not send from a stale lease: a new owner (or recovery) will deliver
-    # it — delivery is durable at-least-once, so this just avoids a duplicate
-    # (V4 §8).
-    lease = jobs_service.current_lease.get()
-    if lease is not None:
-        try:
-            lease.raise_if_lost()
-        except jobs_service.LeaseLostError:
-            return
+    # Do not send from a stale lease (V5 §3): PostgreSQL is the source of
+    # truth for ownership, and the in-memory flag can lag it. This fresh DB
+    # check runs in its own short transaction that ended (committed) after
+    # Phase A, so no transaction is held during the Telegram HTTP round-trip.
+    # If we no longer own the job (recovered / re-claimed / cancelled) a new
+    # owner will deliver it — delivery is durable at-least-once, so skipping
+    # just avoids a duplicate.
+    if not await jobs_service.owns_job(session, job.id, job.locked_by):
+        return
 
     # Phase B — Telegram send, with no transaction held.
     await notifications.send_text(chat_id, content)

@@ -172,6 +172,9 @@ async def _run_handler(session: AsyncSession, job: BackgroundJob) -> None:
     handler = registry.handlers["reminder_send"]
     job.status = JobStatus.running.value
     job.locked_by = "test-worker"
+    # V5 §3: the handler now re-validates DB ownership before sending, so the
+    # simulated job must carry a live lease (locked_by + future lease_until).
+    job.lease_until = datetime.now(UTC) + timedelta(minutes=5)
     await session.flush()
     await handler(session, job)
     await session.flush()

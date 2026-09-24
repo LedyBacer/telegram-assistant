@@ -304,3 +304,176 @@ async def test_recover_abandoned_exhausts_budget(session: AsyncSession) -> None:
     assert refreshed is not None
     assert refreshed.status == JobStatus.failed.value
     assert refreshed.attempts == 2
+
+
+# ---------------------------------------------------------------------------
+# V5 §3: PostgreSQL is the source of truth for job ownership.
+#
+# The worker must never rely on an in-memory lease flag as the sole proof of
+# ownership: that flag lags DB truth (a lease can expire while the heartbeat is
+# starved). So the worker re-validates ownership against the database at
+# handler start, atomically with a final domain write, and before any Telegram
+# send. These are real-PostgreSQL regression tests for those guarantees.
+# ---------------------------------------------------------------------------
+
+
+async def _claim_and_token(session: AsyncSession) -> tuple[BackgroundJob, str]:
+    await js.create_job(session, type="echo", max_attempts=3)
+    await session.commit()
+    claimed = await js.claim_job(session, worker_id="w")
+    await session.commit()
+    assert claimed is not None
+    return claimed, claimed.locked_by
+
+
+async def test_owns_job_reflects_lease(session: AsyncSession) -> None:
+    """Pure-read ownership: True for a live owner, False for the wrong token,
+    an expired lease, and a terminal job."""
+    job, token = await _claim_and_token(session)
+    assert await js.owns_job(session, job.id, token) is True
+    assert await js.owns_job(session, job.id, js.new_owner_token("other")) is False
+    await session.commit()
+    # An expired lease belongs to nobody.
+    await _age_lease(session)
+    assert await js.owns_job(session, job.id, token) is False
+    await session.commit()
+    # A terminal (completed) job is not owned.
+    async with session.begin():
+        await session.execute(
+            text(
+                "UPDATE background_jobs SET status='completed', lease_until=NULL "
+                "WHERE id=:id"
+            ),
+            {"id": job.id},
+        )
+    assert await js.owns_job(session, job.id, token) is False
+
+
+async def test_revalidate_ownership_owned_returns_row(session: AsyncSession) -> None:
+    """The row-locked revalidate returns the job for a live owner and None
+    (never raising) for a non-owner."""
+    job, token = await _claim_and_token(session)
+    row = await js.revalidate_ownership(session, job.id, token)
+    assert row is not None
+    assert row.id == job.id
+    assert row.locked_by == token
+    assert (
+        await js.revalidate_ownership(session, job.id, js.new_owner_token("other"))
+        is None
+    )
+
+
+async def test_revalidate_ownership_lost_returns_none(session: AsyncSession) -> None:
+    """After the lease expires and is recovered, the (now dead) owner's
+    revalidate returns None instead of raising."""
+    job, token = await _claim_and_token(session)
+    await _age_lease(session)
+    assert await js.recover_abandoned(session) == 1
+    await session.commit()
+    assert await js.revalidate_ownership(session, job.id, token) is None
+
+
+async def test_lost_owner_final_write_rolls_back(session: AsyncSession) -> None:
+    """Core V5 §3 race: a stale in-memory owner must not commit a final write
+    once the DB says a new owner owns (or finished) the job. revalidate
+    returns None, so the write is rolled back and the new owner's committed
+    state is intact."""
+    job, token_a = await _claim_and_token(session)
+    job_id = job.id  # capture before any commit can expire the attribute
+    # A's lease expires and is recovered; B re-claims and finishes the job.
+    await _age_lease(session)
+    assert await js.recover_abandoned(session) == 1
+    await session.commit()
+    await _make_available(session)  # backoff elapsed -> claimable again
+    claimed_b = await js.claim_job(session, worker_id="B")
+    await session.commit()
+    assert claimed_b is not None and claimed_b.locked_by != token_a
+    done = await js.complete_job(session, job_id, owner_token=claimed_b.locked_by)
+    await session.commit()
+    assert done.status == JobStatus.completed.value
+
+    # A now records a final domain write and re-validates ownership; the DB
+    # says A no longer owns it, so A rolls the write back.
+    await session.execute(
+        text("UPDATE background_jobs SET last_error='stale-A-write' WHERE id=:id"),
+        {"id": job_id},
+    )
+    assert await js.revalidate_ownership(session, job_id, token_a) is None
+    await session.rollback()
+
+    # B's committed state is intact — A's stale write did not clobber it.
+    refreshed = await session.scalar(
+        select(BackgroundJob)
+        .where(BackgroundJob.id == job_id)
+        .execution_options(populate_existing=True)
+    )
+    assert refreshed is not None
+    assert refreshed.status == JobStatus.completed.value
+    assert refreshed.last_error is None
+
+
+async def test_dead_owner_guard_after_recovery(session: AsyncSession) -> None:
+    """Handler-start guard: a dead owner whose lease expired and was recovered
+    no longer passes the authoritative DB ownership check."""
+    job, token = await _claim_and_token(session)
+    await _age_lease(session)
+    assert await js.recover_abandoned(session) == 1
+    await session.commit()
+    # The guard's exact predicate: owns_job must be False for the dead owner.
+    assert await js.owns_job(session, job.id, token) is False
+
+
+async def test_revalidate_serializes_after_concurrent_complete(
+    session: AsyncSession, engine: AsyncEngine
+) -> None:
+    """The FOR UPDATE revalidate in A's final transaction sees B's committed
+    completion (not a stale read), so A's check is serialized with B's
+    transition on the row lock."""
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    # A claims the job.
+    async with factory() as a, a.begin():
+        job = await js.create_job(a, type="echo")
+        claimed = await js.claim_job(a, worker_id="A")
+    job_id, token_a = job.id, claimed.locked_by
+
+    # B expires A's lease, re-claims, and completes the job (committed).
+    async with factory() as b, b.begin():
+        await b.execute(
+            text(
+                "UPDATE background_jobs SET lease_until = now() - interval '1 minute' "
+                "WHERE id=:id"
+            ),
+            {"id": job_id},
+        )
+        assert await js.recover_abandoned(b) == 1
+        # Backoff elapsed -> the recovered job is claimable again.
+        await b.execute(text("UPDATE background_jobs SET available_at = now() WHERE status = 'pending'"))
+    async with factory() as b2, b2.begin():
+        claimed_b = await js.claim_job(b2, worker_id="B")
+        assert claimed_b is not None
+        await js.complete_job(b2, job_id, owner_token=claimed_b.locked_by)
+
+    # A's final-transaction revalidate now sees the committed completed row.
+    async with factory() as a2:
+        assert await js.revalidate_ownership(a2, job_id, token_a) is None
+
+
+async def test_final_write_commits_when_owned(session: AsyncSession) -> None:
+    """Positive control: a live owner's revalidate returns the row and the
+    final write commits (we do not over-block legitimate owners)."""
+    job, token = await _claim_and_token(session)
+    # Simulate the file pipeline's final write: a domain effect + revalidate,
+    # all in one transaction, then commit.
+    await session.execute(
+        text("UPDATE background_jobs SET last_error='final-ok' WHERE id=:id"),
+        {"id": job.id},
+    )
+    assert await js.revalidate_ownership(session, job.id, token) is not None
+    await session.commit()
+    refreshed = await session.scalar(
+        select(BackgroundJob)
+        .where(BackgroundJob.id == job.id)
+        .execution_options(populate_existing=True)
+    )
+    assert refreshed is not None
+    assert refreshed.last_error == "final-ok"

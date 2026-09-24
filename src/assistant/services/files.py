@@ -41,7 +41,12 @@ from assistant.i18n import LocalizableError
 from assistant.models.files import FileChunk, FileState, UserFile
 from assistant.models.jobs import BackgroundJob, JobStatus
 from assistant.models.users import User
-from assistant.services.jobs import LeaseLostError, cancel_job, create_job, current_lease
+from assistant.services.jobs import (
+    cancel_job,
+    create_job,
+    owns_job,
+    revalidate_ownership,
+)
 
 logger = logging.getLogger("assistant.files")
 
@@ -600,27 +605,20 @@ async def _run_pipeline(
                 f"expected {len(chunks)} embeddings, got {len(vectors)}"
             )
 
-    # Cancellation check immediately before the only chunk-writing commit: a
-    # job cancelled while downloading/embedding must not store stale chunks.
-    # populate_existing re-reads from the DB (the job was loaded as "running"
-    # at claim time; a concurrent API cancel commits in a different session).
-    refreshed = await session.get(BackgroundJob, job.id, populate_existing=True)
-    if refreshed is not None and refreshed.status == JobStatus.cancelled.value:
+    # Final short transaction — PostgreSQL is the source of truth for
+    # ownership (V5 §3). Re-validate the lease WITH a row lock and write the
+    # chunks in the SAME transaction, so a concurrent API cancel, lease
+    # recovery, or re-claim by a new owner cannot interleave between our
+    # ownership check and the commit. If we no longer own the job (cancelled,
+    # or the lease expired and was recovered), roll back and store no stale
+    # chunks — a new owner owns the file now. The in-memory lease flag alone
+    # can lag DB truth, so the DB recheck is authoritative.
+    owned = await revalidate_ownership(session, job.id, job.locked_by)
+    if owned is None:
         await session.rollback()
         return
 
-    # A stale lease (expired, recovered, or a failed renewal) must not commit
-    # chunks: a new owner may already be re-ingesting the same file, and this
-    # old owner must not overwrite its work (V4 §6).
-    lease = current_lease.get()
-    if lease is not None:
-        try:
-            lease.raise_if_lost()
-        except LeaseLostError:
-            await session.rollback()
-            return
-
-    # Final short transaction: replace any chunks from a previous run.
+    # Replace any chunks from a previous run.
     await session.execute(delete(FileChunk).where(FileChunk.file_id == file.id))
     for position, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True)):
         session.add(
@@ -645,10 +643,20 @@ async def _run_pipeline(
     await session.commit()
 
 
-async def _record_failure(file_id: int, error: str) -> None:
+async def _record_failure(
+    file_id: int, job_id: int, owner_token: str, error: str
+) -> None:
     """Persist a visible failure state in its own transaction so it survives
-    the main pipeline transaction rolling back on error."""
+    the main pipeline transaction rolling back on error.
+
+    Before stamping the file ``failed`` it re-validates job ownership against
+    PostgreSQL (V5 §3): if the job is no longer ours (lease expired and
+    recovered, or cancelled) a new owner may be re-ingesting this file, so we
+    must not overwrite their in-flight work with a ``failed`` state."""
     async with get_session_factory()() as failure_session:
+        # A new owner (or recovery) owns the job now — leave the file to them.
+        if not await owns_job(failure_session, job_id, owner_token):
+            return
         failed = await failure_session.get(UserFile, file_id)
         if failed is None:
             return
@@ -669,23 +677,22 @@ async def handle_files_ingest(session: AsyncSession, job: BackgroundJob) -> None
     if file.state == FileState.indexed.value:
         # Idempotent: a retried/restarted job on an indexed file is a no-op.
         return
+    # Capture the job identity/ownership scalars up front: the rollback in the
+    # except block below expires the ORM object, so reading job.id /
+    # job.locked_by there would trigger a sync lazy-load (MissingGreenlet).
+    job_id, owner_token = job.id, job.locked_by
     try:
         await _run_pipeline(session, file, job)
     except Exception as exc:
         # Discard the failed pipeline work and release the row lock before
         # recording the visible failure state from a second connection.
+        # PostgreSQL is the source of truth for ownership (V5 §3): the
+        # in-memory lease flag can lag DB truth, so _record_failure re-checks
+        # the job against the DB before stamping the file failed.
         await session.rollback()
-        lease = current_lease.get()
-        if lease is not None and lease.lost.is_set():
-            # We lost the lease mid-run: recovery re-queued the job or a new
-            # owner is re-ingesting this file, so we must NOT stamp the file
-            # failed over their in-flight work (V4 §7). Leave state to them.
-            logger.warning(
-                "file %s pipeline failed after lease loss; not recording failure",
-                file_id,
-            )
-        else:
-            await _record_failure(file_id, str(exc) or exc.__class__.__name__)
+        await _record_failure(
+            file_id, job_id, owner_token, str(exc) or exc.__class__.__name__
+        )
         raise
 
 

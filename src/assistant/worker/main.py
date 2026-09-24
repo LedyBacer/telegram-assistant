@@ -143,6 +143,16 @@ class JobWorker:
                 job = await session.get(BackgroundJob, job_id)
                 if job is None:
                     return
+                # Authoritative DB ownership guard (V5 §3): run the handler only
+                # if PostgreSQL says we own a live lease on the job. The
+                # in-memory lease flag can lag DB truth (e.g. a lease that
+                # expired while the heartbeat was starved), so the database is
+                # the source of truth at handler start.
+                if not await jobs_service.owns_job(session, job_id, lease.owner_token):
+                    logger.warning(
+                        "job %s no longer owned at handler start; skipping", job_id
+                    )
+                    return
             # Bind job correlation (SPEC §23) so every log the handler emits —
             # including nested AI/embedding/file-ingestion logs — carries the
             # job id, type, and owning user for diagnosis.

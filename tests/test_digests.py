@@ -352,6 +352,10 @@ async def test_reminder_handler_delivers(session: AsyncSession, monkeypatch) -> 
 
     job = await session.get(BackgroundJob, reminder.job_id)
     job.status = JobStatus.running.value
+    # V5 §3: handler re-validates DB ownership before sending; give it a live
+    # lease so the simulated run is treated as owned.
+    job.locked_by = "test-worker"
+    job.lease_until = datetime.now(UTC) + timedelta(minutes=5)
     await session.commit()
     await registry.handlers[reminders_service.REMINDER_SEND_JOB_TYPE](session, job)
     await session.commit()
@@ -375,8 +379,10 @@ async def test_reminder_send_failure_requeues(session: AsyncSession, monkeypatch
         message="Standup soon",
     )
     await session.commit()
+    reminder_id = reminder.id  # capture before any expire below
 
     job = await session.get(BackgroundJob, reminder.job_id)
+    job_id = job.id  # capture before rollback can expire the ORM object
     job.status = JobStatus.running.value
     job.locked_by = "test-worker"
     job.lease_until = datetime.now(UTC) + timedelta(minutes=5)
@@ -385,11 +391,11 @@ async def test_reminder_send_failure_requeues(session: AsyncSession, monkeypatch
         await registry.handlers[reminders_service.REMINDER_SEND_JOB_TYPE](session, job)
     await session.rollback()
     await jobs_service.fail_job(
-        session, job.id, owner_token="test-worker", error="telegram down"
+        session, job_id, owner_token="test-worker", error="telegram down"
     )
     await session.commit()
 
-    job = await session.get(BackgroundJob, job.id)
+    job = await session.get(BackgroundJob, job_id)
     assert job.status == JobStatus.pending.value
     assert job.attempts == 1
-    assert (await session.get(Reminder, reminder.id)).status == ReminderStatus.pending.value
+    assert (await session.get(Reminder, reminder_id)).status == ReminderStatus.pending.value

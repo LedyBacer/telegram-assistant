@@ -198,6 +198,56 @@ async def renew_lease(
     return (result.rowcount or 0) > 0
 
 
+async def owns_job(
+    session: AsyncSession, job_id: int, owner_token: str
+) -> bool:
+    """Pure read (no row lock): does ``owner_token`` currently own a live,
+    running lease on ``job_id``?
+
+    PostgreSQL — never an in-process flag — is the source of truth for job
+    ownership (V5 §3). Use this before acting on a job when the check does not
+    need to be atomic with a following write; for the atomic case (final
+    domain write) use :func:`revalidate_ownership`, which takes the row lock.
+    """
+    now = datetime.now(UTC)
+    return bool(
+        await session.scalar(
+            select(BackgroundJob.id).where(
+                BackgroundJob.id == job_id,
+                BackgroundJob.locked_by == owner_token,
+                BackgroundJob.status == JobStatus.running.value,
+                BackgroundJob.lease_until >= now,
+            )
+        )
+    )
+
+
+async def revalidate_ownership(
+    session: AsyncSession, job_id: int, owner_token: str
+) -> BackgroundJob | None:
+    """``SELECT ... FOR UPDATE`` the running job under ``owner_token`` with a
+    live lease, returning the row, or ``None`` when we no longer own it (never
+    raises).
+
+    Call this in the SAME transaction as a final domain write: holding the row
+    lock means a concurrent ``fail_job`` / ``complete_job`` /
+    ``recover_abandoned`` by a new owner cannot interleave between the
+    ownership check and the commit, so the check and the write are atomic
+    together (V5 §3).
+    """
+    now = datetime.now(UTC)
+    return await session.scalar(
+        select(BackgroundJob)
+        .where(
+            BackgroundJob.id == job_id,
+            BackgroundJob.locked_by == owner_token,
+            BackgroundJob.status == JobStatus.running.value,
+            BackgroundJob.lease_until >= now,
+        )
+        .with_for_update()
+    )
+
+
 async def complete_job(
     session: AsyncSession, job_id: int, *, owner_token: str
 ) -> BackgroundJob:

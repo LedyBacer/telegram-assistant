@@ -312,6 +312,10 @@ async def test_settings_keyboard_has_language_button() -> None:
 async def _run_job_by_id(session: AsyncSession, job_id: int) -> None:
     job = await session.get(BackgroundJob, job_id)
     job.status = JobStatus.running.value
+    # V5 §3: reminder/digest handlers re-validate DB ownership before sending;
+    # give the simulated job a live lease so it counts as owned.
+    job.locked_by = "test-worker"
+    job.lease_until = datetime.now(UTC) + timedelta(minutes=5)
     await session.commit()
     handler = registry.handlers[job.type]
     await handler(session, job)
