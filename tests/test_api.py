@@ -194,6 +194,40 @@ async def test_item_patch_tri_state(client: httpx.AsyncClient) -> None:
     ).replace(hour=12, minute=0, second=0, microsecond=0, tzinfo=UTC)
 
 
+async def test_item_create_event_start_and_end_one_pass(client: httpx.AsyncClient) -> None:
+    """V4 §27: the create surface sets starts_at and ends_at in a single call;
+    the shared domain invariant only rejects an inverted pair (end < start)."""
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={
+            "title": "Meeting",
+            "kind": "event",
+            "starts_at": TODAY_NOON,
+            "ends_at": TOMORROW_NOON,
+        },
+    )
+    assert res.status_code == 201
+    body = res.json()
+    assert body["kind"] == "event"
+    assert body["starts_at"] is not None
+    assert body["ends_at"] is not None
+    assert (
+        datetime.fromisoformat(body["ends_at"].replace("Z", "+00:00"))
+        > datetime.fromisoformat(body["starts_at"].replace("Z", "+00:00"))
+    )
+
+    # Inverted pair (end strictly before start) is rejected by the shared
+    # invariant, surfaced as a 400 at the API boundary the Mini App uses.
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={"title": "Inverted", "starts_at": TOMORROW_NOON, "ends_at": TODAY_NOON},
+    )
+    assert res.status_code == 400
+    assert "ends_at" in res.json()["detail"]
+
+
 async def test_item_cancel_flow(client: httpx.AsyncClient) -> None:
     res = await client.post(
         "/api/v1/items",

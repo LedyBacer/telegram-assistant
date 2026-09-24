@@ -75,10 +75,10 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   const textInputs = page.locator("#view input.field-input");
   // title, description, reminders (3+ labeled text inputs).
   expect(await textInputs.count()).toBeGreaterThanOrEqual(3);
-  // 4 picker fields: kind, priority, starts, due.
-  await expect(page.locator("#view .picker-field")).toHaveCount(4);
+  // 5 picker fields: kind, priority, starts, end, due.
+  await expect(page.locator("#view .picker-field")).toHaveCount(5);
   // The due picker opens Flatpickr in date/time mode and Escape closes it.
-  await page.locator("#view .picker-field").nth(3).click();
+  await page.locator("#view .picker-field").nth(4).click();
   await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
   await expect(page.locator(".flatpickr-calendar .flatpickr-time")).toBeVisible();
   // Flatpickr listens for Escape on its own input: focus it, then close.
@@ -125,10 +125,10 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   await assertCleanText(page);
 
   // --- Task lifecycle: create → appears in Today + calendar dot ----------
-  // Create a due-today task from the New screen.
+  // Create a due-today task from the New screen (due is picker field 4).
   await goTab(page, "new");
   await page.locator("#view .card input.field-input").first().fill(taskTitle);
-  await page.locator("#view .picker-field").nth(3).click();
+  await page.locator("#view .picker-field").nth(4).click();
   await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
   await page.locator(".flatpickr-calendar .today").click();
   await page.keyboard.press("Escape");

@@ -200,6 +200,7 @@
   "miniapp.new_high": "High",
   "miniapp.new_starts": "Starts",
   "miniapp.new_due": "Due",
+  "miniapp.new_end": "Ends",
   "miniapp.new_reminders": "Reminders",
   "miniapp.new_title_ph": "Title",
   "miniapp.reminder_preset_10": "10 min before",

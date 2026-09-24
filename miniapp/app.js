@@ -554,6 +554,7 @@ async function viewNew(view) {
     kind: "task",
     priority: "normal",
     startsAt: null,
+    endsAt: null,
     dueAt: null,
   };
 
@@ -694,6 +695,15 @@ async function viewNew(view) {
       dueBtn.querySelector(".picker-value").textContent = fmtWall(wall);
     }
   });
+  // V4 §27: an event can be created with start AND end in one pass; the
+  // backend's shared `ends_at >= starts_at` invariant rejects an inverted pair.
+  const endBtn = pickerBtn(S("miniapp.new_end"), S("miniapp.not_set"), async () => {
+    const wall = await pickDateTime(formState.endsAt);
+    if (wall) {
+      formState.endsAt = wall;
+      endBtn.querySelector(".picker-value").textContent = fmtWall(wall);
+    }
+  });
 
   const saveBtn = btn(S("miniapp.save"), async () => {
     formState.title = titleInput.value.trim();
@@ -710,6 +720,7 @@ async function viewNew(view) {
         kind: formState.kind,
         description: formState.description || null,
         starts_at: formState.startsAt,
+        ends_at: formState.endsAt,
         due_at: formState.dueAt,
         priority: formState.priority,
         remind_offsets_minutes: [...offsets],
@@ -729,7 +740,8 @@ async function viewNew(view) {
       field(S("miniapp.new_title"), titleInput),
       field(S("miniapp.new_description"), descInput),
       el("div", { class: "form-row" }, field(S("miniapp.new_kind"), kindBtn), field(S("miniapp.new_priority"), priorityBtn)),
-      el("div", { class: "form-row" }, field(S("miniapp.new_starts"), startsBtn), field(S("miniapp.new_due"), dueBtn)),
+      el("div", { class: "form-row" }, field(S("miniapp.new_starts"), startsBtn), field(S("miniapp.new_end"), endBtn)),
+      el("div", { class: "form-row" }, field(S("miniapp.new_due"), dueBtn)),
       el("div", { class: "field" }, el("span", { class: "field-label" }, S("miniapp.new_reminders")), remindPicker),
       saveBtn
     )

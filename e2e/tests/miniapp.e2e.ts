@@ -83,13 +83,13 @@ test("Mini App end-to-end scenario", async ({ page }) => {
   //     it lands on today and becomes visible in the calendar.
   await goTab(page, "new");
   await page.locator("#view .card input.field-input").first().fill(taskTitle);
-  // Picker fields in the New form: 0=kind, 1=priority, 2=starts, 3=due.
+  // Picker fields in the New form: 0=kind, 1=priority, 2=starts, 3=end, 4=due.
   // Open the "due" date/time picker so the task anchors to a date.
-  await page.locator("#view .picker-field").nth(3).click();
+  await page.locator("#view .picker-field").nth(4).click();
   await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
   await page.locator(".flatpickr-calendar .today").click();
   await page.keyboard.press("Escape");
-  await expect(page.locator("#view .picker-field").nth(3)).toContainText(/\d/);
+  await expect(page.locator("#view .picker-field").nth(4)).toContainText(/\d/);
   await page.locator("#view .card .btn-primary").first().click();
 
   // 11. Task saved: we are back on Today and the task is listed for today.
