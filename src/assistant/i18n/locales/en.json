@@ -131,6 +131,7 @@
   "action.preview.log_workout.effort": "effort {effort}",
   "action.preview.schedule_workout": "Schedule workout '{name}' at {when}",
   "action.preview.schedule_workout.duration": "({minutes} min)",
+  "action.preview.schedule_workout.until": "until {when}",
   "chat.empty_turn": "I'm not sure I understood. Could you rephrase?",
   "chat.private_only": "I only work in private chats. Please message me directly (1-on-1) — tasks, reminders, and digests are delivered in our private conversation, so I ignore groups and channels.",
 

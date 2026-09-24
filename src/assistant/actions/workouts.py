@@ -55,6 +55,7 @@ class ScheduleWorkoutPayload(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     starts_at: datetime
     duration_minutes: int | None = Field(default=None, gt=0)
+    ends_at: datetime | None = None
 
 
 async def exec_log_workout(
@@ -82,6 +83,7 @@ async def exec_schedule_workout(
         name=payload.name,
         starts_at=payload.starts_at,
         duration_minutes=payload.duration_minutes,
+        ends_at=payload.ends_at,
     )
     await session.flush()
     return {"item_id": item.id, "title": item.title}
@@ -115,7 +117,9 @@ async def _preview_schedule_workout(
             when=_fmt(payload.starts_at, user),
         )
     ]
-    if payload.duration_minutes:
+    if payload.ends_at:
+        parts.append(t(lang, "action.preview.schedule_workout.until", when=_fmt(payload.ends_at, user)))
+    elif payload.duration_minutes:
         parts.append(t(lang, "action.preview.schedule_workout.duration", minutes=payload.duration_minutes))
     return " ".join(parts)
 

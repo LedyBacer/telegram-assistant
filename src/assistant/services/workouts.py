@@ -175,14 +175,28 @@ async def schedule_workout(
     name: str,
     starts_at: datetime,
     duration_minutes: int | None = None,
+    ends_at: datetime | None = None,
 ) -> CalendarItem:
-    """Create a workout calendar item plus a reminder at its start time."""
+    """Create a workout calendar item plus a reminder at its start time.
+
+    The item's ``ends_at`` is an explicit ``ends_at`` when given, otherwise
+    derived from ``starts_at`` + ``duration_minutes``. Both are normalized to
+    UTC in the user's timezone before being handed to the calendar service.
+    """
+    tz = _user_tz(user)
+    if ends_at is not None:
+        effective_end: datetime | None = _to_utc(ends_at, tz)
+    elif duration_minutes is not None:
+        effective_end = _to_utc(starts_at, tz) + timedelta(minutes=duration_minutes)
+    else:
+        effective_end = None
     item = await calendar_service.create_item(
         session,
         user,
         title=f"Workout: {name.strip()}",
         kind=ItemKind.task,
         starts_at=starts_at,
+        ends_at=effective_end,
         source="workout",
         extra={"duration_minutes": duration_minutes} if duration_minutes else {},
     )

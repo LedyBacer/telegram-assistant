@@ -131,6 +131,7 @@
   "action.preview.log_workout.effort": "усилие {effort}",
   "action.preview.schedule_workout": "Запланировать тренировку «{name}» в {when}",
   "action.preview.schedule_workout.duration": "({minutes} мин)",
+  "action.preview.schedule_workout.until": "до {when}",
   "chat.empty_turn": "Не уверен, что понял. Сформулируйте, пожалуйста, иначе?",
   "chat.private_only": "Я работаю только в личных чатах. Напишите мне напрямую (1-на-1) — задачи, напоминания и дайджесты доставляются в личную переписку, поэтому группы и каналы я игнорирую.",
 

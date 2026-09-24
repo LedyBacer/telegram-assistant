@@ -173,3 +173,16 @@ async def test_schedule_workout_creates_item_and_reminder(
     )
     assert len(reminders) == 1
     assert reminders[0].fire_at == when
+    # duration derives ends_at = starts_at + 45 min
+    assert item.ends_at == when + timedelta(minutes=45)
+
+
+async def test_schedule_workout_explicit_ends_at(session: AsyncSession) -> None:
+    user = await _user(session)
+    when = datetime(2026, 9, 23, 18, 0, tzinfo=UTC)
+    ends = datetime(2026, 9, 23, 20, 30, tzinfo=UTC)
+    item = await wo.schedule_workout(session, user, name="Run", starts_at=when, ends_at=ends)
+    await session.commit()
+    assert item.ends_at == ends
+    # explicit ends_at wins over an absent duration
+    assert item.extra.get("duration_minutes") is None
