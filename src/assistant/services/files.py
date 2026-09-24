@@ -184,8 +184,10 @@ async def register_local_upload(
         return file
 
     path = _storage_path(file.storage_key)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
+    await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+    # Blocking disk write off the event loop so a slow volume cannot stall the
+    # API worker's other handlers (SPEC §21).
+    await asyncio.to_thread(path.write_bytes, data)
     file.extra = {**(file.extra or {}), "local_upload": True}
     await session.flush()
 

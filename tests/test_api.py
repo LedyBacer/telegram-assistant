@@ -491,6 +491,69 @@ async def test_files_list_and_search(
     assert (await client.get("/api/v1/files", headers=HEADERS)).json() == []
 
 
+async def test_upload_orphan_cleaned_when_commit_fails(
+    client: httpx.AsyncClient,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V4 §30: a Mini App upload that fails at commit must not leave an
+    orphaned artifact on disk — the endpoint's except-block discards the
+    stored bytes so the DB and disk never disagree (SPEC §21)."""
+    import asyncio
+    from pathlib import Path
+
+    from assistant.config import get_settings
+
+    await client.get("/api/v1/me", headers=HEADERS)  # upsert user 777
+
+    storage_dir = Path(get_settings().file_storage_dir)
+
+    def _snapshot() -> set[Path]:
+        return set(storage_dir.iterdir()) if storage_dir.exists() else set()
+
+    before = await asyncio.to_thread(_snapshot)
+
+    discarded: list[str] = []
+    orig_discard = files.discard_storage
+
+    def _recording_discard(key: str) -> None:
+        discarded.append(key)
+        orig_discard(key)
+
+    monkeypatch.setattr(files, "discard_storage", _recording_discard)
+
+    # The auth dependency commits once before the handler runs; let that
+    # succeed, then fail the handler's own commit (after the bytes are on disk
+    # and the row is registered) to trigger the orphan-cleanup path.
+    commit_calls = {"n": 0}
+    orig_commit = session.commit
+
+    async def _flaky_commit(*args, **kwargs):
+        commit_calls["n"] += 1
+        if commit_calls["n"] == 1:
+            return await orig_commit(*args, **kwargs)
+        raise RuntimeError("injected commit failure")
+
+    monkeypatch.setattr(session, "commit", _flaky_commit)
+
+    # ASGITransport re-raises app exceptions (no 500 body), so the injected
+    # commit failure surfaces as the same RuntimeError to the caller.
+    with pytest.raises(RuntimeError, match="injected commit failure"):
+        await client.post(
+            "/api/v1/files",
+            headers=HEADERS,
+            files={"file": ("doc.txt", b"hello orphan", "text/plain")},
+        )
+    # Exactly one artifact was discarded — the failed upload's storage key.
+    assert len(discarded) == 1
+    assert not await asyncio.to_thread(
+        files._storage_path(discarded[0]).exists
+    )
+    # Nothing new survived in the storage directory.
+    after = await asyncio.to_thread(_snapshot)
+    assert after == before
+
+
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
