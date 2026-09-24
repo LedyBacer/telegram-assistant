@@ -1,12 +1,52 @@
 # Progress
 
-Status: V3 PRIORITIES 38–43 COMPLETE (P43: production installs are
-lockfile-pinned — the Dockerfile builds via `uv sync --frozen --no-dev`
-from uv.lock, so no dependency can be silently re-resolved from
-pyproject.toml ranges at image-build time; `uv lock --check` in the
-acceptance suite fails on lockfile drift; tests/test_packaging.py guards
-the Dockerfile against regression to `pip install`).
-Next: V3 Priority 44.
+Status: V3 PRIORITIES 38–44 COMPLETE (P44: test-auth backdoor removed from
+production — `Settings` has no test-auth fields and the production
+`create_app()` authenticates only with signed initData; the deterministic
+test user is installed only by the test-only entry point
+`assistant.api.testing`, which Playwright runs; a test proves the
+production app 401s without initData even when `ASSISTANT_TEST_AUTH=1`).
+Next: V3 Priority 45.
+
+## V3 — Priority 44: remove the production test-auth backdoor
+
+The Mini App auth bypass used to live inside the production
+`create_app()`: a `Settings.test_auth_enabled` field read the
+`ASSISTANT_TEST_AUTH` env var, and when set the production app overrode
+`get_current_user` with a fixed test user. That means a leaked or
+mis-set env var in a real deployment would silently open the API to a
+deterministic identity. The override is moved out of the production code
+path so it is structurally unreachable from a normal app.
+
+- `src/assistant/config.py`: removed **all** test-auth fields
+  (`test_auth_enabled`, `test_auth_user_id`, `test_auth_first_name`,
+  `test_auth_last_name`, `test_auth_username`). `Settings` now has zero
+  test-auth surface; the `ASSISTANT_TEST_AUTH` env var is ignored
+  (`extra="ignore"`).
+- `src/assistant/api/main.py` (production): removed `_install_test_auth`
+  and the `if settings.test_auth_enabled:` block. `create_app()` now only
+  wires the initData-verified `get_current_user` dependency — no env-gated
+  bypass, and no test-auth imports remain in the module.
+- `src/assistant/api/testing.py` (new, test-only): `install_test_auth(app)`
+  overrides `get_current_user` with the deterministic test user (constants
+  live here), `create_test_app()` = `create_app()` + the override, and a
+  `main()` runnable via `python -m assistant.api.testing`. Nothing in the
+  production runtime imports this module.
+- `e2e/playwright.config.ts`: the E2E web server now runs
+  `python -m assistant.api.testing` (was `assistant.api.main`) and the
+  `ASSISTANT_TEST_AUTH: "1"` env var is removed — the entry point itself
+  installs the override.
+- `tests/test_minapp_shell.py`: the old bypass test is replaced by two
+  boundary tests — `test_production_app_has_no_test_auth_bypass` (401
+  without initData **even when** `ASSISTANT_TEST_AUTH=1` is in the
+  environment) and `test_test_only_entrypoint_installs_deterministic_user`
+  (`create_test_app()` resolves id 999999 with no initData).
+- `README.md`: the "Authenticated tests without a production bypass"
+  paragraph updated to describe the test-only entry point.
+
+Verified: `tests/test_minapp_shell.py` 7 passed; both
+`assistant.api.main` and `assistant.api.testing` import cleanly;
+`uv run ruff check .` clean.
 
 ## V3 — Priority 43: production builds from the lockfile
 

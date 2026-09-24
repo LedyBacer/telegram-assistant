@@ -37,7 +37,10 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "uv run python -m assistant.api.main",
+    // The test-only entry point wraps the production app and installs a
+    // deterministic test user (no initData). The production
+    // `assistant.api.main` has no such bypass — see tests/test_minapp_shell.py.
+    command: "uv run python -m assistant.api.testing",
     cwd: "..",
     url: `${BASE}/healthz`,
     reuseExistingServer: !process.env.CI,
@@ -45,10 +48,6 @@ export default defineConfig({
     env: {
       ...process.env,
       ASSISTANT_API_PORT: String(E2E_PORT),
-      // Test-only auth: activates the deterministic test user in-process.
-      // Production never sets this, so the bypass cannot activate from a
-      // normal HTTP request.
-      ASSISTANT_TEST_AUTH: "1",
       DATABASE_URL: `postgresql+asyncpg://assistant:assistant@localhost:5432/${E2E_DB}`,
       PUBLIC_BASE_URL: BASE,
       TELEGRAM_BOT_TOKEN: "e2e-test-token",

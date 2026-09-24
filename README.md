@@ -286,15 +286,20 @@ a dedicated `assistant_e2e` database that `e2e/global-setup.ts` creates,
 migrates, and `TRUNCATE ... CASCADE`s before every run, and an API process
 started by Playwright itself. Viewport is 390x844 (ru-RU, UTC).
 
-**Authenticated tests without a production bypass:** the E2E API is started
-with `ASSISTANT_TEST_AUTH=1`, which makes `create_app()` override the
-`get_current_user` dependency with a deterministic test user. The override is
-purely in-process and env-gated — a normal production request (no env var)
-gets `401` without valid Telegram `initData`, so the bypass cannot activate
-from outside. The Telegram WebApp client itself is stubbed in the browser via
-`page.addInitScript` (`e2e/helpers/telegram-stub.ts`), providing `initData`,
-`themeParams`, `ready()/expand()`, BackButton, HapticFeedback, and runtime
-theme switching; the real `telegram.org` script is blocked in tests.
+**Authenticated tests without a production bypass:** the production app
+(`assistant.api.main`) authenticates every Mini App request with a signed
+Telegram `initData` and has **no** test-auth bypass. The E2E API is started
+from the separate test-only entry point `assistant.api.testing`
+(`python -m assistant.api.testing`), which wraps the production app and
+installs the `get_current_user` dependency with a deterministic test user.
+Because the bypass exists only in that module and the production
+`create_app()` never consults any environment flag for it, the real API can
+never be turned into an open endpoint from a (mis)configured environment. A
+normal production request without valid `initData` gets `401`. The Telegram
+WebApp client itself is stubbed in the browser via `page.addInitScript`
+(`e2e/helpers/telegram-stub.ts`), providing `initData`, `themeParams`,
+`ready()/expand()`, BackButton, HapticFeedback, and runtime theme switching;
+the real `telegram.org` script is blocked in tests.
 
 The specs (6) verify rendering (including the `[object HTMLDivElement]`
 regression), themes via computed styles (light/dark/custom), layout (no

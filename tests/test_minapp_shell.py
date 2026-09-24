@@ -1,5 +1,12 @@
 """Mini App shell-level tests: root redirect, static entry, file upload, and the
-test-only auth bypass (which must only activate under ``ASSISTANT_TEST_AUTH``).
+auth boundary.
+
+The production ``create_app()`` has **no** test-auth bypass: it authenticates
+only with a signed Telegram ``initData``, and setting ``ASSISTANT_TEST_AUTH``
+in the environment cannot enable one. The deterministic test user is installed
+by the separate test-only entry point ``assistant.api.testing.create_test_app``
+(used by Playwright), and a test here proves the production app rejects that
+bypass while the test-only app applies it.
 
 Environment is set before importing the app so ``get_settings()`` reads test
 values; no real Telegram/OpenAI credentials are used.
@@ -120,17 +127,45 @@ async def test_file_upload_rejects_unsupported_type(client: httpx.AsyncClient) -
 
 
 # ---------------------------------------------------------------------------
-# Test-only auth bypass
+# Auth boundary: production has no bypass; the test-only entry point does
 # ---------------------------------------------------------------------------
 
 
-async def test_test_auth_bypass_activates_only_when_enabled(
+async def test_production_app_has_no_test_auth_bypass(
     session: AsyncSession,
 ) -> None:
-    """With ``ASSISTANT_TEST_AUTH=1`` the auth dependency is replaced by a
-    deterministic test user; with it unset, initData is still required."""
-    # 1) Default (no env): /api/v1/me without initData is 401.
-    app = create_app()
+    """The production ``create_app()`` authenticates only with initData and
+    has no test-auth bypass: even with ``ASSISTANT_TEST_AUTH`` present in the
+    environment, a request without valid initData is rejected with 401. The
+    override lives solely in the test-only entry point, so it cannot be
+    activated against the production app."""
+    get_settings.cache_clear()
+    os.environ["ASSISTANT_TEST_AUTH"] = "1"
+    try:
+        app = create_app()
+
+        async def _override() -> AsyncIterator[AsyncSession]:
+            yield session
+
+        app.dependency_overrides[get_session] = _override
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            # No initData header: a real deployment must refuse this.
+            assert (await c.get("/api/v1/me")).status_code == 401
+    finally:
+        del os.environ["ASSISTANT_TEST_AUTH"]
+        get_settings.cache_clear()
+
+
+async def test_test_only_entrypoint_installs_deterministic_user(
+    session: AsyncSession,
+) -> None:
+    """``create_test_app()`` (the Playwright entry point) resolves the
+    deterministic test user with no initData, so browser specs can exercise
+    authenticated flows without a real Telegram identity."""
+    from assistant.api.testing import create_test_app
+
+    app = create_test_app()
 
     async def _override() -> AsyncIterator[AsyncSession]:
         yield session
@@ -138,21 +173,6 @@ async def test_test_auth_bypass_activates_only_when_enabled(
     app.dependency_overrides[get_session] = _override
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        assert (await c.get("/api/v1/me")).status_code == 401
-
-    get_settings.cache_clear()
-    os.environ["ASSISTANT_TEST_AUTH"] = "1"
-    try:
-        app2 = create_app()
-        app2.dependency_overrides[get_session] = _override
-        transport2 = httpx.ASGITransport(app=app2)
-        async with httpx.AsyncClient(
-            transport=transport2, base_url="http://test"
-        ) as c2:
-            # No initData header at all — the bypass resolves a test user.
-            res = await c2.get("/api/v1/me")
-            assert res.status_code == 200
-            assert res.json()["user"]["id"] == 999999
-    finally:
-        del os.environ["ASSISTANT_TEST_AUTH"]
-        get_settings.cache_clear()
+        res = await c.get("/api/v1/me")
+        assert res.status_code == 200
+        assert res.json()["user"]["id"] == 999999

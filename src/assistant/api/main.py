@@ -6,18 +6,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from assistant.api.auth import get_current_user
 from assistant.api.routes import router as api_router
 from assistant.config import get_settings
-from assistant.db import dispose_engine, get_session
+from assistant.db import dispose_engine
 from assistant.logging import setup_logging
-from assistant.models.users import User
-from assistant.services.users import upsert_user
 
 
 @asynccontextmanager
@@ -26,36 +22,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await dispose_engine()
 
 
-def _install_test_auth(app: FastAPI, settings) -> None:
-    """Replace the auth dependency with a deterministic test user.
-
-    Only invoked when ``ASSISTANT_TEST_AUTH`` is set (Playwright E2E). Production
-    never sets the flag, so a normal HTTP request can never trigger this path.
-    """
-
-    async def _test_user(session: AsyncSession = Depends(get_session)) -> User:
-        user, _ = await upsert_user(
-            session,
-            user_id=settings.test_auth_user_id,
-            first_name=settings.test_auth_first_name,
-            last_name=settings.test_auth_last_name,
-            username=settings.test_auth_username,
-        )
-        await session.commit()
-        return user
-
-    app.dependency_overrides[get_current_user] = _test_user
-
-
 def create_app() -> FastAPI:
+    """Build the production FastAPI app.
+
+    Authentication is always the initData-verified ``get_current_user``
+    dependency (see :mod:`assistant.api.auth`). There is **no** test-auth
+    bypass here: a deterministic test user is installed only by the
+    test-only entry point :func:`assistant.api.testing.create_test_app`,
+    which Playwright's web server runs. The production app never consults
+    an environment flag to enable any auth bypass, so setting such a flag
+    in a (mis)configured environment cannot turn the real API into an
+    open endpoint.
+    """
     settings = get_settings()
     app = FastAPI(
         title="Smart Personal Assistant", version="0.1.0", lifespan=_lifespan
     )
     app.include_router(api_router)
-
-    if settings.test_auth_enabled:
-        _install_test_auth(app, settings)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -76,7 +59,7 @@ def create_app() -> FastAPI:
         index_file = miniapp_dir / "index.html"
 
         # Serve the entry point at exactly ``/miniapp`` (no trailing-slash
-        # redirect) so the reverse proxy only needs the ``/`` → ``/miniapp`` hop.
+        # redirect) so the reverse proxy only needs the `/` → `/miniapp` hop.
         @app.get("/miniapp", include_in_schema=False)
         async def miniapp_index() -> FileResponse:
             return FileResponse(index_file, media_type="text/html")

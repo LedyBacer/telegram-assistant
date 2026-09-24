@@ -22,20 +22,6 @@ class Settings(BaseSettings):
     miniapp_auth_max_age_seconds: int = 900
     miniapp_dir: str = "miniapp"
 
-    # Test-only Mini App auth (E2E). Enabled ONLY via the ASSISTANT_TEST_AUTH
-    # environment variable set by the Playwright test harness; production and
-    # development never set it, so the bypass cannot activate from a normal
-    # HTTP request. When enabled, the auth dependency is replaced at startup
-    # with a deterministic test user (no initData verification).
-    test_auth_enabled: bool = Field(
-        default=False,
-        validation_alias="ASSISTANT_TEST_AUTH",
-    )
-    test_auth_user_id: int = 999999
-    test_auth_first_name: str = "Test"
-    test_auth_last_name: str = "User"
-    test_auth_username: str = "e2e"
-
     # AI providers (OpenAI-compatible).
     #
     # Chat/generation and embeddings are configured independently: the two
