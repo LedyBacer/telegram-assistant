@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.ai import AIProviderError
-from assistant.ai.schemas import AssistantTurn
+from assistant.ai.schemas import AITaskDraft, AssistantTurn
 from assistant.bot import handlers
 from assistant.bot.handlers import on_text
 from assistant.bot.states import TaskDraftStates
@@ -417,3 +417,49 @@ async def test_on_text_still_routes_fsm_states(session: AsyncSession, monkeypatc
     message.answer.assert_awaited_once()
     assert "buttons" in message.answer.await_args.args[0]
     assert (await session.scalars(select(ChatMessage))).all() == []
+
+
+class _TxSpyProvider:
+    """Records the session's transaction state at the moment of model I/O."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self.in_transaction_during_call: bool | None = None
+
+    async def chat_structured(self, *, system: str, messages, schema):
+        self.in_transaction_during_call = self._session.in_transaction()
+        return AITaskDraft(title="Call mom", kind="task")
+
+    async def chat(self, *, system: str, messages) -> str:
+        return "ok"
+
+    async def embed_documents(self, *, texts):
+        return [[0.0] * EMBEDDING_DIMENSIONS for _ in texts]
+
+    async def embed_query(self, *, query):
+        return [0.0] * EMBEDDING_DIMENSIONS
+
+
+async def test_natural_language_draft_releases_tx_before_model_io(
+    session: AsyncSession, monkeypatch
+) -> None:
+    """The NL draft branch must not hold a DB transaction across the model's
+    network call (V4 §19-20): commit the session before chat_structured."""
+    _no_thinking(monkeypatch)
+    provider = _TxSpyProvider(session)
+    monkeypatch.setattr(
+        handlers.chat, "get_ai_provider", lambda: provider
+    )
+    state = SimpleNamespace(
+        get_state=AsyncMock(return_value=TaskDraftStates.waiting_for_text),
+        set_state=AsyncMock(),
+        clear=AsyncMock(),
+        update_data=AsyncMock(),
+    )
+    # No `title:` line -> _parse_draft raises ValueError -> NL/model branch.
+    message = _fake_text_message("remind me to call mom tomorrow")
+    await on_text(message, session, state)
+    await session.commit()
+
+    assert provider.in_transaction_during_call is False
+    state.set_state.assert_awaited_once_with(TaskDraftStates.confirm)

@@ -65,6 +65,10 @@ async def on_text(
         except ValueError:
             # Natural language: let the model produce a typed draft. The
             # manual format stays available as a deterministic fallback.
+            # tz and lang are already snapshotted into locals above; commit
+            # to release the DB transaction before the model's network I/O
+            # (no open transaction spanning the provider call, V4 §19-20).
+            await session.commit()
             thinking_status = await _send_thinking(message, lang)
             try:
                 ai = await get_ai_provider().chat_structured(
