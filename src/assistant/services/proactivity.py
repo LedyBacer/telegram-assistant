@@ -271,42 +271,10 @@ async def evaluate_user(
 
     tz = _user_tz(user_settings)
     now_local = now.astimezone(tz)
-    if _in_quiet_hours(now_local, settings):
-        return []
-
     local_date = now_local.date()
     # Convert the local day's start/end back to UTC for the counter query.
     day_start_utc = datetime.combine(local_date, time.min, tzinfo=tz).astimezone(UTC)
     day_end_utc = day_start_utc + timedelta(days=1)
-    today_count = (
-        await session.scalar(
-            select(func.count())
-            .select_from(NudgeDelivery)
-            .where(
-                NudgeDelivery.user_id == user_id,
-                NudgeDelivery.sent_at >= day_start_utc,
-                NudgeDelivery.sent_at < day_end_utc,
-            )
-        )
-        or 0
-    )
-    if today_count >= settings.max_nudges_per_day:
-        return []
-
-    last = (
-        await session.scalar(
-            select(func.max(NudgeDelivery.sent_at)).where(
-                NudgeDelivery.user_id == user_id
-            )
-        )
-    )
-    if (
-        last is not None
-        and now - last < timedelta(minutes=settings.min_interval_minutes)
-    ):
-        return []
-
-    sent: list[str] = []
     language = _user_lang(user_settings)
     week_key = f"{now_local.isocalendar().year}-W{now_local.isocalendar().week:02d}"
     # The week starts at local MIDNIGHT on Monday (not "now minus 6 days"):
@@ -315,11 +283,52 @@ async def evaluate_user(
         now_local - timedelta(days=now_local.weekday())
     ).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
 
-    # Weekly review: Monday in the user's local time, once per ISO week.
-    # The message is a deterministic summary of the user's actual state;
-    # a week with nothing to report produces no nudge.
+    async def gates_open() -> bool:
+        """Re-run ALL anti-spam gates against the CURRENT delivery state.
+
+        Called before EVERY nudge reservation (V4 §9-11). Because a nudge
+        committed earlier in this pass advances the daily count and the
+        last-sent timestamp, the just-sent nudge suppresses every lower-
+        priority nudge in the same pass — the cross-kind anti-spam the old
+        once-at-the-top gate read failed to enforce.
+        """
+        if _in_quiet_hours(now_local, settings):
+            return False
+        today_count = (
+            await session.scalar(
+                select(func.count())
+                .select_from(NudgeDelivery)
+                .where(
+                    NudgeDelivery.user_id == user_id,
+                    NudgeDelivery.sent_at >= day_start_utc,
+                    NudgeDelivery.sent_at < day_end_utc,
+                )
+            )
+            or 0
+        )
+        if today_count >= settings.max_nudges_per_day:
+            return False
+        last = await session.scalar(
+            select(func.max(NudgeDelivery.sent_at)).where(
+                NudgeDelivery.user_id == user_id
+            )
+        )
+        return last is None or now - last >= timedelta(
+            minutes=settings.min_interval_minutes
+        )
+
+    sent: list[str] = []
+    # Deterministic priority (V4 §10): weekly review > overdue > workout.
+
+    # 1) Weekly review: Monday in the user's local time, once per ISO week.
+    # The message is a deterministic summary of the user's actual state; a
+    # week with nothing to report produces no nudge.
     weekly_stats: dict | None = None
-    if settings.weekly_review_enabled and now_local.weekday() == 0:
+    if (
+        settings.weekly_review_enabled
+        and now_local.weekday() == 0
+        and await gates_open()
+    ):
         weekly_stats = await _weekly_review_stats(
             session, user_id, now, week_start_utc
         )
@@ -338,10 +347,27 @@ async def evaluate_user(
             await send(user_id, _weekly_review_text(language, weekly_stats))
             sent.append(NudgeKind.weekly_review)
 
-    # Workout nudge: once per local day when the last workout is stale and
-    # there is no scheduled workout left on the calendar (today or later):
-    # a plan already on the books is the user's own answer (V3 P39).
-    if settings.workout_nudge_enabled:
+    # 2) Overdue: once per local day when something is past due.
+    if settings.overdue_nudge_enabled and await gates_open():
+        overdue_count = (
+            weekly_stats["overdue"]
+            if weekly_stats is not None
+            else await _overdue_count(session, user_id, now)
+        )
+        if overdue_count and await _reserve_nudge(
+            session, user_id, NudgeKind.overdue, local_date.isoformat(), now
+        ):
+            # Commit the dedupe row BEFORE the send (at-most-once).
+            await session.commit()
+            await send(
+                user_id, t(language, NUDGE_TEXT_KEYS[NudgeKind.overdue], n=overdue_count)
+            )
+            sent.append(NudgeKind.overdue)
+
+    # 3) Workout: once per local day when the last workout is stale and there
+    # is no scheduled workout left on the calendar (today or later): a plan
+    # already on the books is the user's own answer (V3 P39).
+    if settings.workout_nudge_enabled and await gates_open():
         last_workout = await session.scalar(
             select(WorkoutLog)
             .where(WorkoutLog.user_id == user_id)
@@ -373,23 +399,6 @@ async def evaluate_user(
             await session.commit()
             await send(user_id, t(language, NUDGE_TEXT_KEYS[NudgeKind.workout]))
             sent.append(NudgeKind.workout)
-
-    # Overdue nudge: once per local day when something is past due.
-    if settings.overdue_nudge_enabled:
-        overdue_count = (
-            weekly_stats["overdue"]
-            if weekly_stats is not None
-            else await _overdue_count(session, user_id, now)
-        )
-        if overdue_count and await _reserve_nudge(
-            session, user_id, NudgeKind.overdue, local_date.isoformat(), now
-        ):
-            # Commit the dedupe row BEFORE the send (at-most-once).
-            await session.commit()
-            await send(
-                user_id, t(language, NUDGE_TEXT_KEYS[NudgeKind.overdue], n=overdue_count)
-            )
-            sent.append(NudgeKind.overdue)
 
     return sent
 

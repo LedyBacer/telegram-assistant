@@ -166,10 +166,11 @@ async def test_weekly_review_summary_lists_state(session: AsyncSession) -> None:
     await session.commit()
 
     send, calls = _fake_send()
-    # The seeded overdue item also trips the (default-on) overdue nudge.
+    # V4 §9-10: the weekly review has priority, and the per-reservation gate
+    # re-check suppresses the (also-eligible) overdue nudge in the same pass
+    # via min_interval — only one nudge is sent per pass.
     assert await pro.evaluate_user(session, user.id, now=MON, send=send) == [
-        NudgeKind.weekly_review,
-        NudgeKind.overdue,
+        NudgeKind.weekly_review
     ]
     await session.commit()
     text = calls[0][1]
@@ -277,11 +278,13 @@ async def test_workout_nudge_fires_when_scheduled_workout_already_past(
     await session.commit()
 
     send, calls = _fake_send()
-    # The slipped workout item is also past due, so the overdue nudge joins.
+    # The slipped workout item is past due, so the overdue nudge fires — and
+    # it has priority over the workout nudge (V4 §10). The per-reservation
+    # gate re-check then suppresses the workout nudge in the same pass.
     sent = await pro.evaluate_user(session, user.id, now=TUE, send=send)
     await session.commit()
-    assert sent == [NudgeKind.workout, NudgeKind.overdue]
-    assert len(calls) == 2
+    assert sent == [NudgeKind.overdue]
+    assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -296,28 +299,38 @@ async def test_overdue_nudge_fires_and_dedupes_daily(session: AsyncSession) -> N
     )
     await session.commit()
 
-    # Tuesday: workout nudge (no logs) plus the new overdue nudge.
+    # Tuesday: the overdue nudge fires with priority over the (also-stale)
+    # workout nudge, which the per-reservation gate then suppresses (V4 §10).
     send, calls = _fake_send()
     sent = await pro.evaluate_user(session, user.id, now=TUE, send=send)
     await session.commit()
-    assert sent == [NudgeKind.workout, NudgeKind.overdue]
-    assert "Overdue: 1." in calls[-1][1]
+    assert sent == [NudgeKind.overdue]
+    assert "Overdue: 1." in calls[0][1]
 
-    # Same local day: both deduped.
+    # Two hours later (past the 120-min default interval) the deferred
+    # workout nudge is finally allowed to fire for the day.
     send2, calls2 = _fake_send()
     assert (
         await pro.evaluate_user(session, user.id, now=TUE + timedelta(hours=2), send=send2)
+        == [NudgeKind.workout]
+    )
+    await session.commit()
+
+    # A further pass the same day: both nudges are now deduped.
+    send3, calls3 = _fake_send()
+    assert (
+        await pro.evaluate_user(session, user.id, now=TUE + timedelta(hours=4), send=send3)
         == []
     )
     await session.commit()
-    assert calls2 == []
+    assert calls3 == []
 
-    # Next day: the overdue item is still late and no workout happened, so
-    # both daily nudges return.
-    send3, _ = _fake_send()
+    # Next day: the overdue item is still late, so the overdue nudge returns
+    # (again taking priority over the workout nudge).
+    send4, _ = _fake_send()
     assert (
-        await pro.evaluate_user(session, user.id, now=WED, send=send3)
-        == [NudgeKind.workout, NudgeKind.overdue]
+        await pro.evaluate_user(session, user.id, now=WED, send=send4)
+        == [NudgeKind.overdue]
     )
     await session.commit()
 
@@ -414,9 +427,11 @@ async def test_max_nudges_per_day_cap(session: AsyncSession) -> None:
     )
     await session.commit()
 
-    # Monday: both triggers eligible, no prior nudges today -> both send.
+    # Monday: two triggers are eligible, but max_nudges_per_day=1 caps the
+    # pass at a single nudge (the highest-priority one, the weekly review).
     send, _ = _fake_send()
-    assert len(await pro.evaluate_user(session, user.id, now=MON, send=send)) == 2
+    sent = await pro.evaluate_user(session, user.id, now=MON, send=send)
+    assert sent == [NudgeKind.weekly_review]
     await session.commit()
 
     # Drop only the workout dedupe row so the workout trigger is eligible
@@ -453,12 +468,13 @@ async def test_min_interval_suppresses_recent_nudges(
     )
     await session.commit()
 
-    # Monday: both triggers send; the weekly row then doubles as the
-    # min-interval record for the workout trigger re-test below.
+    # Monday: only the highest-priority trigger (weekly review) sends; the
+    # min-interval gate re-check suppresses the (also-eligible) workout nudge
+    # in the same pass. The weekly row is the min-interval record below.
     send, _ = _fake_send()
     sent = await pro.evaluate_user(session, user.id, now=MON, send=send)
     await session.commit()
-    assert sent == [NudgeKind.weekly_review, NudgeKind.workout]
+    assert sent == [NudgeKind.weekly_review]
 
     # Drop only the workout dedupe row so that trigger is eligible again;
     # the weekly delivery row keeps supplying the min-interval gate.
@@ -679,3 +695,182 @@ async def test_concurrent_sessions_nudge_exactly_once(
     ).all()
     assert [r.kind for r in rows] == [NudgeKind.workout]
     assert rows[0].period_key == TUE.date().isoformat()
+
+
+async def _run_concurrent(
+    engine: AsyncEngine,
+    user_id: int,
+    now: datetime,
+    send,
+    sessions: int = 2,
+    *,
+    return_exceptions: bool = False,
+):
+    """Run ``sessions`` independent sessions evaluating the same user."""
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def one() -> list[str]:
+        async with factory() as other:
+            sent = await pro.evaluate_user(other, user_id, now=now, send=send)
+            await other.commit()
+            return sent
+
+    return await asyncio.gather(
+        *(one() for _ in range(sessions)), return_exceptions=return_exceptions
+    )
+
+
+async def _delivery_rows(session: AsyncSession, user_id: int) -> list[NudgeDelivery]:
+    return (
+        (
+            await session.scalars(
+                select(NudgeDelivery).where(NudgeDelivery.user_id == user_id)
+            )
+        )
+        .all()
+    )
+
+
+# ---------------------------------------------------------------------------
+# V4 §11: concurrency under real PostgreSQL
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_passes_enforce_max_nudges_per_day(
+    session: AsyncSession, engine: AsyncEngine
+) -> None:
+    """A daily cap of 1 means concurrent passes send exactly one nudge total."""
+    user = await _user(session, user_id=201)
+    settings = await _settings(session, user)
+    settings.max_nudges_per_day = 1
+    await session.commit()
+    # Both an overdue item and a stale workout are eligible; the weekly
+    # review (Monday) outranks both, and the cap must stop the rest.
+    await _item(session, user, title="Late", status="scheduled", due_at=MON - timedelta(days=1))
+    await session.commit()
+    user_id = user.id
+
+    send, calls = _fake_send()
+    results = await _run_concurrent(engine, user_id, MON, send, sessions=2)
+    total = [kind for kinds in results for kind in kinds]
+    assert total == [NudgeKind.weekly_review]
+    assert len(calls) == 1
+    assert len(await _delivery_rows(session, user_id)) == 1
+
+
+async def test_concurrent_passes_min_interval_suppresses_same_day(
+    session: AsyncSession, engine: AsyncEngine
+) -> None:
+    """The first-sent nudge of a pass suppresses the rest via the interval gate.
+
+    On a weekday with both an overdue item and a stale workout, the overdue
+    nudge outranks the workout; a concurrent session must not slip a second
+    nudge through inside the minimum interval.
+    """
+    user = await _user(session, user_id=202)
+    await _settings(session, user)
+    await _item(session, user, title="Late", status="scheduled", due_at=TUE - timedelta(days=1))
+    await session.commit()
+    user_id = user.id
+
+    send, calls = _fake_send()
+    results = await _run_concurrent(engine, user_id, TUE, send, sessions=2)
+    total = [kind for kinds in results for kind in kinds]
+    assert total == [NudgeKind.overdue]
+    assert len(calls) == 1
+    assert [r.kind for r in await _delivery_rows(session, user_id)] == [NudgeKind.overdue]
+
+
+async def test_concurrent_weekly_review_uses_iso_week_key(
+    session: AsyncSession, engine: AsyncEngine
+) -> None:
+    """Concurrent Monday passes dedupe on the ISO week, not a rolling window."""
+    user = await _user(session, user_id=203)
+    await _settings(session, user)
+    await _item(
+        session, user, title="Done", status="completed", completed_at=MON - timedelta(hours=2)
+    )
+    await session.commit()
+    user_id = user.id
+    expected_week = f"{MON.isocalendar().year}-W{MON.isocalendar().week:02d}"
+
+    send, calls = _fake_send()
+    results = await _run_concurrent(engine, user_id, MON, send, sessions=2)
+    total = [kind for kinds in results for kind in kinds]
+    assert total == [NudgeKind.weekly_review]
+    assert len(calls) == 1
+    rows = await _delivery_rows(session, user_id)
+    assert len(rows) == 1
+    assert rows[0].period_key == expected_week
+
+
+async def test_concurrent_passes_per_user_isolation(
+    session: AsyncSession, engine: AsyncEngine
+) -> None:
+    """Two users evaluated concurrently each get exactly their own nudge."""
+    a = await _user(session, user_id=204)
+    b = await _user(session, user_id=205)
+    await _settings(session, a)
+    await _settings(session, b)
+    a_id, b_id = a.id, b.id
+
+    # Interleave sessions for both users in one gather so the two users'
+    # passes truly run at the same instant.
+    send, calls = _fake_send()
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def one(user_id: int) -> list[str]:
+        async with factory() as other:
+            sent = await pro.evaluate_user(other, user_id, now=TUE, send=send)
+            await other.commit()
+            return sent
+
+    results = await asyncio.gather(
+        one(a_id), one(b_id), one(a_id), one(b_id)
+    )
+
+    assert [k for ks in results for k in ks].count(NudgeKind.workout) == 2
+    assert len(calls) == 2
+    assert sorted(cid for cid, _ in calls) == sorted([a_id, b_id])
+    assert [r.kind for r in await _delivery_rows(session, a_id)] == [NudgeKind.workout]
+    assert [r.kind for r in await _delivery_rows(session, b_id)] == [NudgeKind.workout]
+
+
+async def test_concurrent_passes_at_most_once_when_send_fails(
+    session: AsyncSession, engine: AsyncEngine
+) -> None:
+    """A failed send after the reservation is NOT retried on the next pass."""
+    user = await _user(session, user_id=206)
+    await _settings(session, user)
+    user_id = user.id
+
+    # The send raises for this user; the reservation is committed first, so
+    # the nudge is lost, not duplicated. gather returns the raised error for
+    # the winning session and [] for the deduped one.
+    send, _ = _fake_send(fail_for={user_id})
+    await _run_concurrent(engine, user_id, TUE, send, sessions=2, return_exceptions=True)
+
+    # The durable reservation exists (committed before the failed send).
+    assert [r.kind for r in await _delivery_rows(session, user_id)] == [NudgeKind.workout]
+
+    # A healthy next pass must NOT re-send: at-most-once.
+    healthy, healthy_calls = _fake_send()
+    assert await pro.evaluate_user(session, user_id, now=TUE, send=healthy) == []
+    await session.commit()
+    assert healthy_calls == []
+
+
+async def test_many_concurrent_passes_single_kind_exactly_once(
+    session: AsyncSession, engine: AsyncEngine
+) -> None:
+    """Four simultaneous sessions racing for one nudge send it exactly once."""
+    user = await _user(session, user_id=207)
+    await _settings(session, user)
+    user_id = user.id
+
+    send, calls = _fake_send()
+    results = await _run_concurrent(engine, user_id, TUE, send, sessions=4)
+    total = [kind for kinds in results for kind in kinds]
+    assert total.count(NudgeKind.workout) == 1
+    assert len(calls) == 1
+    assert len(await _delivery_rows(session, user_id)) == 1
