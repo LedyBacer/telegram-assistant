@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions import register_action_kind
@@ -39,6 +39,8 @@ def _fmt(value: datetime | None, user: User) -> str | None:
 
 
 class LogWorkoutPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200)
     started_at: datetime | None = None
     duration_minutes: int | None = Field(default=None, gt=0)
@@ -47,6 +49,8 @@ class LogWorkoutPayload(BaseModel):
 
 
 class ScheduleWorkoutPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200)
     starts_at: datetime
     duration_minutes: int | None = Field(default=None, gt=0)

@@ -94,7 +94,11 @@ async def test_confirm_is_idempotent(session: AsyncSession) -> None:
     user = await _user(session)
     item = await cal.create_item(session, user, title="P")
     action = await act.propose_action(
-        session, user, kind="update_item", payload={"item_id": item.id}, summary="s"
+        session,
+        user,
+        kind="update_item",
+        payload={"item_id": item.id, "title": "P"},
+        summary="s",
     )
     confirmed = await act.confirm_action(session, user, action.id)
     await session.commit()
@@ -110,7 +114,11 @@ async def test_reject_then_confirm_raises(session: AsyncSession) -> None:
     user = await _user(session)
     item = await cal.create_item(session, user, title="P")
     action = await act.propose_action(
-        session, user, kind="update_item", payload={"item_id": item.id}, summary="s"
+        session,
+        user,
+        kind="update_item",
+        payload={"item_id": item.id, "title": "P"},
+        summary="s",
     )
     rejected = await act.reject_action(session, user, action.id)
     await session.commit()
@@ -323,7 +331,11 @@ async def test_corrupted_payload_expires_action(session: AsyncSession) -> None:
     user = await _user(session)
     item = await cal.create_item(session, user, title="P")
     action = await act.propose_action(
-        session, user, kind="update_item", payload={"item_id": item.id}, summary="s"
+        session,
+        user,
+        kind="update_item",
+        payload={"item_id": item.id, "title": "P"},
+        summary="s",
     )
     await act.confirm_action(session, user, action.id)
     # Simulate payload drift/corruption in storage.
@@ -379,7 +391,7 @@ async def test_expired_action_cannot_be_confirmed_or_executed(
         session,
         user,
         kind="update_item",
-        payload={"item_id": item.id},
+        payload={"item_id": item.id, "title": "P"},
         summary="s",
         expires_in=timedelta(seconds=-1),
     )
@@ -400,7 +412,7 @@ async def test_bulk_expire(session: AsyncSession) -> None:
         session,
         user,
         kind="update_item",
-        payload={"item_id": item.id},
+        payload={"item_id": item.id, "title": "P"},
         summary="old",
         expires_in=timedelta(seconds=-1),
     )
@@ -408,7 +420,7 @@ async def test_bulk_expire(session: AsyncSession) -> None:
         session,
         user,
         kind="update_item",
-        payload={"item_id": item.id},
+        payload={"item_id": item.id, "title": "P"},
         summary="new",
         expires_in=timedelta(hours=2),
     )
@@ -432,7 +444,7 @@ async def test_read_does_not_mutate_overdue_action(session: AsyncSession) -> Non
         session,
         user,
         kind="update_item",
-        payload={"item_id": item.id},
+        payload={"item_id": item.id, "title": "P"},
         summary="s",
         expires_in=timedelta(seconds=-1),
     )
@@ -713,3 +725,30 @@ async def test_preview_workouts(session: AsyncSession) -> None:
         summary="s",
     )
     assert sched_action.summary == "Schedule workout 'Run' at 2026-10-01 14:00 (30 min)"
+
+
+# ---------------------------------------------------------------------------
+# Strict payload schemas (V4 §17-18)
+# ---------------------------------------------------------------------------
+
+
+def test_update_item_rejects_no_op_payload() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="at least one field"):
+        UpdateItemPayload(item_id=1)
+    # A real field is accepted.
+    assert UpdateItemPayload(item_id=1, title="x").title == "x"
+
+
+def test_payload_schemas_forbid_extra_fields() -> None:
+    from pydantic import ValidationError
+
+    from assistant.actions.workouts import LogWorkoutPayload, ScheduleWorkoutPayload
+
+    with pytest.raises(ValidationError):
+        UpdateItemPayload(item_id=1, title="x", bogus_field="nope")
+    with pytest.raises(ValidationError):
+        LogWorkoutPayload(name="x", bogus_field="nope")
+    with pytest.raises(ValidationError):
+        ScheduleWorkoutPayload(name="x", starts_at=START, bogus_field="nope")

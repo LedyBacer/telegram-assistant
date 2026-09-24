@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field, conint
+from pydantic import BaseModel, ConfigDict, Field, conint, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions import register_action_kind
@@ -59,6 +59,8 @@ def _aware(value: datetime | None, user: User) -> datetime | None:
 
 
 class CreateItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(min_length=1, max_length=500)
     kind: ItemKind = ItemKind.task
     description: str | None = Field(default=None, max_length=4000)
@@ -81,6 +83,8 @@ class UpdateItemPayload(BaseModel):
     ``exclude=True`` keeps the internal field out of the generated prompt
     docs — the model must never set it."""
 
+    model_config = ConfigDict(extra="forbid")
+
     item_id: int
     title: str | None = None
     description: str | None = None
@@ -90,28 +94,54 @@ class UpdateItemPayload(BaseModel):
     priority: ItemPriority | None = None
     expected_updated_at: datetime | None = Field(default=None, exclude=True)
 
+    @model_validator(mode="after")
+    def _rejects_no_op_update(self) -> UpdateItemPayload:
+        # A partial update that sets no mutable field is a no-op: reject it
+        # so the model's empty "update" can never become a PendingAction
+        # (V4 §18).
+        if (
+            self.title is None
+            and self.description is None
+            and self.starts_at is None
+            and self.ends_at is None
+            and self.due_at is None
+            and self.priority is None
+        ):
+            raise ValueError("update_item requires at least one field to change")
+        return self
+
 
 class CompleteItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     item_id: int
     expected_updated_at: datetime | None = Field(default=None, exclude=True)
 
 
 class CancelItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     item_id: int
     expected_updated_at: datetime | None = Field(default=None, exclude=True)
 
 
 class DeleteItemPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     item_id: int
     expected_updated_at: datetime | None = Field(default=None, exclude=True)
 
 
 class CreateReminderPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     fire_at: datetime
     message: str = Field(min_length=1, max_length=1000)
 
 
 class CancelReminderPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     reminder_id: int
 
 
