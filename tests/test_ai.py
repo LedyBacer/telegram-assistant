@@ -484,7 +484,7 @@ def test_provider_specific_variables_take_precedence_over_legacy() -> None:
     assert settings.embedding_api_key == "legacy-key"
 
 
-def test_settings_require_ai_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_settings_require_chat_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     # Ignore the .env file so it cannot supply keys this test removes.
     monkeypatch.setitem(Settings.model_config, "env_file", None)
     for var in ("OPENAI_API_KEY", "CHAT_API_KEY", "EMBEDDING_API_KEY"):
@@ -495,6 +495,37 @@ def test_settings_require_ai_credentials(monkeypatch: pytest.MonkeyPatch) -> Non
             public_base_url="https://app.test",
             telegram_bot_token="1:test",
         )
+
+
+@pytest.mark.asyncio
+async def test_settings_allow_chat_only_without_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V3 P42: embeddings are optional; chat stays required."""
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    for var in (
+        "OPENAI_API_KEY",
+        "EMBEDDING_API_KEY",
+        "EMBEDDING_BASE_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CHAT_API_KEY", "chat-key")
+    settings = Settings(
+        database_url="postgresql+asyncpg://u:p@localhost/db",
+        public_base_url="https://app.test",
+        telegram_bot_token="1:test",
+    )
+    assert settings.chat_api_key == "chat-key"
+    assert settings.embedding_api_key is None
+    assert settings.embedding_configured is False
+
+    provider = build_ai_provider(settings)
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.embedding_configured is False
+    with pytest.raises(AIProviderError, match="not configured"):
+        await provider.embed_query(query="x")
+    with pytest.raises(AIProviderError, match="not configured"):
+        await provider.embed_documents(texts=["x"])
 
 
 # ---------------------------------------------------------------------------

@@ -390,16 +390,35 @@ class OpenAIEmbeddingProvider:
 
 class OpenAICompatibleProvider:
     """Composite ``AIProvider``: chat and embedding calls are routed to
-    independent OpenAI-compatible clients (see ``build_ai_provider``)."""
+    independent OpenAI-compatible clients (see ``build_ai_provider``).
+
+    The embedding client is optional (V3 P42): a chat-only deployment passes
+    ``embedding=None``, reports ``embedding_configured == False``, and its
+    embedding methods fail fast with :class:`AIProviderError` — retrieval
+    callers catch that and degrade to lexical-only, while chat is unaffected.
+    """
 
     def __init__(
         self,
         *,
         chat: OpenAIChatProvider,
-        embedding: OpenAIEmbeddingProvider,
+        embedding: OpenAIEmbeddingProvider | None = None,
     ) -> None:
         self._chat_provider = chat
         self._embedding_provider = embedding
+
+    @property
+    def embedding_configured(self) -> bool:
+        """True when an embedding client is attached."""
+        return self._embedding_provider is not None
+
+    def _require_embedding(self) -> OpenAIEmbeddingProvider:
+        if self._embedding_provider is None:
+            raise AIProviderError(
+                "embedding provider is not configured (set EMBEDDING_API_KEY "
+                "or the legacy OPENAI_API_KEY)"
+            )
+        return self._embedding_provider
 
     async def chat(self, *, system: str, messages: list[Message]) -> str:
         return await self._chat_provider.chat(system=system, messages=messages)
@@ -412,7 +431,7 @@ class OpenAICompatibleProvider:
         )
 
     async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
-        return await self._embedding_provider.embed_documents(texts=texts)
+        return await self._require_embedding().embed_documents(texts=texts)
 
     async def embed_query(self, *, query: str) -> list[float]:
-        return await self._embedding_provider.embed_query(query=query)
+        return await self._require_embedding().embed_query(query=query)

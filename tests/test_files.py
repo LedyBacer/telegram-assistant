@@ -208,6 +208,55 @@ async def test_register_upload_rejects_oversize(session) -> None:
     assert file.job_id is None
 
 
+async def test_register_upload_rejects_when_embedding_unconfigured(
+    session, monkeypatch
+) -> None:
+    """V3 P42: a chat-only deployment rejects a document upload at registration
+    so it fails fast and visibly, with no ingestion job enqueued."""
+    monkeypatch.setattr(get_settings(), "embedding_api_key", None)
+    user = await _user(session)
+    file = await files.register_upload(
+        session,
+        user,
+        original_filename="notes.txt",
+        mime_type="text/plain",
+        size_bytes=42,
+        telegram_file_id="tg-file-p42",
+    )
+    await session.commit()
+
+    assert file.state == FileState.rejected.value
+    assert file.error == "files.err_embedding_unconfigured"
+    assert file.job_id is None
+    jobs = (await session.scalars(select(BackgroundJob))).all()
+    assert jobs == []
+
+
+async def test_register_local_upload_rejects_when_embedding_unconfigured(
+    session, monkeypatch, tmp_path
+) -> None:
+    """V3 P42: a Mini App upload is rejected identically — no job, and the
+    bytes are never written to disk for a rejected file."""
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+    monkeypatch.setattr(get_settings(), "embedding_api_key", None)
+    user = await _user(session)
+    file = await files.register_local_upload(
+        session,
+        user,
+        original_filename="local.txt",
+        mime_type="text/plain",
+        data=b"hi",
+    )
+    await session.commit()
+
+    assert file.state == FileState.rejected.value
+    assert file.error == "files.err_embedding_unconfigured"
+    assert file.job_id is None
+    assert not (tmp_path / "files" / file.storage_key).exists()
+    jobs = (await session.scalars(select(BackgroundJob))).all()
+    assert jobs == []
+
+
 # ---------------------------------------------------------------------------
 # Extraction + chunking unit tests
 # ---------------------------------------------------------------------------
@@ -469,6 +518,46 @@ async def test_ingest_fails_when_chunk_count_exceeds_limit(
     file = await session.get(UserFile, file_id, populate_existing=True)
     assert file.state == FileState.failed.value
     assert "too large to index" in (file.error or "")
+
+
+async def test_ingest_pipeline_fast_fails_when_embedding_unconfigured(
+    session, monkeypatch, tmp_path
+) -> None:
+    """V3 P42: a job enqueued before the deployment flips to chat-only must
+    fail visibly at the start of the pipeline (no full backoff budget spent
+    retrying a file that can never be embedded)."""
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+    monkeypatch.setattr(files, "get_ai_provider", lambda: _FakeEmbedder())
+    monkeypatch.setattr(
+        files, "_download_telegram_file", _fake_download(b"late content")
+    )
+
+    user = await _user(session)
+    file = await files.register_upload(
+        session,
+        user,
+        original_filename="late.txt",
+        mime_type="text/plain",
+        size_bytes=12,
+        telegram_file_id="tg-file-p42b",
+    )
+    file_id = file.id
+    await session.commit()
+
+    # The deployment flips to chat-only after the job was already enqueued.
+    monkeypatch.setattr(get_settings(), "embedding_api_key", None)
+
+    job = await _claim_file_job(session, worker_id="w-test")
+    with pytest.raises(files.FileUploadError, match="embedding provider"):
+        await files.handle_files_ingest(session, job)
+
+    file = await session.get(UserFile, file_id, populate_existing=True)
+    assert file.state == FileState.failed.value
+    assert "embedding provider" in (file.error or "")
+    # The pipeline aborted before any download/chunk work.
+    assert (
+        await session.scalar(select(func.count()).select_from(FileChunk)) == 0
+    )
 
 
 async def test_ingest_is_idempotent_on_replay(session, monkeypatch, tmp_path) -> None:
@@ -738,6 +827,35 @@ async def test_embedding_outage_degrades_to_lexical_only(session) -> None:
     assert results[0].file_name == "warranty.txt"
     # Lexical rank 1 -> 1/(RRF_K+1).
     assert results[0].score == pytest.approx(1 / (files.RRF_K + 1))
+
+
+async def test_retrieval_lexical_only_when_embedding_unconfigured(
+    session, monkeypatch
+) -> None:
+    """V3 P42: with no embedding provider the vector arm is skipped by
+    construction — lexical hits are still returned, the provider is never
+    called (no network), and there is no outage to log."""
+    monkeypatch.setattr(get_settings(), "embedding_api_key", None)
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="warranty.txt",
+        texts=["the warranty covers repairs for two years"],
+    )
+
+    embedder = _FakeEmbedder()
+    results = await files.retrieve_chunks(
+        session, user, "warranty repairs", provider=embedder
+    )
+
+    assert len(results) == 1
+    assert results[0].file_name == "warranty.txt"
+    # Lexical rank 1 only (no vector contribution) -> 1/(RRF_K+1).
+    assert results[0].score == pytest.approx(1 / (files.RRF_K + 1))
+    assert results[0].distance is None
+    # The vector arm never ran: the provider was never asked to embed.
+    assert embedder.query_calls == []
 
 
 async def test_lexical_or_style_partial_overlap_recalls(session) -> None:

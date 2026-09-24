@@ -83,6 +83,7 @@
   "files.rejected": "🚫 Couldn't store that file: {error}",
   "files.err_unsupported": "Unsupported file type: {mime}.",
   "files.err_too_large": "File is too large ({size} > {max} bytes).",
+  "files.err_embedding_unconfigured": "Document search is not available on this deployment (no embedding provider configured).",
   "ask.prompt": "Send me a question as a normal message and I will answer it.",
 
   "ai.thinking": "Thinking…",

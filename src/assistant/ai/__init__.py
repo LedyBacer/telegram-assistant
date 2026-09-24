@@ -50,7 +50,13 @@ __all__ = [
 
 
 def build_ai_provider(settings: Settings) -> AIProvider:
-    """Create a provider with independent chat and embedding clients."""
+    """Create a provider with independent chat and embedding clients.
+
+    The embedding client is optional (V3 P42): without an embedding API key
+    the composite runs chat-only — retrieval degrades to lexical-only and
+    document uploads are rejected with a visible reason — while chat,
+    actions, and every non-embedding feature are unaffected.
+    """
     return OpenAICompatibleProvider(
         chat=OpenAIChatProvider(
             api_key=settings.chat_api_key,
@@ -60,11 +66,15 @@ def build_ai_provider(settings: Settings) -> AIProvider:
             thinking_enabled=settings.chat_thinking_enabled,
             reasoning_effort=settings.chat_reasoning_effort,
         ),
-        embedding=OpenAIEmbeddingProvider(
-            api_key=settings.embedding_api_key,
-            base_url=settings.embedding_base_url,
-            model=settings.embedding_model,
-            dimensions=settings.embedding_dimensions,
+        embedding=(
+            OpenAIEmbeddingProvider(
+                api_key=settings.embedding_api_key,
+                base_url=settings.embedding_base_url,
+                model=settings.embedding_model,
+                dimensions=settings.embedding_dimensions,
+            )
+            if settings.embedding_configured
+            else None
         ),
     )
 

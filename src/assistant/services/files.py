@@ -119,7 +119,10 @@ async def register_upload(
     )
     session.add(file)
 
-    reason = _rejection_reason(file.mime_type, size_bytes, settings.max_upload_size_bytes)
+    reason = _rejection_reason(
+        file.mime_type, size_bytes, settings.max_upload_size_bytes,
+        settings.embedding_configured,
+    )
     if reason is not None:
         file.state = FileState.rejected.value
         file.error = reason.key[:1000]
@@ -169,7 +172,10 @@ async def register_local_upload(
     )
     session.add(file)
 
-    reason = _rejection_reason(file.mime_type, size_bytes, settings.max_upload_size_bytes)
+    reason = _rejection_reason(
+        file.mime_type, size_bytes, settings.max_upload_size_bytes,
+        settings.embedding_configured,
+    )
     if reason is not None:
         file.state = FileState.rejected.value
         file.error = reason.key[:1000]
@@ -232,13 +238,17 @@ async def reap_terminal_artifacts(session: AsyncSession) -> int:
 
 
 def _rejection_reason(
-    mime_type: str, size_bytes: int | None, max_bytes: int
+    mime_type: str, size_bytes: int | None, max_bytes: int, embedding_configured: bool
 ) -> LocalizableError | None:
     """A localized rejection reason (locale key + params), or ``None``."""
     if mime_type not in SUPPORTED_MIME_TYPES:
         return LocalizableError("files.err_unsupported", mime=mime_type)
     if size_bytes is not None and size_bytes > max_bytes:
         return LocalizableError("files.err_too_large", size=size_bytes, max=max_bytes)
+    # A chat-only deployment cannot index documents (no embedding provider);
+    # reject at registration so the upload fails fast and visibly (V3 P42).
+    if not embedding_configured:
+        return LocalizableError("files.err_embedding_unconfigured")
     return None
 
 
@@ -500,6 +510,15 @@ async def _run_pipeline(
     """
     settings = get_settings()
     provider = get_ai_provider()
+    if not settings.embedding_configured:
+        # Defensive fast-fail (V3 P42): registration rejects new uploads
+        # when the embedding provider is unconfigured, but a job enqueued
+        # before a configuration change must fail visibly, not retry for
+        # its full backoff budget.
+        raise FileUploadError(
+            "document indexing requires the embedding provider, which is "
+            "not configured on this deployment"
+        )
 
     destination = _storage_path(file.storage_key)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -874,10 +893,17 @@ async def retrieve_chunks(
     # call so no DB connection is held across provider I/O.
     await session.commit()
     vector: list[tuple[FileChunk, str, float]] = []
-    try:
-        vector = await _vector_candidates(session, user, query, provider)
-    except AIProviderError:
-        logger.warning("embedding provider unavailable; using lexical-only retrieval")
+    if get_settings().embedding_configured:
+        try:
+            vector = await _vector_candidates(session, user, query, provider)
+        except AIProviderError:
+            logger.warning(
+                "embedding provider unavailable; using lexical-only retrieval"
+            )
+    else:
+        # Chat-only deployment (V3 P42): no vector arm by construction;
+        # lexical-only is the reported, expected mode — not an outage.
+        logger.warning("embedding provider not configured; lexical-only retrieval")
 
     if not lexical and not vector:
         return []

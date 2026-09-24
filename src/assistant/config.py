@@ -71,21 +71,26 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _resolve_provider_credentials(self) -> Settings:
         # Fill provider-specific variables from the legacy single-provider
-        # ones, then require that both providers end up with an API key.
+        # ones. Chat is REQUIRED; embeddings are OPTIONAL — a deployment
+        # without an embedding provider runs chat-only with lexical-only
+        # document search (V3 P42).
         for name in ("chat_api_key", "embedding_api_key"):
             if getattr(self, name) is None:
                 setattr(self, name, self.openai_api_key)
         for name in ("chat_base_url", "embedding_base_url"):
             if getattr(self, name) is None:
                 setattr(self, name, self.openai_base_url)
-        missing = [name for name in ("chat_api_key", "embedding_api_key") if not getattr(self, name)]
-        if missing:
+        if not self.chat_api_key:
             raise ValueError(
                 "AI provider credentials are not configured: set "
-                + ", ".join(missing)
-                + " (or the legacy OPENAI_API_KEY)"
+                "CHAT_API_KEY (or the legacy OPENAI_API_KEY)"
             )
         return self
+
+    @property
+    def embedding_configured(self) -> bool:
+        """True when an embedding provider is configured (V3 P42)."""
+        return bool(self.embedding_api_key)
 
     # File ingestion
     max_upload_size_bytes: int = Field(

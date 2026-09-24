@@ -1,16 +1,67 @@
 # Progress
 
-Status: V3 PRIORITIES 38–41 COMPLETE (9B fast/no-think runtime: the
-normal turn stays bounded to 1–2 structured calls with a hard cap on
-read tools; the turn-mode invariant — a clarification never co-occurs
-with proposed actions — is enforced in the Pydantic schema, not prompt
-prose, with the bounded repair loop as the only recovery; action/tool
-docs in the prompt are registry-derived and concrete (types, enum value
-sets, datetime format) so a small model never parses JSON schemas; 10
-realistic Qwen-output fixture tests cover valid JSON, fences,
-preamble, malformed-then-repair, contradiction, invalid enum/type, and
-unknown tool).
-Next: V3 Priority 42.
+Status: V3 PRIORITIES 38–42 COMPLETE (P42: optional embedding degradation —
+a deployment without an embedding provider runs chat-only: chat, actions,
+and every non-embedding feature are unaffected; document search reports
+lexical-only (the vector arm is skipped by construction, no outage);
+document uploads fail fast and visibly at registration; an ingest job
+enqueued before a config change fast-fails at pipeline start).
+Next: V3 Priority 43.
+
+## V3 — Priority 42: optional embedding degradation (chat-only deployments)
+
+Chat credentials remain mandatory; the embedding provider is now optional,
+so a deployment can run chat-only without a vector model. When unconfigured
+the composite provider reports `embedding_configured == False` and its embed
+methods raise `AIProviderError` (fast, no network); ingestion rejects new
+uploads at registration; retrieval degrades to lexical-only; and a job
+enqueued before a config change fast-fails at pipeline start.
+
+- `src/assistant/config.py`:
+  - `_resolve_provider_credentials` now requires only `chat_api_key`
+    (embedding may stay `None`); a missing chat key is the only
+    credential error.
+  - New `embedding_configured` property — `bool(self.embedding_api_key)` —
+    is the single source of truth the service layer consults.
+- `src/assistant/ai/provider.py`: `OpenAICompatibleProvider.__init__`
+  accepts `embedding: OpenAIEmbeddingProvider | None`; new
+  `embedding_configured` property; new `_require_embedding()` raises
+  `AIProviderError("embedding provider is not configured ...")`;
+  `embed_documents` / `embed_query` go through it.
+- `src/assistant/ai/__init__.py`: `build_ai_provider` attaches the embedding
+  client only when `settings.embedding_configured` is true, else `None`.
+- `src/assistant/services/files.py`:
+  - `_rejection_reason` gains an `embedding_configured` parameter; after the
+    MIME/size checks it returns `files.err_embedding_unconfigured` when a
+    chat-only deployment receives a document.
+  - Both `register_upload` and `register_local_upload` pass
+    `settings.embedding_configured`; a rejected upload is persisted
+    `state=rejected`, `error=files.err_embedding_unconfigured`, no job, and
+    (local upload) no disk write.
+  - `_run_pipeline` fast-fails with `FileUploadError` when
+    `settings.embedding_configured` is False — a job enqueued before a
+    config change fails visibly at pipeline start instead of spending its
+    backoff budget on a file that can never be embedded.
+  - `retrieve_chunks` gates the vector arm on
+    `get_settings().embedding_configured`: when False the vector arm is
+    skipped (logged as the expected lexical-only mode, not an outage) and
+    lexical hits are returned as before.
+- i18n: `files.err_embedding_unconfigured` added to both `en.json` and
+  `ru.json` (parity maintained).
+- `tests/test_ai.py`: `test_settings_require_ai_credentials` renamed to
+  `test_settings_require_chat_credentials` (chat is the only required
+  credential); new `test_settings_allow_chat_only_without_embedding` builds
+  a chat-only `Settings`, asserts `embedding_configured is False`, that the
+  provider reports it, and that both embed methods raise
+  `AIProviderError("not configured")`.
+- `tests/test_files.py`: four new service-level tests — registration
+  rejection for both the Telegram and Mini App paths (rejected state, the
+  locale key, no job, no disk write), `_run_pipeline` fast-fail after a
+  config flip, and lexical-only `retrieve_chunks` (lexical hits returned,
+  `distance is None`, provider never called).
+
+Verified: `uv run pytest -q` 478 passed (was 473); `uv run ruff check .`
+clean; full E2E suite 14 passed.
 
 ## V3 — Priority 41: 9B fast/no-think runtime (bounded cost, concrete docs, fixtures)
 

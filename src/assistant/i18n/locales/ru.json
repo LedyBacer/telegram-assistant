@@ -83,6 +83,7 @@
   "files.rejected": "🚫 Не удалось сохранить файл: {error}",
   "files.err_unsupported": "Неподдерживаемый тип файла: {mime}.",
   "files.err_too_large": "Файл слишком большой ({size} > {max} байт).",
+  "files.err_embedding_unconfigured": "Поиск по документам недоступен: провайдер эмбеддингов не настроен.",
   "ask.prompt": "Задай вопрос обычным сообщением — я отвечу.",
 
   "ai.thinking": "Думаю…",
