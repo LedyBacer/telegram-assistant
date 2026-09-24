@@ -1,18 +1,21 @@
-"""Limited proactivity tests (SPEC §11) — real PostgreSQL, fake sender.
+"""Limited proactivity tests (SPEC §11, V3 P38-P40) — real PostgreSQL, fake sender.
 
-Covers the deterministic triggers (weekly review, workout staleness), the
-per-user anti-spam gates (enabled, quiet hours, max/day, min interval),
-NudgeDelivery dedupe, user scoping, pending-action expiry, and the
-per-user failure isolation of the worker pass.
+Covers the deterministic triggers (weekly review summary, workout staleness
+with calendar context, overdue items), the per-user anti-spam gates (enabled,
+quiet hours, max/day, min interval), NudgeDelivery dedupe, user scoping,
+pending-action expiry, per-user failure isolation, and cross-session nudge
+dedupe under concurrent worker passes.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from assistant.models.calendar_items import CalendarItem
 from assistant.models.pending_actions import ActionStatus, PendingAction
 from assistant.models.proactivity import NudgeDelivery, NudgeKind, ProactiveSettings
 from assistant.models.users import User
@@ -23,6 +26,7 @@ from assistant.services.users import upsert_user
 # 2026-09-21 is a Monday (local == UTC for the test users).
 MON = datetime(2026, 9, 21, 10, 0, tzinfo=UTC)
 TUE = datetime(2026, 9, 22, 10, 0, tzinfo=UTC)
+WED = datetime(2026, 9, 23, 10, 0, tzinfo=UTC)
 NEXT_MON = datetime(2026, 9, 28, 10, 0, tzinfo=UTC)
 
 
@@ -51,6 +55,13 @@ async def _settings(session: AsyncSession, user: User) -> ProactiveSettings:
     return settings
 
 
+async def _item(session: AsyncSession, user: User, **kw) -> CalendarItem:
+    item = CalendarItem(user_id=user.id, title=kw.pop("title", "Item"), **kw)
+    session.add(item)
+    await session.flush()
+    return item
+
+
 async def _kinds(session: AsyncSession, user_id: int) -> list[str]:
     rows = (
         await session.scalars(
@@ -61,13 +72,21 @@ async def _kinds(session: AsyncSession, user_id: int) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Weekly review
+# Weekly review (deterministic summary, V3 P38)
 # ---------------------------------------------------------------------------
 
 
 async def test_weekly_review_fires_once_per_iso_week(session: AsyncSession) -> None:
     user = await _user(session)
-    # Recent workout suppresses the workout nudge, isolating the review.
+    # A completed item this week gives the summary something to report, and
+    # the fresh workout suppresses the workout nudge, isolating the review.
+    await _item(
+        session,
+        user,
+        title="Done thing",
+        status="completed",
+        completed_at=MON - timedelta(hours=2),
+    )
     await workouts_service.log_workout(session, user, name="Fresh", started_at=MON - timedelta(hours=1))
     await session.commit()
 
@@ -87,7 +106,8 @@ async def test_weekly_review_fires_once_per_iso_week(session: AsyncSession) -> N
     await session.commit()
     assert calls2 == []
 
-    # Next ISO week: fires again (fresh workout keeps the workout gate off).
+    # Next ISO week: the fresh workout logged this week is itself content,
+    # so the review fires again (and keeps the workout gate off).
     await workouts_service.log_workout(session, user, name="Fresh2", started_at=NEXT_MON - timedelta(hours=1))
     await session.commit()
     send3, calls3 = _fake_send()
@@ -110,8 +130,62 @@ async def test_weekly_review_only_on_monday(session: AsyncSession) -> None:
     await session.commit()
 
 
+async def test_weekly_review_skipped_when_nothing_to_report(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    # No workouts and no calendar state: an empty week has nothing to report,
+    # so the Monday review must stay silent (only the workout nudge fires).
+    send, _ = _fake_send()
+    sent = await pro.evaluate_user(session, user.id, now=MON, send=send)
+    await session.commit()
+    assert sent == [NudgeKind.workout]
+    assert NudgeKind.weekly_review not in sent
+
+
+async def test_weekly_review_summary_lists_state(session: AsyncSession) -> None:
+    user = await _user(session)
+    # 1 overdue, 2 completed this week, 1 upcoming high-priority, 2 workouts.
+    await _item(session, user, title="Late one", status="scheduled", due_at=MON - timedelta(days=1))
+    await _item(session, user, title="Done 1", status="completed", completed_at=MON - timedelta(hours=2))
+    await _item(session, user, title="Done 2", status="completed", completed_at=MON - timedelta(hours=1))
+    await _item(
+        session,
+        user,
+        title="Big fish",
+        status="scheduled",
+        priority="high",
+        starts_at=MON + timedelta(days=2),
+    )
+    await workouts_service.log_workout(
+        session, user, name="A", started_at=MON - timedelta(hours=2), duration_minutes=30
+    )
+    await workouts_service.log_workout(
+        session, user, name="B", started_at=MON - timedelta(hours=1), duration_minutes=45
+    )
+    await session.commit()
+
+    send, calls = _fake_send()
+    # The seeded overdue item also trips the (default-on) overdue nudge.
+    assert await pro.evaluate_user(session, user.id, now=MON, send=send) == [
+        NudgeKind.weekly_review,
+        NudgeKind.overdue,
+    ]
+    await session.commit()
+    text = calls[0][1]
+    assert text.startswith("Weekly review:")
+    assert "overdue: 1" in text
+    assert "completed this week: 2" in text
+    assert "upcoming (important): Big fish" in text
+    assert "workouts: 2 (75 min)" in text
+    # Deterministic ordering: the summary lines follow the fixed template.
+    assert text.index("overdue:") < text.index("completed this week")
+    assert text.index("completed this week") < text.index("upcoming (important)")
+    assert text.index("upcoming (important)") < text.index("workouts:")
+
+
 # ---------------------------------------------------------------------------
-# Workout nudge
+# Workout nudge (with calendar context, V3 P39)
 # ---------------------------------------------------------------------------
 
 
@@ -144,6 +218,147 @@ async def test_workout_nudge_not_when_recent(session: AsyncSession) -> None:
     sent = await pro.evaluate_user(session, user.id, now=TUE, send=send)
     await session.commit()
     assert NudgeKind.workout not in sent
+
+
+async def test_workout_nudge_suppressed_when_scheduled_today(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)  # no logged workouts at all
+    await _item(
+        session,
+        user,
+        title="Evening session",
+        status="scheduled",
+        source="workout",
+        starts_at=TUE + timedelta(hours=8),
+    )
+    await session.commit()
+
+    send, calls = _fake_send()
+    assert await pro.evaluate_user(session, user.id, now=TUE, send=send) == []
+    await session.commit()
+    assert calls == []
+
+
+async def test_workout_nudge_suppressed_when_scheduled_upcoming(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    await _item(
+        session,
+        user,
+        title="Friday session",
+        status="scheduled",
+        source="workout",
+        starts_at=TUE + timedelta(days=3),
+    )
+    await session.commit()
+
+    send, calls = _fake_send()
+    assert await pro.evaluate_user(session, user.id, now=TUE, send=send) == []
+    await session.commit()
+    assert calls == []
+
+
+async def test_workout_nudge_fires_when_scheduled_workout_already_past(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    # A workout planned yesterday that never happened: the plan slipped, so
+    # the nudge is still warranted.
+    await _item(
+        session,
+        user,
+        title="Missed session",
+        status="scheduled",
+        source="workout",
+        starts_at=TUE - timedelta(days=1),
+    )
+    await session.commit()
+
+    send, calls = _fake_send()
+    # The slipped workout item is also past due, so the overdue nudge joins.
+    sent = await pro.evaluate_user(session, user.id, now=TUE, send=send)
+    await session.commit()
+    assert sent == [NudgeKind.workout, NudgeKind.overdue]
+    assert len(calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Overdue nudge (V3 P38)
+# ---------------------------------------------------------------------------
+
+
+async def test_overdue_nudge_fires_and_dedupes_daily(session: AsyncSession) -> None:
+    user = await _user(session)
+    await _item(
+        session, user, title="Late one", status="scheduled", due_at=MON
+    )
+    await session.commit()
+
+    # Tuesday: workout nudge (no logs) plus the new overdue nudge.
+    send, calls = _fake_send()
+    sent = await pro.evaluate_user(session, user.id, now=TUE, send=send)
+    await session.commit()
+    assert sent == [NudgeKind.workout, NudgeKind.overdue]
+    assert "Overdue: 1." in calls[-1][1]
+
+    # Same local day: both deduped.
+    send2, calls2 = _fake_send()
+    assert (
+        await pro.evaluate_user(session, user.id, now=TUE + timedelta(hours=2), send=send2)
+        == []
+    )
+    await session.commit()
+    assert calls2 == []
+
+    # Next day: the overdue item is still late and no workout happened, so
+    # both daily nudges return.
+    send3, _ = _fake_send()
+    assert (
+        await pro.evaluate_user(session, user.id, now=WED, send=send3)
+        == [NudgeKind.workout, NudgeKind.overdue]
+    )
+    await session.commit()
+
+
+async def test_overdue_nudge_toggle_off(session: AsyncSession) -> None:
+    user = await _user(session)
+    settings = await _settings(session, user)
+    settings.overdue_nudge_enabled = False
+    await session.commit()
+    await _item(session, user, title="Late one", status="scheduled", due_at=MON)
+    await session.commit()
+
+    send, _ = _fake_send()
+    sent = await pro.evaluate_user(session, user.id, now=TUE, send=send)
+    await session.commit()
+    assert sent == [NudgeKind.workout]
+
+
+async def test_overdue_nudge_ignores_future_and_completed(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    # Future due date: not overdue. Completed past-due item: already done.
+    await _item(
+        session, user, title="Later", status="scheduled", due_at=TUE + timedelta(days=3)
+    )
+    await _item(
+        session,
+        user,
+        title="Done late",
+        status="completed",
+        due_at=MON,
+        completed_at=TUE - timedelta(hours=1),
+    )
+    await session.commit()
+
+    send, _ = _fake_send()
+    sent = await pro.evaluate_user(session, user.id, now=TUE, send=send)
+    await session.commit()
+    assert NudgeKind.overdue not in sent
+    assert sent == [NudgeKind.workout]
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +404,15 @@ async def test_max_nudges_per_day_cap(session: AsyncSession) -> None:
     user = await _user(session)
     settings = await _settings(session, user)
     settings.max_nudges_per_day = 1
+    # Weekly-review content so Monday has two eligible triggers.
+    await _item(
+        session,
+        user,
+        title="Done thing",
+        status="completed",
+        completed_at=MON - timedelta(hours=5),
+    )
+    await session.commit()
 
     # Monday: both triggers eligible, no prior nudges today -> both send.
     send, _ = _fake_send()
@@ -219,6 +443,14 @@ async def test_min_interval_suppresses_recent_nudges(
     user = await _user(session)
     settings = await _settings(session, user)
     settings.min_interval_minutes = 120
+    # Weekly-review content so Monday has two eligible triggers.
+    await _item(
+        session,
+        user,
+        title="Done thing",
+        status="completed",
+        completed_at=MON - timedelta(hours=5),
+    )
     await session.commit()
 
     # Monday: both triggers send; the weekly row then doubles as the
@@ -410,3 +642,40 @@ async def test_run_proactive_pass_isolates_user_failure(
     await session.commit()
     assert result2["nudges_sent"] == 0
     assert calls2 == []
+
+
+# ---------------------------------------------------------------------------
+# Concurrency (V3 P40)
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrent_sessions_nudge_exactly_once(
+    session: AsyncSession, engine: AsyncEngine
+) -> None:
+    user = await _user(session)
+    # Pre-create the settings row so both sessions take the FOR UPDATE path
+    # on an existing row (a first-run create race is a pass-level retry).
+    await _settings(session, user)
+    user_id = user.id
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    send, calls = _fake_send()
+
+    async def one() -> list[str]:
+        async with factory() as other:
+            sent = await pro.evaluate_user(other, user_id, now=TUE, send=send)
+            await other.commit()
+            return sent
+
+    # Two worker sessions evaluate the same user at the same instant.
+    results = await asyncio.gather(one(), one())
+    total = [kind for kinds in results for kind in kinds]
+    assert total.count(NudgeKind.workout) == 1
+    assert len(calls) == 1
+    # Exactly one durable delivery row for the period.
+    rows = (
+        await session.scalars(
+            select(NudgeDelivery).where(NudgeDelivery.user_id == user_id)
+        )
+    ).all()
+    assert [r.kind for r in rows] == [NudgeKind.workout]
+    assert rows[0].period_key == TUE.date().isoformat()

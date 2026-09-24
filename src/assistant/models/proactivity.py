@@ -31,6 +31,7 @@ from assistant.db.base import Base
 class NudgeKind(enum.StrEnum):
     weekly_review = "weekly_review"
     workout = "workout"
+    overdue = "overdue"
 
 
 class ProactiveSettings(Base):
@@ -64,6 +65,9 @@ class ProactiveSettings(Base):
         Boolean, default=True, server_default="true"
     )
     workout_nudge_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true"
+    )
+    overdue_nudge_enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="true"
     )
     updated_at: Mapped[datetime] = mapped_column(

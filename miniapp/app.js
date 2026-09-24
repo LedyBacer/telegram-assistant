@@ -1566,6 +1566,7 @@ async function buildProactiveCard(signal) {
     switchRow(S("miniapp.proactive_enabled"), ps.enabled, (v) => patch({ enabled: v })),
     switchRow(S("miniapp.proactive_weekly_review"), ps.weekly_review_enabled, (v) => patch({ weekly_review_enabled: v })),
     switchRow(S("miniapp.proactive_workout_nudge"), ps.workout_nudge_enabled, (v) => patch({ workout_nudge_enabled: v })),
+    switchRow(S("miniapp.proactive_overdue_nudge"), ps.overdue_nudge_enabled, (v) => patch({ overdue_nudge_enabled: v })),
     settingsRow(S("miniapp.proactive_quiet_from"), ps.quiet_hours_start.slice(0, 5), async () => {
       const t = await pickTime(ps.quiet_hours_start.slice(0, 5));
       if (t) patch({ quiet_hours_start: `${t}:00` });

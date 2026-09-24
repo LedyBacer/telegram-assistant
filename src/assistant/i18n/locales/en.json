@@ -136,8 +136,13 @@
   "motivation.empty": "Your schedule is clear today — a good time to plan one small win.",
   "motivation.default": "One thing done is better than ten planned.",
 
-  "proactive.weekly_review": "It's Monday — a good time for a quick weekly review: what matters this week, and where can you drop something?",
+  "proactive.weekly_review": "Weekly review:",
   "proactive.workout": "It's been over two days since your last workout. How about a short one today?",
+  "proactive.overdue": "Overdue: {n}. Worth a quick look at what slipped.",
+  "proactive.wr_overdue": "overdue: {n}",
+  "proactive.wr_completed": "completed this week: {n}",
+  "proactive.wr_upcoming": "upcoming (important): {items}",
+  "proactive.wr_workouts": "workouts: {n} ({minutes} min)",
 
   "errors.cant_read": "I couldn't read that: {error}",
   "errors.generic": "Sorry, something went wrong. Please try again.",
@@ -307,6 +312,7 @@
   "miniapp.proactive_enabled": "Enable proactive notifications",
   "miniapp.proactive_weekly_review": "Weekly review (Monday)",
   "miniapp.proactive_workout_nudge": "Workout nudge (no workout for 48 h)",
+  "miniapp.proactive_overdue_nudge": "Overdue task nudge",
   "miniapp.proactive_quiet_from": "Quiet hours from",
   "miniapp.proactive_quiet_until": "Quiet hours until",
   "miniapp.proactive_max_per_day": "Max nudges per day",

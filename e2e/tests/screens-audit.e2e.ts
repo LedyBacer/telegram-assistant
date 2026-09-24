@@ -173,10 +173,10 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   expect(digestValue).toMatch(/^\d{2}:\d{2}$/);
   // Timezone row shows a non-empty value.
   expect((await rows.nth(1).locator(".settings-row-value").innerText()).trim()).not.toBe("");
-  // Four role=switch checkboxes: motivation (main card) + the three
-  // proactive-settings switches.
+  // Five role=switch checkboxes: motivation (main card) + the four
+  // proactive-settings switches (enabled, weekly, workout, overdue).
   const swAll = page.locator('#view input.switch[role="switch"]');
-  await expect(swAll).toHaveCount(4);
+  await expect(swAll).toHaveCount(5);
   // The main settings card renders before the proactive card, so the
   // motivation switch is first in DOM order.
   const sw = swAll.first();

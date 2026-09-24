@@ -220,6 +220,7 @@ class ProactiveSettingsOut(ORMModel):
     enabled: bool
     weekly_review_enabled: bool
     workout_nudge_enabled: bool
+    overdue_nudge_enabled: bool
     quiet_hours_start: time
     quiet_hours_end: time
     max_nudges_per_day: int
@@ -230,6 +231,7 @@ class ProactiveSettingsUpdate(BaseModel):
     enabled: bool | None = None
     weekly_review_enabled: bool | None = None
     workout_nudge_enabled: bool | None = None
+    overdue_nudge_enabled: bool | None = None
     quiet_hours_start: time | None = None
     quiet_hours_end: time | None = None
     max_nudges_per_day: int | None = Field(default=None, ge=1, le=20)

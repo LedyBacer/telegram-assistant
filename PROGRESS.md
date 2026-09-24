@@ -1,12 +1,62 @@
 # Progress
 
-Status: V3 PRIORITY 37 COMPLETE (Today dashboard summary: the Today
-view now shows an at-a-glance stat card — Всего/Осталось/Готово/
-Просрочено badges — for the selected day, computed client-side from
-the month items already fetched; hidden on empty days).
-P26 (do-not-redesign constraint) is carried by every change in this
-Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 38.
+Status: V3 PRIORITIES 38–40 COMPLETE (Proactivity V3: the Monday weekly
+review is now a deterministic summary of the user's real state — overdue
+count, items completed this week, upcoming high-priority items, workout
+totals — silent when the week is empty; a new default-on daily overdue
+nudge; workout nudges are context-aware (suppressed while a workout is
+already scheduled for today or later); concurrent worker passes are
+serialized with a FOR UPDATE settings-row lock plus an atomic
+ON CONFLICT DO NOTHING nudge reservation, so a nudge is sent exactly
+once across sessions).
+Next: V3 Priority 41.
+
+## V3 — Priorities 38–40: Proactivity hardening (deterministic summary, context, concurrency)
+
+- `src/assistant/models/proactivity.py`: `NudgeKind.overdue` added;
+  `ProactiveSettings.overdue_nudge_enabled` (Boolean, server default
+  true). Migration `alembic/versions/20260924_a3f5b7c9d1e2_overdue_nudge.py`.
+- `src/assistant/services/proactivity.py` (rewritten):
+  - **P38 weekly review**: `_weekly_review_stats()` computes overdue
+    count, completed-this-week count, up to 3 upcoming high-priority
+    titles within 7 days, and workout count/minutes since the week
+    started (local midnight Monday — so a Monday-morning review already
+    includes that morning). `_weekly_review_text()` composes the message
+    from i18n lines (no LLM). `has_content` gate: an empty week sends
+    nothing.
+  - **P38 overdue nudge**: default-on, once per user-local day when any
+    scheduled item's anchor (due_at, else starts_at) is past; text is
+    `proactive.overdue` with the count.
+  - **P39 context-aware workout nudge**: fired only when the last log is
+    >48h old (or none) AND there is no scheduled `source="workout"` item
+    with `starts_at >= day start` — a plan on the books suppresses the
+    nudge.
+  - **P40 concurrency**: `evaluate_user` loads the settings row with
+    `FOR UPDATE` (first-run create race → IntegrityError → per-user pass
+    failure, retried next pass); every candidate claims its slot with
+    `_reserve_nudge()` — `INSERT ... ON CONFLICT DO NOTHING` on the
+    (user_id, kind, period_key) unique constraint, so exactly one
+    concurrent session wins regardless of interleaving.
+- `api/schemas.py`: `ProactiveSettingsOut`/`ProactiveSettingsUpdate`
+  expose `overdue_nudge_enabled` (route PATCH already loops
+  `model_fields_set`).
+- i18n (ru+en parity): `proactive.weekly_review` ("Обзор недели:"),
+  `proactive.overdue`, `proactive.wr_overdue/wr_completed/wr_upcoming/
+  wr_workouts`, `miniapp.proactive_overdue_nudge`.
+- `miniapp/app.js`: 5th proactive switch (overdue nudge) in the
+  proactive card; `e2e/tests/screens-audit.e2e.ts` switch count 4 → 5.
+- `tests/test_proactivity.py` (rewritten, 20 tests): weekly review
+  fires once per ISO week and is silent on empty weeks; summary content
+  and deterministic line order; workout nudges suppressed by a
+  scheduled workout (today/upcoming) and allowed for a slipped one;
+  overdue nudge fires/dedupes daily, honors its toggle, ignores
+  future/completed items; anti-spam caps and min-interval; and a
+  multi-session `asyncio.gather` test proving exactly one nudge is sent
+  across two concurrent sessions.
+
+Verified: `uv run pytest -q` 463 passed; `uv run ruff check .` clean;
+ESM `node --check` clean; full E2E suite 14 passed (incl. the proactive
+card switch count and the v2-features proactive settings spec).
 
 ## V3 — Priority 37: Today dashboard summary
 
