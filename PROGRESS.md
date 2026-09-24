@@ -191,11 +191,21 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   E2E 18/18 on a FRESH database via `E2E_DATABASE_URL` (dropped first,
   created+migrated+truncated by the suite) and 18/18 on the default
   `assistant_e2e`.
+- **§35** The acceptance Playwright E2E stage (step 22) now targets the
+  SAME throwaway Docker PostgreSQL as steps 4–21, not the dev database.
+  `E2E_DATABASE_URL`/`E2E_DATABASE_ADMIN_URL` are set for the `npm run
+  test:e2e` invocation to point at the `assistant_e2e` DB on
+  `127.0.0.1:${PG_PORT}` (the `postgres` superuser DB supplies the
+  CREATE DATABASE connection). The header "Requires" comment no longer
+  claims the E2E needs a pre-existing dev Postgres: the entire run is
+  served by the step-4 Docker Postgres, so acceptance is reproducible from
+  an empty machine. Verified: on a fresh `pgvector/pgvector:pg17`
+  container (no pre-existing `assistant_e2e`), the suite created +
+  migrated + truncated the DB and passed 18/18.
 
-**Next (in order):** §35-39 CI/acceptance reproducibility (self-contained
-acceptance, real bot smoke, actionlint, real GitHub Actions run), readiness
-terminology, logging correlation; §40-47 named regression tests, docs sync,
-Definition of Done.
+**Next (in order):** §36-39 real bot smoke, actionlint, real GitHub
+Actions run, readiness terminology, logging correlation; §40-47 named
+regression tests, docs sync, Definition of Done.
 
 
 ## V3 — Priority 55: Definition of Done (final verification)

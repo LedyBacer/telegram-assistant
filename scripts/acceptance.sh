@@ -38,10 +38,11 @@
 # fresh database with Telegram mocked (fake bot token) and asserts the
 # digest rows persist.
 #
-# Requires: docker, curl, uv, node + npm (step 22, against the dev
-# PostgreSQL on localhost:5432 which the E2E config uses for its own
-# assistant_e2e database). No real AI or Telegram credentials are needed
-# anywhere. Usage: bash scripts/acceptance.sh
+# Requires: docker, curl, uv, node + npm. No real AI or Telegram
+# credentials are needed anywhere, and no pre-existing local dev Postgres:
+# the whole run — including the step-22 Playwright E2E, which targets the
+# throwaway Postgres via E2E_DATABASE_URL — is served by the Docker
+# PostgreSQL started in step 4. Usage: bash scripts/acceptance.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -254,11 +255,17 @@ uv run pytest "tests/test_minapp_shell.py::test_production_app_has_no_test_auth_
 uv run pytest "tests/test_minapp_shell.py::test_package_has_no_test_auth_module" -q
 
 step "22. Mini App Playwright E2E (Playwright acceptance stage)"
-# Isolated E2E database (E2E_DATABASE_URL, default assistant_e2e on the
-# dev PostgreSQL; created + migrated + truncated by e2e/global-setup.ts)
-# served by the test-only entrypoint; the real telegram.org script is
+# Run the E2E against the SAME throwaway PostgreSQL as steps 4-21 (NOT the
+# dev database) so the whole acceptance is self-contained on an empty
+# machine: E2E_DATABASE_URL targets the assistant_e2e database on the
+# acceptance Postgres, and E2E_DATABASE_ADMIN_URL gives e2e/global-setup.ts
+# the superuser connection it uses to CREATE DATABASE. Both flow into
+# global-setup (create + migrate + truncate), the webServer (DATABASE_URL),
+# and the seed scripts via process.env. The real telegram.org script is
 # blocked and initData is a deterministic stub.
 npm ci
+E2E_DATABASE_URL="postgresql://assistant:assistant@127.0.0.1:${PG_PORT}/assistant_e2e" \
+E2E_DATABASE_ADMIN_URL="postgresql://assistant:assistant@127.0.0.1:${PG_PORT}/postgres" \
 npm run test:e2e
 
 step "All acceptance checks passed"
