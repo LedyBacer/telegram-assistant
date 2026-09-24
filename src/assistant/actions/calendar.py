@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, conint, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions import register_action_kind
+from assistant.i18n import t
 from assistant.models.calendar_items import ItemKind, ItemPriority, ItemStatus
 from assistant.models.users import User
 from assistant.services import calendar as calendar_service
@@ -43,6 +44,14 @@ def _user_tz(user: User) -> ZoneInfo:
         return ZoneInfo(name)
     except (ValueError, KeyError):
         return ZoneInfo("UTC")
+
+
+def _lang(user: User) -> str:
+    return (
+        user.settings.language
+        if user.settings is not None
+        else "ru"
+    )
 
 
 def _aware(value: datetime | None, user: User) -> datetime | None:
@@ -213,52 +222,66 @@ async def _item_title(session: AsyncSession, user: User, item_id: int) -> str:
 async def _preview_create_item(
     session: AsyncSession, user: User, payload: CreateItemPayload
 ) -> str:
-    parts = [f"Create {payload.kind.value} '{payload.title}'"]
+    lang = _lang(user)
+    parts = [t(lang, "action.preview.create", kind=payload.kind.value, title=payload.title)]
     starts = _fmt(payload.starts_at, user)
     if starts:
-        parts.append(f"at {starts}")
+        parts.append(t(lang, "action.preview.create.at", when=starts))
     due = _fmt(payload.due_at, user)
     if due:
-        parts.append(f"due {due}")
+        parts.append(t(lang, "action.preview.create.due", when=due))
     if payload.remind_offsets_minutes:
         offsets = ", ".join(str(o) for o in payload.remind_offsets_minutes)
-        parts.append(f"reminder(s) at {offsets} min")
+        parts.append(t(lang, "action.preview.create.reminders", offsets=offsets))
     return " ".join(parts)
 
 
 async def _preview_update_item(
     session: AsyncSession, user: User, payload: UpdateItemPayload
 ) -> str:
+    lang = _lang(user)
     title = await _item_title(session, user, payload.item_id)
     present = payload.model_fields_set - {"item_id", "expected_updated_at"}
     fields = ("title", "starts_at", "ends_at", "due_at", "priority", "description")
     changed = [name for name in fields if name in present]
     summary = ", ".join(changed) if changed else "(no fields)"
-    return f"Update item '{title}': {summary}"
+    return t(lang, "action.preview.update", title=title, fields=summary)
 
 
 async def _preview_complete_item(
     session: AsyncSession, user: User, payload: CompleteItemPayload
 ) -> str:
-    return f"Complete item '{await _item_title(session, user, payload.item_id)}'"
+    lang = _lang(user)
+    title = await _item_title(session, user, payload.item_id)
+    return t(lang, "action.preview.complete", title=title)
 
 
 async def _preview_cancel_item(
     session: AsyncSession, user: User, payload: CancelItemPayload
 ) -> str:
-    return f"Cancel item '{await _item_title(session, user, payload.item_id)}'"
+    lang = _lang(user)
+    title = await _item_title(session, user, payload.item_id)
+    return t(lang, "action.preview.cancel", title=title)
 
 
 async def _preview_delete_item(
     session: AsyncSession, user: User, payload: DeleteItemPayload
 ) -> str:
-    return f"Delete item '{await _item_title(session, user, payload.item_id)}'"
+    lang = _lang(user)
+    title = await _item_title(session, user, payload.item_id)
+    return t(lang, "action.preview.delete", title=title)
 
 
 async def _preview_create_reminder(
     session: AsyncSession, user: User, payload: CreateReminderPayload
 ) -> str:
-    return f"Remind me '{payload.message}' at {_fmt(payload.fire_at, user)}"
+    lang = _lang(user)
+    return t(
+        lang,
+        "action.preview.reminder",
+        message=payload.message,
+        when=_fmt(payload.fire_at, user),
+    )
 
 
 async def _preview_cancel_reminder(
@@ -266,10 +289,11 @@ async def _preview_cancel_reminder(
 ) -> str:
     from assistant.models.reminders import Reminder
 
+    lang = _lang(user)
     reminder = await session.get(Reminder, payload.reminder_id)
     if reminder is None or reminder.user_id != user.id:
-        return f"Cancel reminder #{payload.reminder_id}"
-    return f"Cancel reminder '{reminder.message}'"
+        return t(lang, "action.preview.cancel_reminder.id", id=payload.reminder_id)
+    return t(lang, "action.preview.cancel_reminder", message=reminder.message)
 
 
 async def exec_create_item(

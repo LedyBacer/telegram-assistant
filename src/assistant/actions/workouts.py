@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions import register_action_kind
+from assistant.i18n import t
 from assistant.models.users import User
 from assistant.services import workouts as workouts_service
 
@@ -86,23 +87,36 @@ async def exec_schedule_workout(
     return {"item_id": item.id, "title": item.title}
 
 
+def _lang(user: User) -> str:
+    return user.settings.language if user.settings is not None else "ru"
+
+
 async def _preview_log_workout(
     session: AsyncSession, user: User, payload: LogWorkoutPayload
 ) -> str:
-    parts = [f"Log workout '{payload.name}'"]
+    lang = _lang(user)
+    parts = [t(lang, "action.preview.log_workout", name=payload.name)]
     if payload.duration_minutes:
-        parts.append(f"{payload.duration_minutes} min")
+        parts.append(t(lang, "action.preview.log_workout.duration", minutes=payload.duration_minutes))
     if payload.perceived_effort is not None:
-        parts.append(f"effort {payload.perceived_effort}")
+        parts.append(t(lang, "action.preview.log_workout.effort", effort=payload.perceived_effort))
     return " ".join(parts)
 
 
 async def _preview_schedule_workout(
     session: AsyncSession, user: User, payload: ScheduleWorkoutPayload
 ) -> str:
-    parts = [f"Schedule workout '{payload.name}' at {_fmt(payload.starts_at, user)}"]
+    lang = _lang(user)
+    parts = [
+        t(
+            lang,
+            "action.preview.schedule_workout",
+            name=payload.name,
+            when=_fmt(payload.starts_at, user),
+        )
+    ]
     if payload.duration_minutes:
-        parts.append(f"({payload.duration_minutes} min)")
+        parts.append(t(lang, "action.preview.schedule_workout.duration", minutes=payload.duration_minutes))
     return " ".join(parts)
 
 

@@ -636,6 +636,8 @@ async def test_execute_schedule_workout_creates_item_and_reminder(
 
 async def test_preview_create_item_from_typed_data(session: AsyncSession) -> None:
     user = await _user(session)
+    user.settings.language = "en"
+    await session.flush()
     action = await act.propose_action(
         session,
         user,
@@ -657,6 +659,7 @@ async def test_preview_create_item_respects_user_timezone(
 ) -> None:
     user = await _user(session)
     user.settings.timezone = "Europe/Berlin"
+    user.settings.language = "en"
     await session.flush()
     # 12:00 UTC == 14:00 Europe/Berlin (CEST, UTC+2 in October).
     action = await act.propose_action(
@@ -671,6 +674,8 @@ async def test_preview_create_item_respects_user_timezone(
 
 async def test_preview_update_item_lists_changed_fields(session: AsyncSession) -> None:
     user = await _user(session)
+    user.settings.language = "en"
+    await session.flush()
     item = await cal.create_item(session, user, title="Move me", starts_at=START)
     action = await act.propose_action(
         session,
@@ -684,6 +689,8 @@ async def test_preview_update_item_lists_changed_fields(session: AsyncSession) -
 
 async def test_preview_complete_item_uses_current_title(session: AsyncSession) -> None:
     user = await _user(session)
+    user.settings.language = "en"
+    await session.flush()
     item = await cal.create_item(session, user, title="Standup", starts_at=START)
     action = await act.propose_action(
         session, user, kind="complete_item", payload={"item_id": item.id}, summary="s"
@@ -693,6 +700,8 @@ async def test_preview_complete_item_uses_current_title(session: AsyncSession) -
 
 async def test_preview_create_reminder(session: AsyncSession) -> None:
     user = await _user(session)
+    user.settings.language = "en"
+    await session.flush()
     action = await act.propose_action(
         session,
         user,
@@ -705,6 +714,8 @@ async def test_preview_create_reminder(session: AsyncSession) -> None:
 
 async def test_preview_workouts(session: AsyncSession) -> None:
     user = await _user(session)
+    user.settings.language = "en"
+    await session.flush()
     log_action = await act.propose_action(
         session,
         user,
@@ -725,6 +736,20 @@ async def test_preview_workouts(session: AsyncSession) -> None:
         summary="s",
     )
     assert sched_action.summary == "Schedule workout 'Run' at 2026-10-01 14:00 (30 min)"
+
+
+async def test_preview_localizes_to_russian_by_default(session: AsyncSession) -> None:
+    user = await _user(session)  # default language is Russian
+    user.settings.timezone = "Europe/Berlin"
+    await session.flush()
+    action = await act.propose_action(
+        session,
+        user,
+        kind="create_item",
+        payload={"title": "Standup", "starts_at": START.isoformat()},
+        summary="s",
+    )
+    assert action.summary == "Создать task «Standup» в 2026-10-01 14:00"
 
 
 # ---------------------------------------------------------------------------
