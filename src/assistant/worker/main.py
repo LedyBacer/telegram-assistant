@@ -11,6 +11,7 @@ Entrypoint: ``python -m assistant.worker.main``
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import platform
@@ -32,6 +33,58 @@ from assistant.worker import (
 )
 
 logger = logging.getLogger("assistant.worker")
+
+
+class JobLease:
+    """Supervised lease for one claimed job (V4 §4).
+
+    The heartbeat renews the lease on a cadence well inside ``LEASE_SECONDS``
+    for the *entire* handler lifetime. If a renewal cannot be made — the lease
+    expired and the job was recovered, it was cancelled, *or the renewal
+    itself raised* — ``lost`` is set and the worker cancels the handler so its
+    in-flight work is abandoned (not orphaned as a half-committed domain write).
+    """
+
+    def __init__(self, session_factory, job_id: int, owner_token: str) -> None:
+        self._session_factory = session_factory
+        self.job_id = job_id
+        self.owner_token = owner_token
+        self.lost = asyncio.Event()
+        self._wakeup = asyncio.Event()
+
+    def stop(self) -> None:
+        """Wake the heartbeat so it exits without waiting out the cadence."""
+        self._wakeup.set()
+
+    def raise_if_lost(self) -> None:
+        if self.lost.is_set():
+            raise jobs_service.LeaseLostError(f"lease for job {self.job_id} was lost")
+
+    async def heartbeat(self) -> None:
+        while not self.lost.is_set():
+            self._wakeup.clear()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(
+                    self._wakeup.wait(), timeout=jobs_service.LEASE_SECONDS / 2
+                )
+            if self._wakeup.is_set():
+                break
+            try:
+                async with self._session_factory() as session:
+                    alive = await jobs_service.renew_lease(
+                        session, self.job_id, owner_token=self.owner_token
+                    )
+                    await session.commit()
+            except Exception:
+                # A renewal that errors means we no longer control the lease:
+                # treat it as lost so the handler stops committing.
+                logger.exception("lease renewal for job %s failed", self.job_id)
+                self.lost.set()
+                break
+            if not alive:
+                logger.warning("job %s lost its lease (recovered/cancelled)", self.job_id)
+                self.lost.set()
+                break
 
 
 def _new_worker_id() -> str:
@@ -73,67 +126,90 @@ class JobWorker:
         )
         return len(task_args)
 
-    async def _heartbeat(self, job_id: int, owner_token: str) -> None:
-        """Renew the lease on a cadence well inside LEASE_SECONDS while the job
-        runs, so a healthy long-running job is never treated as abandoned."""
-        while True:
-            await asyncio.sleep(jobs_service.LEASE_SECONDS / 2)
-            async with self._session_factory() as session:
-                alive = await jobs_service.renew_lease(session, job_id, owner_token=owner_token)
-                await session.commit()
-            if not alive:
-                return
+    async def _run_handler(self, handler, job_id: int, job_type: str, lease: JobLease) -> None:
+        """Run one handler for a claimed job.
+
+        Transaction-ownership contract (SPEC §5): each handler owns its domain
+        transaction boundaries and commits its own units of work. A handler
+        that needs intermediate commits (file ingestion: download → extract →
+        embed → chunk-write) is therefore NOT wrapped in an outer worker
+        transaction — doing so would let a single long transaction span
+        external I/O and make the intermediate ``commit()`` calls ambiguous.
+        """
+        async with self._session_factory() as session:
+            # Short read transaction to load the job row. The handler owns its
+            # own transactions from here on.
+            async with session.begin():
+                job = await session.get(BackgroundJob, job_id)
+                if job is None:
+                    return
+            # Bind job correlation (SPEC §23) so every log the handler emits —
+            # including nested AI/embedding/file-ingestion logs — carries the
+            # job id, type, and owning user for diagnosis.
+            with log_context(job_id=job_id, job_type=job_type, user_id=job.user_id):
+                lease.raise_if_lost()
+                try:
+                    await handler(session, job)
+                except Exception:
+                    # Release any in-flight handler transaction; the failure
+                    # record is written by _fail in a fresh session, so this
+                    # cleanup cannot disturb it.
+                    if session.in_transaction():
+                        await session.rollback()
+                    raise
 
     async def _run_job(self, job_id: int, job_type: str, owner_token: str) -> None:
-        """Run one already-claimed job.
+        """Run one already-claimed job under a supervised lease (V4 §4).
 
-        Transaction-ownership contract (SPEC §5):
-        * The worker owns job CLAIMING (``poll_once``) and the FINAL job state
-          (``_complete`` / ``_fail``, each in their own short transaction).
-        * Each handler owns its domain transaction boundaries and commits its
-          own units of work. A handler that needs intermediate commits (file
-          ingestion: download → extract → embed → chunk-write) is therefore
-          NOT wrapped in an outer worker transaction — doing so would let a
-          single long transaction span external I/O and make the intermediate
-          ``commit()`` calls ambiguous.
+        The heartbeat runs for the *entire* handler lifetime and the handler is
+        cancelled the moment the lease is lost (renewal failed, expired, or the
+        job was recovered/cancelled), so an old owner can never commit domain
+        side-effects under a stale lease. Both the handler and heartbeat tasks
+        are always awaited (never just cancelled-and-forgotten).
         """
         handler = registry.handlers.get(job_type)
         if handler is None:
             await self._fail(job_id, owner_token, f"no handler registered for job type {job_type!r}")
             return
-        heartbeat = asyncio.create_task(self._heartbeat(job_id, owner_token))
+        lease = JobLease(self._session_factory, job_id, owner_token)
+        # create_task copies the current context, so the handler task sees the
+        # lease via jobs_service.current_lease; the token lets us reset it.
+        lease_token = jobs_service.current_lease.set(lease)
+        heartbeat = asyncio.create_task(lease.heartbeat(), name=f"lease-{job_id}")
+        handler_task = asyncio.create_task(
+            self._run_handler(handler, job_id, job_type, lease), name=f"job-{job_id}"
+        )
         try:
-            async with self._session_factory() as session:
-                # Short read transaction to load the job row. The handler owns
-                # its own transactions from here on; the worker does not keep
-                # a transaction open across the handler's (potentially long)
-                # external I/O.
-                async with session.begin():
-                    job = await session.get(BackgroundJob, job_id)
-                    if job is None:
-                        return
-                # Bind job correlation (SPEC §23) so every log the handler
-                # emits — including nested AI/embedding/file-ingestion logs —
-                # carries the job id, type, and owning user for diagnosis.
-                with log_context(job_id=job_id, job_type=job_type, user_id=job.user_id):
-                    try:
-                        await handler(session, job)
-                    except Exception:
-                        # Release any in-flight handler transaction; the
-                        # failure record is written by _fail in a fresh
-                        # session, so this cleanup cannot disturb it.
-                        if session.in_transaction():
-                            await session.rollback()
-                        raise
-            await self._complete(job_id, owner_token)
-        except asyncio.CancelledError:
-            # Leave the job running; lease expiry + recovery re-queue it.
-            raise
-        except Exception as exc:
-            logger.exception("job %s (%s) failed", job_id, job_type)
-            await self._fail(job_id, owner_token, str(exc) or exc.__class__.__name__)
+            done, _pending = await asyncio.wait(
+                {handler_task, heartbeat}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if heartbeat in done:
+                # The heartbeat exited on its own: the lease was lost. Cancel
+                # the handler so its in-flight work is abandoned, fully await
+                # the cancellation, and do NOT complete/fail (we no longer
+                # own the job — recovery or a new owner does).
+                lease.lost.set()
+                handler_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await handler_task
+                return
+            # The handler finished first: stop the heartbeat and await it.
+            lease.stop()
+            await heartbeat
+            exc = handler_task.exception()
+            if exc is not None:
+                logger.exception(
+                    "job %s (%s) failed", job_id, job_type, exc_info=exc
+                )
+                await self._fail(job_id, owner_token, str(exc) or exc.__class__.__name__)
+            else:
+                await self._complete(job_id, owner_token)
         finally:
-            heartbeat.cancel()
+            # Belt and braces: neither task may outlive the job.
+            for task in (handler_task, heartbeat):
+                if not task.done():
+                    task.cancel()
+            jobs_service.current_lease.reset(lease_token)
 
     async def _complete(self, job_id: int, owner_token: str) -> None:
         async with self._session_factory() as session:

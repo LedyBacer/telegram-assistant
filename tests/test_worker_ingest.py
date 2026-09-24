@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -233,3 +234,189 @@ async def test_run_job_cancelled_mid_ingest_commits_no_chunks(
     # The job remains cancelled; the foreign completion attempt was refused.
     job_row = await session.get(BackgroundJob, job.id)
     assert job_row.status == JobStatus.cancelled.value
+
+
+# ---------------------------------------------------------------------------
+# V4 §6/§7/§8: lease-lost supervision of long handlers
+# ---------------------------------------------------------------------------
+
+
+class _LostLease:
+    """A minimal stand-in for the worker's ``JobLease`` with a lost lease."""
+
+    def __init__(self) -> None:
+        self._lost = asyncio.Event()
+        self._lost.set()
+
+    @property
+    def lost(self) -> asyncio.Event:
+        return self._lost
+
+    def raise_if_lost(self) -> None:
+        from assistant.services.jobs import LeaseLostError
+
+        raise LeaseLostError("lease lost")
+
+
+async def test_stale_lease_commits_no_chunks(session, engine, monkeypatch, tmp_path) -> None:
+    """V4 §6: a lease lost before the final chunk commit must not commit chunks.
+
+    The pipeline runs to completion (fake embedder succeeds) but the lease is
+    reported lost at the pre-commit guard, so the handler rolls back and the
+    file stays un-indexed with no chunk rows.
+    """
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+    monkeypatch.setattr(files, "get_ai_provider", lambda: _FakeEmbedder())
+
+    user = await _user(session)
+    file = await _seed_local_file(session, user, "stale lease content")
+    file_id = file.id
+    await session.commit()
+
+    job_row = (
+        await session.scalar(
+            select(BackgroundJob).where(BackgroundJob.type == files.FILES_INGEST_JOB_TYPE)
+        )
+    )
+    assert job_row is not None
+
+    token = jobs_service.current_lease.set(_LostLease())
+    try:
+        await files._run_pipeline(session, file, job_row)
+    finally:
+        jobs_service.current_lease.reset(token)
+
+    session.expire_all()
+    count = await session.scalar(
+        select(func.count()).select_from(FileChunk).where(FileChunk.file_id == file_id)
+    )
+    assert count == 0
+    file_row = await session.scalar(select(files.UserFile).where(files.UserFile.id == file_id))
+    assert file_row is not None
+    assert file_row.state != FileState.indexed.value
+    # No failure was stamped either — this is a lease loss, not a real failure.
+    assert file_row.state != FileState.failed.value
+
+
+async def test_lease_lost_failure_not_recorded(session, engine, monkeypatch, tmp_path) -> None:
+    """V4 §7: a lease-lost old owner must not mark the file ``failed``.
+
+    The pipeline raises a genuine error, but the lease is already lost (a new
+    owner is re-ingesting), so the handler must skip ``_record_failure`` and
+    leave the file state to the new owner.
+    """
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+
+    user = await _user(session)
+    file = await _seed_local_file(session, user, "failure after lease loss")
+    file_id = file.id
+    await session.commit()
+
+    job_row = (
+        await session.scalar(
+            select(BackgroundJob).where(BackgroundJob.type == files.FILES_INGEST_JOB_TYPE)
+        )
+    )
+    assert job_row is not None
+
+    async def _boom(_session, _file, _job) -> None:
+        raise RuntimeError("pipeline blew up")
+
+    monkeypatch.setattr(files, "_run_pipeline", _boom)
+
+    token = jobs_service.current_lease.set(_LostLease())
+    try:
+        with pytest.raises(RuntimeError, match="pipeline blew up"):
+            await files.handle_files_ingest(session, job_row)
+    finally:
+        jobs_service.current_lease.reset(token)
+
+    session.expire_all()
+    file_row = await session.scalar(select(files.UserFile).where(files.UserFile.id == file_id))
+    assert file_row is not None
+    # A genuine failure (no lease loss) WOULD mark it failed — this one must not.
+    assert file_row.state != FileState.failed.value
+
+
+async def test_lease_heartbeat_marks_lost_on_renewal_error(monkeypatch) -> None:
+    """V4 §8: a renewal that raises is treated as a lost lease.
+
+    The heartbeat must exit promptly (not hang out the cadence) and mark the
+    lease lost so the worker cancels the in-flight handler.
+    """
+    from assistant.worker.main import JobLease
+
+    class _BoomFactory:
+        def __call__(self):
+            return self
+
+        async def __aenter__(self):
+            raise RuntimeError("db down")
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+    monkeypatch.setattr(jobs_service, "LEASE_SECONDS", 0.05)
+    lease = JobLease(_BoomFactory(), 1, "owner-token")
+    await asyncio.wait_for(lease.heartbeat(), timeout=5)
+    assert lease.lost.is_set()
+    try:
+        lease.raise_if_lost()
+        raise AssertionError("expected LeaseLostError")
+    except jobs_service.LeaseLostError:
+        pass
+
+
+async def test_run_job_cancels_handler_on_lost_lease(session, engine, monkeypatch, tmp_path) -> None:
+    """V4 §8: the worker cancels the handler the moment the lease is lost.
+
+    The embedder blocks; we expire the lease so the (fast) heartbeat's renewal
+    fails, the worker cancels the handler, and no chunks are committed.
+    """
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+    reached = asyncio.Event()
+    block = asyncio.Event()  # never set: the handler blocks in embed until cancelled
+    monkeypatch.setattr(
+        files, "get_ai_provider", lambda: _FakeEmbedder(reached=reached, cancel_done=block)
+    )
+
+    user = await _user(session)
+    file = await _seed_local_file(session, user, "cancel on lost lease")
+    file_id = file.id
+    await session.commit()
+
+    worker = _worker(engine)
+    factory = worker._session_factory
+    async with factory() as s:
+        jobs = await jobs_service.claim_jobs(s, worker_id="w-test", limit=1)
+        await s.commit()
+    job = jobs[0]
+
+    # Speed up the heartbeat cadence so a lost lease is detected within the
+    # test window.
+    monkeypatch.setattr(jobs_service, "LEASE_SECONDS", 0.1)
+
+    task = asyncio.create_task(worker._run_job(job.id, job.type, job.locked_by))
+    # Deterministic: wait until the handler is blocked in the embedding stage
+    # (a valid 120s lease is still live, so the heartbeat is a no-op), THEN
+    # expire the lease so the next heartbeat renewal finds nothing to renew.
+    await asyncio.wait_for(reached.wait(), timeout=10)
+    from sqlalchemy import text
+
+    async with factory() as s:
+        await s.execute(
+            text("UPDATE background_jobs SET lease_until = now() - interval '1 second'"),
+        )
+        await s.commit()
+    # The fast heartbeat finds the expired lease, marks it lost, and cancels
+    # the handler; _run_job must return (not hang) once the lease is lost.
+    await asyncio.wait_for(task, timeout=10)
+
+    session.expire_all()
+    count = await session.scalar(
+        select(func.count()).select_from(FileChunk).where(FileChunk.file_id == file_id)
+    )
+    assert count == 0
+    file_row = await session.scalar(select(files.UserFile).where(files.UserFile.id == file_id))
+    assert file_row is not None
+    assert file_row.state not in (FileState.indexed.value, FileState.failed.value)

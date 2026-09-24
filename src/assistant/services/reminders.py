@@ -21,7 +21,12 @@ from assistant.models.jobs import BackgroundJob, JobStatus
 from assistant.models.reminders import Reminder, ReminderStatus
 from assistant.models.users import User
 from assistant.services import notifications
-from assistant.services.jobs import cancel_job, create_job
+from assistant.services.jobs import (
+    LeaseLostError,
+    cancel_job,
+    create_job,
+    current_lease,
+)
 
 REMINDER_SEND_JOB_TYPE = "reminder_send"
 
@@ -359,6 +364,16 @@ async def _handle_reminder_send(
     chat_id = user.id
     message = t(language, "reminders.notification", message=reminder.message)
     await session.commit()  # release the connection before the network call
+
+    # Do not send from a stale lease: a new owner (or recovery) will deliver
+    # it — delivery is durable at-least-once, so this just avoids a duplicate
+    # (V4 §8).
+    lease = current_lease.get()
+    if lease is not None:
+        try:
+            lease.raise_if_lost()
+        except LeaseLostError:
+            return
 
     # Phase B — Telegram send, with no transaction held.
     await notifications.send_text(chat_id, message)

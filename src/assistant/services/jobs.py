@@ -18,6 +18,7 @@ Leases (not a fixed "lock older than N minutes" TTL):
 from __future__ import annotations
 
 import uuid
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -32,6 +33,21 @@ BACKOFF_BASE_SECONDS = 30
 # How long a claimed job holds its lease before it is considered abandoned
 # unless the owner renews it. Generous relative to a poll/heartbeat cadence.
 LEASE_SECONDS = 120
+
+# The lease of the job currently running in this worker task, if any (V4 §4).
+# Long handlers (file ingestion) call ``current_lease().raise_if_lost()``
+# before their final domain commit so an old owner can never commit side-
+# effects under a stale lease. ``Any`` (not the worker's ``JobLease`` type) to
+# avoid a circular import: the worker sets this, the services read it.
+current_lease: ContextVar[Any] = ContextVar("current_lease", default=None)
+
+
+class LeaseLostError(Exception):
+    """The job's lease was lost mid-run (expired, recovered, or the renewal
+    itself failed). Handlers check ``current_lease().raise_if_lost()`` before
+    committing side-effects so an old owner can never commit under a stale
+    lease (V4 §1/§6)."""
+
 
 _CLAIM_SQL = text(
     """

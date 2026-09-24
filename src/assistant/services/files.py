@@ -41,7 +41,7 @@ from assistant.i18n import LocalizableError
 from assistant.models.files import FileChunk, FileState, UserFile
 from assistant.models.jobs import BackgroundJob, JobStatus
 from assistant.models.users import User
-from assistant.services.jobs import cancel_job, create_job
+from assistant.services.jobs import LeaseLostError, cancel_job, create_job, current_lease
 
 logger = logging.getLogger("assistant.files")
 
@@ -594,6 +594,17 @@ async def _run_pipeline(
         await session.rollback()
         return
 
+    # A stale lease (expired, recovered, or a failed renewal) must not commit
+    # chunks: a new owner may already be re-ingesting the same file, and this
+    # old owner must not overwrite its work (V4 §6).
+    lease = current_lease.get()
+    if lease is not None:
+        try:
+            lease.raise_if_lost()
+        except LeaseLostError:
+            await session.rollback()
+            return
+
     # Final short transaction: replace any chunks from a previous run.
     await session.execute(delete(FileChunk).where(FileChunk.file_id == file.id))
     for position, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True)):
@@ -649,7 +660,17 @@ async def handle_files_ingest(session: AsyncSession, job: BackgroundJob) -> None
         # Discard the failed pipeline work and release the row lock before
         # recording the visible failure state from a second connection.
         await session.rollback()
-        await _record_failure(file_id, str(exc) or exc.__class__.__name__)
+        lease = current_lease.get()
+        if lease is not None and lease.lost.is_set():
+            # We lost the lease mid-run: recovery re-queued the job or a new
+            # owner is re-ingesting this file, so we must NOT stamp the file
+            # failed over their in-flight work (V4 §7). Leave state to them.
+            logger.warning(
+                "file %s pipeline failed after lease loss; not recording failure",
+                file_id,
+            )
+        else:
+            await _record_failure(file_id, str(exc) or exc.__class__.__name__)
         raise
 
 

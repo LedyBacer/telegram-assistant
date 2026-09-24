@@ -231,6 +231,16 @@ async def _handle_digest_send(session: AsyncSession, job: BackgroundJob) -> None
     chat_id = user.id
     await session.commit()  # release the connection before the network call
 
+    # Do not send from a stale lease: a new owner (or recovery) will deliver
+    # it — delivery is durable at-least-once, so this just avoids a duplicate
+    # (V4 §8).
+    lease = jobs_service.current_lease.get()
+    if lease is not None:
+        try:
+            lease.raise_if_lost()
+        except jobs_service.LeaseLostError:
+            return
+
     # Phase B — Telegram send, with no transaction held.
     await notifications.send_text(chat_id, content)
 
