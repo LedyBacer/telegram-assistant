@@ -9,8 +9,11 @@
 import { api, apiUpload } from "./js/api.js";
 import {
   applyTheme,
-  initWebApp,
+  applyViewport,
   onThemeChanged,
+  onViewportChanged,
+  webAppReady,
+  webAppExpand,
   backButtonShow,
   backButtonHide,
   backButtonOn,
@@ -1704,10 +1707,15 @@ function switchRow(label, checked, onChange) {
 /* ------------------------------------------------------------------ */
 
 async function boot() {
-  initWebApp();
+  // ready() now; expand() is deferred until the first real render (V5 §13).
+  webAppReady();
   applyTheme();
+  applyViewport();
   onThemeChanged(() => {
     // Theme changes re-style the app through CSS variables automatically.
+  });
+  onViewportChanged(() => {
+    // Safe-area / stable-height tokens are re-applied inside the handler.
   });
   backButtonOn(() => {
     if (state.tab === "edit") {
@@ -1722,9 +1730,11 @@ async function boot() {
     const me = await loadMe();
     whoEl.textContent = [me.user.first_name, me.user.last_name].filter(Boolean).join(" ");
     await render();
+    webAppExpand();
   } catch (e) {
     const key = e && e.status === 401 ? "miniapp.status_auth" : "miniapp.status_open";
     viewEl.replaceChildren(empty(S(key)));
+    webAppExpand();
   }
 }
 

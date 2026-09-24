@@ -47,6 +47,84 @@ export function applyTheme() {
     "--tg-theme-bg-color",
     params.bg_color || rootStyle.getPropertyValue("--tg-theme-bg-color")
   );
+  syncChrome();
+}
+
+/**
+ * Chrome color sync (V5 §13): push the active theme colors to the native
+ * Telegram chrome — the header bar (header_bg_color), the bottom bar /
+ * bottom-button area (section_bg_color) — and to the browser's
+ * `<meta name="theme-color">`. No-op outside a real client.
+ */
+export function syncChrome() {
+  const params = tg && tg.themeParams;
+  if (!params) return;
+  try {
+    if (params.header_bg_color && typeof tg.setHeaderColor === "function")
+      tg.setHeaderColor(params.header_bg_color);
+  } catch {
+    /* no header color support */
+  }
+  try {
+    if (params.section_bg_color && typeof tg.setBottomBarColor === "function")
+      tg.setBottomBarColor(params.section_bg_color);
+  } catch {
+    /* no bottom-bar color support */
+  }
+  try {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta && params.bg_color) meta.setAttribute("content", params.bg_color);
+  } catch {
+    /* no theme-color meta (plain HTML) */
+  }
+}
+
+/**
+ * Apply the client viewport metrics (V5 §11, §12): the four safe-area insets
+ * as px custom properties (--safe-top/right/bottom/left) and a stable
+ * viewport height (--tg-viewport-stable-height, from viewportInfo
+ * contentHeight) that does not jump when the on-screen keyboard appears.
+ * In a plain browser the CSS env()/100dvh fallbacks apply.
+ */
+export function applyViewport() {
+  if (!tg) return;
+  const rootStyle = document.documentElement.style;
+  const inset = tg.safeAreaInset;
+  if (inset && typeof inset === "object") {
+    for (const [edge, cssVar] of [
+      ["top", "--safe-top"],
+      ["right", "--safe-right"],
+      ["bottom", "--safe-bottom"],
+      ["left", "--safe-left"],
+    ]) {
+      const px = Number(inset[edge]);
+      if (Number.isFinite(px)) rootStyle.setProperty(cssVar, `${px}px`);
+    }
+  }
+  const info = tg.viewportInfo;
+  const h = info && Number(info.contentHeight);
+  if (Number.isFinite(h) && h > 0) rootStyle.setProperty("--tg-viewport-stable-height", `${h}px`);
+}
+
+/** Register a callback for runtime Telegram viewport changes. No-op in browser. */
+export function onViewportChanged(callback) {
+  if (!tg || typeof tg.onEvent !== "function") return () => {};
+  const handler = () => {
+    applyViewport();
+    callback();
+  };
+  try {
+    tg.onEvent("viewportChanged", handler);
+  } catch {
+    return () => {};
+  }
+  return () => {
+    try {
+      tg.offEvent("viewportChanged", handler);
+    } catch {
+      /* already detached */
+    }
+  };
 }
 
 /** Register a callback for runtime Telegram theme changes. No-op in browser. */
@@ -70,14 +148,23 @@ export function onThemeChanged(callback) {
   };
 }
 
-/** Signal that the Mini App is ready and expand the viewport (if supported). */
-export function initWebApp() {
+/**
+ * ready()/expand() split (V5 §13): the app signals `ready()` at boot, and
+ * requests `expand()` only once real content is on screen — so the client
+ * grows the viewport to the content, not to an empty shell (avoids the
+ * initial half-height flash).
+ */
+export function webAppReady() {
   if (!tg) return;
   try {
     tg.ready();
   } catch {
     /* SDK not ready yet; harmless */
   }
+}
+
+export function webAppExpand() {
+  if (!tg) return;
   try {
     tg.expand();
   } catch {
@@ -85,14 +172,30 @@ export function initWebApp() {
   }
 }
 
+/** Signal ready AND expand (kept for callers that do not need the split). */
+export function initWebApp() {
+  webAppReady();
+  webAppExpand();
+}
+
 /** Current Telegram user object, or null outside Telegram. */
 export function tgUser() {
   return tg && tg.user ? tg.user : null;
 }
 
-/** Client language reported by Telegram (ru/en/...), or null. */
+/**
+ * Client language reported by Telegram (ru/en/...), or null. Prefers the
+ * authoritative `initDataUnsafe.user.language_code` (V5 §13), then the
+ * decoded `user` object, then the top-level `language` field.
+ */
 export function tgLanguage() {
-  return tg && tg.language ? tg.language : null;
+  if (!tg) return null;
+  return (
+    (tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code) ||
+    (tg.user && tg.user.language_code) ||
+    tg.language ||
+    null
+  );
 }
 
 /* Telegram BackButton (real client only; no-op everywhere else). */

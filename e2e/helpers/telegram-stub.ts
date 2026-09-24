@@ -88,6 +88,7 @@ const STUB_SOURCE = `
   const CURRENT = { name: "light" };
 
   const counters = { ready: 0, expand: 0, haptic: 0 };
+  const chromeCalls = { setHeaderColor: [], setBottomBarColor: [] };
   const events = {};
   const backButton = { shown: false, handler: null };
 
@@ -117,8 +118,8 @@ const STUB_SOURCE = `
     offEvent(name, cb) {
       events[name] = (events[name] || []).filter((f) => f !== cb);
     },
-    setHeaderColor() {},
-    setBottomBarColor() {},
+    setHeaderColor(c) { chromeCalls.setHeaderColor.push(c); },
+    setBottomBarColor(c) { chromeCalls.setBottomBarColor.push(c); },
     setViewMode() {},
     enableClosing() {},
     disableClosing() {},
@@ -155,6 +156,7 @@ const STUB_SOURCE = `
 
   window.__tg = {
     counters,
+    chromeCalls,
     presets: PRESETS,
     currentName() { return CURRENT.name; },
     setTheme(name) {
