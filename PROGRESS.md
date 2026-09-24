@@ -1,13 +1,48 @@
 # Progress
 
-Status: V3 PRIORITY 30 COMPLETE (task/event edit flow — detail/edit
-existing items via tri-state PATCH /items, ends_at on cards, pending
-reminders with inline cancel; E2E isolation hardened).
+Status: V3 PRIORITY 31 COMPLETE (reminder offsets: preset chips +
+bounded custom input in the Mini App, shared min/max/max-count
+validation across API/action/bot/AI paths per SPEC §14.2).
 P26 (do-not-redesign constraint) is carried by every change in this
 Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 31 (reminder-offset controls — replace comma-separated
-int text with presets; first add the shared max-reminders bound to
-`create_item_reminders`, SPEC §14.2).
+Next: V3 Priority 32 (restore document search in the Mini App —
+GET /files/search, results show source file + excerpt + chunk info,
+loading/empty/error states; keep upload/list/retry/delete working).
+
+## V3 — Priority 31: Reminder-offset controls (no comma text entry)
+
+- `src/assistant/services/reminders.py`: new shared constants
+  `MAX_REMINDERS_PER_ITEM = 5`, `MIN_OFFSET_MINUTES = -1440`,
+  `MAX_OFFSET_MINUTES = 1440` and `validate_reminder_offsets()`
+  (integer check, bounds, dedupe, max count) used by
+  `create_item_reminders` — single source of truth per SPEC §14.2.
+- `api/schemas.py` (`ItemCreate.remind_offsets_minutes`),
+  `actions/calendar.py` (`CreateItemPayload.remind_offsets_minutes`),
+  `ai/schemas.py` (`AITaskDraft.reminder_offsets`): bounded via
+  `conint(ge=..., le=...)` + `max_length=5`, importing the shared
+  constants. `bot/handlers.py::_parse_draft` routes comma text through
+  the same `validate_reminder_offsets`.
+- `miniapp/app.js`: comma text input removed from the New screen.
+  Preset chips (at start, 10/30/60 min, 1 day — all i18n) plus a
+  bounded custom input (0–1440, integer); multi-select as a `Set`,
+  at most 5 total. Selected chips are tappable to deselect; unselected
+  chips disable at the limit. Duplicate/range/limit rejections toast.
+  Save sends `remind_offsets_minutes` (array).
+- `miniapp/styles.css`: `.remind-chips`, `.chip` (+ `.is-on`, disabled),
+  `.remind-custom-row`. i18n (en+ru): preset labels, `reminder_min`,
+  `reminder_custom_ph`, `reminder_add`, `reminder_limit`,
+  `reminder_range`; removed the old `new_reminders_ph` placeholder.
+- `tests/test_reminders.py`: validator unit tests (dedupe, inclusive
+  bounds, rejects out-of-range/too many/non-int) +
+  `create_item_reminders` max enforcement. `tests/test_api.py`:
+  `POST /items` 422s on >5 offsets and out-of-bounds offset.
+- `e2e/tests/reminder-presets.e2e.ts` (new): drives the chip UI
+  (presets, custom, range toast, limit, deselect), saves with a start
+  date, and verifies ground truth — exactly offsets [10, 30, 45, 60,
+  1440] persisted. Deletes its item in `afterEach`.
+
+Verified: full E2E suite 11 passed; `uv run pytest -q` 454 passed on a
+fresh DB; `uv run ruff check .` clean.
 
 ## V3 — Priority 30: Task/event edit flow in the Mini App
 

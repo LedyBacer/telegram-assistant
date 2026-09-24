@@ -5,10 +5,22 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    conint,
+    field_validator,
+    model_validator,
+)
 
 from assistant.i18n import is_supported
 from assistant.models.calendar_items import ItemKind, ItemPriority
+from assistant.services.reminders import (
+    MAX_OFFSET_MINUTES,
+    MAX_REMINDERS_PER_ITEM,
+    MIN_OFFSET_MINUTES,
+)
 
 
 class ORMModel(BaseModel):
@@ -69,7 +81,11 @@ class ItemCreate(BaseModel):
     ends_at: datetime | None = None
     due_at: datetime | None = None
     priority: ItemPriority = ItemPriority.normal
-    remind_offsets_minutes: list[int] = Field(default_factory=list)
+    # SPEC §14.2: the pydantic constraint is the API's first gate; the
+    # shared service validation re-checks the same bounds for every path.
+    remind_offsets_minutes: list[
+        conint(ge=MIN_OFFSET_MINUTES, le=MAX_OFFSET_MINUTES)
+    ] = Field(default_factory=list, max_length=MAX_REMINDERS_PER_ITEM)
 
 
 class ItemUpdate(BaseModel):

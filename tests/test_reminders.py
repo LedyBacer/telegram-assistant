@@ -277,6 +277,43 @@ async def test_create_item_reminders_dedupes_offsets(session: AsyncSession) -> N
     assert sorted(r.offset_minutes for r in created) == [0, 30]
 
 
+# ---------------------------------------------------------------------------
+# SPEC §14.2: shared offset validation (V3 P31)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_reminder_offsets_dedupes_and_bounded() -> None:
+    assert rem.validate_reminder_offsets([30, 0, 30]) == [30, 0]
+    # Bounds are inclusive at ±1 day.
+    assert rem.validate_reminder_offsets([0, 1440, -1440]) == [0, 1440, -1440]
+
+
+@pytest.mark.parametrize(
+    ("offsets", "match"),
+    [
+        ([-1441], "between"),
+        ([1441], "between"),
+        (list(range(6)), "At most"),
+        (["30"], "integer"),
+    ],
+)
+def test_validate_reminder_offsets_rejects(offsets: list, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        rem.validate_reminder_offsets(offsets)
+
+
+async def test_create_item_reminders_enforces_max(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    item = await cal.create_item(session, user, title="Busy", starts_at=FIRE_AT)
+    await session.commit()
+    with pytest.raises(ValueError, match="At most"):
+        await rem.create_item_reminders(
+            session, user, item, offsets_minutes=list(range(6))
+        )
+
+
 async def test_list_reminders_tiebreak_by_id(session: AsyncSession) -> None:
     user = await _user(session)
     r1 = await rem.create_reminder(session, user, fire_at=FIRE_AT, message="one")

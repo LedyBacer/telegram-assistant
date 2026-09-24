@@ -255,6 +255,9 @@ def _parse_draft(text: str, tz: ZoneInfo) -> TaskDraft:
                 raise ValueError("remind: must be comma-separated integers.") from None
         if not remind_offsets:
             raise ValueError("remind: must list at least one offset.")
+        # Shared SPEC §14.2 bounds/dedup/max gate (out-of-bounds offsets
+        # fall through to the AI draft path like any other parse error).
+        remind_offsets = reminders_service.validate_reminder_offsets(remind_offsets)
 
     return TaskDraft(
         title=title,

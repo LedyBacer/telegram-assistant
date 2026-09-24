@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conint
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions import register_action_kind
@@ -21,6 +21,11 @@ from assistant.models.calendar_items import ItemKind, ItemPriority, ItemStatus
 from assistant.models.users import User
 from assistant.services import calendar as calendar_service
 from assistant.services import reminders as reminders_service
+from assistant.services.reminders import (
+    MAX_OFFSET_MINUTES,
+    MAX_REMINDERS_PER_ITEM,
+    MIN_OFFSET_MINUTES,
+)
 
 
 # Raised by an executor when the target entity no longer exists, is no
@@ -61,7 +66,9 @@ class CreateItemPayload(BaseModel):
     ends_at: datetime | None = None
     due_at: datetime | None = None
     priority: ItemPriority = ItemPriority.normal
-    remind_offsets_minutes: list[int] = Field(default_factory=list)
+    remind_offsets_minutes: list[
+        conint(ge=MIN_OFFSET_MINUTES, le=MAX_OFFSET_MINUTES)
+    ] = Field(default_factory=list, max_length=MAX_REMINDERS_PER_ITEM)
 
 
 class UpdateItemPayload(BaseModel):

@@ -484,7 +484,6 @@ async function viewNew(view) {
     priority: "normal",
     startsAt: null,
     dueAt: null,
-    reminders: "",
   };
 
   const titleInput = input({
@@ -495,11 +494,88 @@ async function viewNew(view) {
     placeholder: S("miniapp.new_description_ph"),
     "aria-label": S("miniapp.new_description"),
   });
-  const remindInput = input({
-    placeholder: S("miniapp.new_reminders_ph"),
-    "aria-label": S("miniapp.new_reminders"),
+  // Reminder-offset picker (V3 P31): presets plus a custom value, multi-
+  // select within the backend bound (SPEC §14.2). Offsets are minutes
+  // before the start; 0 fires at the start.
+  const REMINDER_MAX = 5;
+  const REMINDER_MAX_MIN = 1440;
+  const offsets = new Set();
+  const presetDefs = [
+    { value: 0, label: () => S("miniapp.reminder_at_start") },
+    { value: 10, label: () => S("miniapp.reminder_preset_10") },
+    { value: 30, label: () => S("miniapp.reminder_preset_30") },
+    { value: 60, label: () => S("miniapp.reminder_preset_60") },
+    { value: 1440, label: () => S("miniapp.reminder_preset_1440") },
+  ];
+  const isPreset = (o) => presetDefs.some((p) => p.value === o);
+  const chips = el("div", { class: "remind-chips" });
+  const refreshChips = () => {
+    const full = offsets.size >= REMINDER_MAX;
+    const presetChips = presetDefs.map((p) => {
+      const on = offsets.has(p.value);
+      return el("button", {
+        type: "button",
+        class: `chip${on ? " is-on" : ""}`,
+        disabled: full && !on ? true : null,
+        "aria-pressed": on ? "true" : "false",
+        "data-offset": String(p.value),
+        onclick: () => {
+          haptic();
+          if (on) offsets.delete(p.value);
+          else if (offsets.size < REMINDER_MAX) offsets.add(p.value);
+          refreshChips();
+        },
+      }, p.label());
+    });
+    const customChips = [...offsets]
+      .filter((o) => !isPreset(o))
+      .sort((a, b) => a - b)
+      .map((o) =>
+        el("button", {
+          type: "button",
+          class: "chip is-on chip-custom",
+          "aria-pressed": "true",
+          "data-offset": String(o),
+          "aria-label": S("miniapp.reminder_offset", { n: o }),
+          onclick: () => {
+            haptic();
+            offsets.delete(o);
+            refreshChips();
+          },
+        }, S("miniapp.reminder_min", { n: o }))
+      );
+    chips.replaceChildren(...presetChips, ...customChips);
+  };
+  const customInput = input({
+    placeholder: S("miniapp.reminder_custom_ph"),
+    "aria-label": S("miniapp.reminder_custom_ph"),
     inputmode: "numeric",
+    class: "field-input remind-custom",
   });
+  const customAdd = btn(S("miniapp.reminder_add"), () => {
+    const n = Number(customInput.value.trim());
+    if (!Number.isInteger(n) || n < 0 || n > REMINDER_MAX_MIN) {
+      toast(S("miniapp.reminder_range"), "error");
+      return;
+    }
+    if (offsets.has(n)) {
+      customInput.value = "";
+      return;
+    }
+    if (offsets.size >= REMINDER_MAX) {
+      toast(S("miniapp.reminder_limit", { n: REMINDER_MAX }), "error");
+      return;
+    }
+    haptic();
+    offsets.add(n);
+    customInput.value = "";
+    refreshChips();
+  });
+  refreshChips();
+  const remindPicker = el("div", { class: "remind-picker" },
+    chips,
+    el("div", { class: "remind-custom-row" }, customInput, customAdd)
+  );
 
   const kindBtn = pickerBtn(S("miniapp.new_kind"), S("miniapp.new_task"), async () => {
     const chosen = await openSheet({
@@ -551,18 +627,11 @@ async function viewNew(view) {
   const saveBtn = btn(S("miniapp.save"), async () => {
     formState.title = titleInput.value.trim();
     formState.description = descInput.value.trim();
-    formState.reminders = remindInput.value;
     if (!formState.title) {
       toast(S("miniapp.new_title_required"), "error");
       titleInput.focus();
       return;
     }
-    const offsets = formState.reminders
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s !== "")
-      .map((s) => Number(s))
-      .filter((n) => Number.isInteger(n));
     saveBtn.disabled = true;
     try {
       await api("/api/v1/items", "POST", {
@@ -572,7 +641,7 @@ async function viewNew(view) {
         starts_at: formState.startsAt,
         due_at: formState.dueAt,
         priority: formState.priority,
-        remind_offsets_minutes: offsets,
+        remind_offsets_minutes: [...offsets],
       });
       toast(S("miniapp.saved"));
       state.tab = "today";
@@ -590,7 +659,7 @@ async function viewNew(view) {
       field(S("miniapp.new_description"), descInput),
       el("div", { class: "form-row" }, field(S("miniapp.new_kind"), kindBtn), field(S("miniapp.new_priority"), priorityBtn)),
       el("div", { class: "form-row" }, field(S("miniapp.new_starts"), startsBtn), field(S("miniapp.new_due"), dueBtn)),
-      field(S("miniapp.new_reminders"), remindInput),
+      el("div", { class: "field" }, el("span", { class: "field-label" }, S("miniapp.new_reminders")), remindPicker),
       saveBtn
     )
   );

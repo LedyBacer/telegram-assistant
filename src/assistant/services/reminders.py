@@ -25,9 +25,48 @@ from assistant.services.jobs import cancel_job, create_job
 
 REMINDER_SEND_JOB_TYPE = "reminder_send"
 
+# Shared reminder-offset bounds (SPEC §14.2): one gate for the API, action,
+# and bot creation paths. 0 fires at the start; the bounds are symmetric
+# over a day (the DRAFT_SYSTEM prompt documents negative offsets as
+# "fire after the start"), so NLU drafts stay valid while runaway lists and
+# absurd offsets are rejected.
+MAX_REMINDERS_PER_ITEM = 5
+MIN_OFFSET_MINUTES = -24 * 60
+MAX_OFFSET_MINUTES = 24 * 60
+
 
 def _idempotency_key(reminder_id: int) -> str:
     return f"reminder:{reminder_id}"
+
+
+def validate_reminder_offsets(offsets_minutes: list[int]) -> list[int]:
+    """Shared reminder-offset validation (SPEC §14.2).
+
+    Deduplicates offsets and enforces the numeric bounds and the maximum
+    number of reminders per item. Returns the deduplicated list in input
+    order. Raises ValueError for a non-integer offset, an out-of-bounds
+    offset, or more than ``MAX_REMINDERS_PER_ITEM`` unique offsets.
+    """
+    seen: set[int] = set()
+    unique: list[int] = []
+    for offset in offsets_minutes:
+        if not isinstance(offset, int) or isinstance(offset, bool):
+            raise ValueError(f"Reminder offset must be an integer (got {offset!r}).")
+        if offset < MIN_OFFSET_MINUTES or offset > MAX_OFFSET_MINUTES:
+            raise ValueError(
+                f"Reminder offset must be between {MIN_OFFSET_MINUTES} and "
+                f"{MAX_OFFSET_MINUTES} minutes (got {offset})."
+            )
+        if offset in seen:
+            continue
+        seen.add(offset)
+        unique.append(offset)
+    if len(unique) > MAX_REMINDERS_PER_ITEM:
+        raise ValueError(
+            f"At most {MAX_REMINDERS_PER_ITEM} reminders per item "
+            f"(got {len(unique)} unique offsets)."
+        )
+    return unique
 
 
 async def create_reminder(
@@ -91,16 +130,15 @@ async def create_item_reminders(
 
     An offset of ``0`` fires at ``item.starts_at``. Offsets are only applied
     when the item has a ``starts_at``; otherwise the item is skipped.
-    Returns the created reminders (empty when the item has no ``starts_at``).
+    Offsets pass the shared SPEC §14.2 validation (bounds, deduplication,
+    maximum per item). Returns the created reminders (empty when the item
+    has no ``starts_at``).
     """
+    unique = validate_reminder_offsets(offsets_minutes)
     if item.starts_at is None:
         return []
     created: list[Reminder] = []
-    seen: set[int] = set()
-    for offset in offsets_minutes:
-        if offset in seen:
-            continue
-        seen.add(offset)
+    for offset in unique:
         fire_at = item.starts_at - timedelta(minutes=offset)
         reminder = await create_reminder(
             session,

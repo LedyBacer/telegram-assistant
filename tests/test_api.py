@@ -256,6 +256,22 @@ async def test_item_create_with_remind_offsets(
     assert fire_at == expected_fire
 
 
+async def test_item_create_remind_offsets_bounded(client: httpx.AsyncClient) -> None:
+    """SPEC §14.2: >max offsets and out-of-bounds offsets are rejected (V3 P31)."""
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={"title": "x", "starts_at": TODAY_NOON, "remind_offsets_minutes": list(range(6))},
+    )
+    assert res.status_code == 422
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={"title": "x", "starts_at": TODAY_NOON, "remind_offsets_minutes": [2000]},
+    )
+    assert res.status_code == 422
+
+
 async def test_reminders_list_filter_by_item(client: httpx.AsyncClient) -> None:
     """The edit view lists a single item's pending reminders (V3 P30)."""
     res = await client.post(

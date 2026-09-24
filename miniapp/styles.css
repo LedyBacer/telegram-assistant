@@ -468,6 +468,57 @@ textarea.field-input {
   font-size: 13px;
 }
 
+/* New view: reminder-offset picker (presets + custom, V3 P31). */
+.remind-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+  background: var(--tg-theme-bg-color);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--tg-theme-button-color);
+  outline-offset: -1px;
+}
+
+.chip.is-on {
+  border-color: var(--tg-theme-button-color);
+  background: var(--tg-theme-button-color);
+  color: var(--tg-theme-button-text-color);
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.remind-custom-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.remind-custom-row .remind-custom {
+  flex: 1 1 auto;
+}
+
+.remind-custom-row .btn {
+  flex: 0 0 auto;
+}
+
 .reminder-none {
   color: var(--hint);
   font-size: 14px;

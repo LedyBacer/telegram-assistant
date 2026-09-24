@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, conint
+
+from assistant.services.reminders import (
+    MAX_OFFSET_MINUTES,
+    MAX_REMINDERS_PER_ITEM,
+    MIN_OFFSET_MINUTES,
+)
 
 
 class AITaskDraft(BaseModel):
@@ -25,8 +31,11 @@ class AITaskDraft(BaseModel):
     start: datetime | None = None
     duration_minutes: int | None = Field(default=None, ge=1, le=48 * 60)
     notes: str | None = Field(default=None, max_length=4000)
-    # Minutes relative to the start (0 = at start, negative = after).
-    reminder_offsets: list[int] = Field(default_factory=list)
+    # Minutes relative to the start (0 = at start, negative = after),
+    # within the shared SPEC §14.2 bounds.
+    reminder_offsets: list[conint(ge=MIN_OFFSET_MINUTES, le=MAX_OFFSET_MINUTES)] = Field(
+        default_factory=list, max_length=MAX_REMINDERS_PER_ITEM
+    )
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     # Human-readable notes about anything the model had to guess.
     ambiguities: list[str] = Field(default_factory=list)
