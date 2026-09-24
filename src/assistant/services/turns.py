@@ -58,7 +58,7 @@ the engine cannot loop. The ``TurnState`` of the turn is exposed on
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum, StrEnum
 from types import UnionType
 from typing import Annotated, Literal, Union, get_args, get_origin
@@ -100,8 +100,9 @@ MAX_DATA_TOOLS = 3
 DOCUMENTS_TOOL_LIMIT = 5
 
 TOOL_DESCRIPTIONS: dict[str, str] = {
-    "calendar": "today's and upcoming calendar items (with ids); "
-    "query=<the item the user named> resolves it",
+    "calendar": "calendar items (with ids). query=<item named> resolves it; "
+    "range_start/range_end (YYYY-MM-DD) answer 'this month'/'next Friday'; "
+    "priority=high|normal|low and kind=task|event|workout filter",
     "reminders": "pending reminders (with ids); "
     "query=<the reminder the user named> resolves it",
     "workouts": "recent workout logs",
@@ -187,6 +188,51 @@ def _item_line(item: CalendarItem) -> str:
     )
 
 
+def _parse_local_day(value: str, fallback: datetime) -> datetime:
+    """Parse a ``YYYY-MM-DD`` (or full datetime) string into a naive local
+    midnight datetime, falling back to ``fallback``'s date on bad input so a
+    model typo cannot blow up a read tool."""
+    try:
+        return datetime.strptime(value[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return fallback.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+async def _calendar_structured_query(
+    session: AsyncSession,
+    user: User,
+    *,
+    range_start: str | None,
+    range_end: str | None,
+    priority: str | None,
+    kind: str | None,
+) -> list:
+    """Answer a date/attribute calendar question with a bounded range query
+    (V4 §24).
+
+    The window is always finite (missing bounds default to today and
+    today+30d), so the underlying :func:`list_range` stays bounded by its
+    own limit. ``priority`` and ``kind`` filter the (already bounded) rows in
+    Python — no arbitrary SQL, no attribute index required.
+    """
+    tz = _user_tz(user)
+    today = datetime.now(tz=tz).date()
+    start = _parse_local_day(range_start, datetime(today.year, today.month, today.day))
+    if range_end:
+        end = _parse_local_day(range_end, datetime(today.year, today.month, today.day))
+        end = end + timedelta(days=1)  # range_end is inclusive of that day
+    else:
+        end = datetime(today.year, today.month, today.day) + timedelta(days=30)
+    if end <= start:
+        end = start + timedelta(days=1)
+    items = await calendar_service.list_range(session, user, start=start, end=end)
+    if priority:
+        items = [i for i in items if i.priority == priority]
+    if kind:
+        items = [i for i in items if i.kind == kind]
+    return items
+
+
 async def run_read_tool(
     session: AsyncSession,
     user: User,
@@ -195,6 +241,10 @@ async def run_read_tool(
     query: str | None = None,
     limit: int = 5,
     provider: AIProvider | None = None,
+    range_start: str | None = None,
+    range_end: str | None = None,
+    priority: str | None = None,
+    kind: str | None = None,
 ) -> tuple[str, list[files_service.RetrievedChunk]]:
     """Run one bounded, read-only tool over the existing services.
 
@@ -202,8 +252,25 @@ async def run_read_tool(
     data — it renders "(no data)") that folds straight into a prompt, plus
     the retrieved chunks (non-empty only for the ``documents`` tool) so the
     caller can render deterministic citations (SPEC §6.3).
+
+    ``range_start`` / ``range_end`` (``YYYY-MM-DD``), ``priority`` and
+    ``kind`` are calendar-only typed parameters (V4 §24) that answer date
+    and attribute questions — "what events do I have this month?", "show my
+    high-priority tasks" — without a free-text resolve and without any
+    unbounded scan.
     """
     if tool == "calendar":
+        if range_start or range_end or priority or kind:
+            items = await _calendar_structured_query(
+                session,
+                user,
+                range_start=range_start,
+                range_end=range_end,
+                priority=priority,
+                kind=kind,
+            )
+            lines = [f"{_item_line(i)}" for i in items[:limit]]
+            return ("\n".join(lines) if lines else "(no data)", [])
         resolve_lines: list[str] = []
         if query:
             best, candidates = await calendar_service.resolve_item(session, user, query)
@@ -304,7 +371,8 @@ def _tools_doc() -> str:
     lines = [f"- {name}: {desc}" for name, desc in TOOL_DESCRIPTIONS.items()]
     lines.append(
         "Each request: {tool, query (optional short text, default none), "
-        "limit (1..20, default 5)}."
+        "limit (1..20, default 5)}. The calendar tool also accepts "
+        "range_start/range_end (YYYY-MM-DD), priority, and kind."
     )
     return "\n".join(lines)
 
@@ -370,10 +438,19 @@ def _actions_doc() -> str:
 
 
 def _dedupe_data_requests(requests: list[ReadToolRequest]) -> list[ReadToolRequest]:
-    seen: set[tuple[str, str | None]] = set()
+    seen: set[tuple] = set()
     unique: list[ReadToolRequest] = []
     for req in requests:
-        key = (req.tool, req.query)
+        # The calendar structured params are part of the identity: two requests
+        # that differ only by range/priority/kind are distinct queries (V4 §24).
+        key = (
+            req.tool,
+            req.query,
+            req.range_start,
+            req.range_end,
+            req.priority,
+            req.kind,
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -472,6 +549,10 @@ async def run_turn(
                 query=req.query,
                 limit=req.limit,
                 provider=provider,
+                range_start=req.range_start,
+                range_end=req.range_end,
+                priority=req.priority,
+                kind=req.kind,
             )
             blocks.append(f"[{req.tool}]\n{tool_text}")
             for chunk in chunks:

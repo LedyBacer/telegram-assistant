@@ -56,6 +56,26 @@ class ReadToolRequest(BaseModel):
     ]
     query: str | None = Field(default=None, max_length=200)
     limit: int = Field(default=5, ge=1, le=20)
+    # Calendar-only typed parameters (V4 §24). Strongly typed (not free text)
+    # so a 9B model can answer date/attribute questions — "what events do I
+    # have this month?", "show my high-priority tasks" — without arbitrary SQL
+    # and without an unbounded tool loop. Ignored by every other tool.
+    range_start: str | None = Field(default=None, max_length=10)  # YYYY-MM-DD
+    range_end: str | None = Field(default=None, max_length=10)  # YYYY-MM-DD
+    priority: Literal["low", "normal", "high"] | None = None
+    kind: Literal["task", "event", "workout"] | None = None
+
+    @model_validator(mode="after")
+    def _calendar_params_are_calendar_only(self) -> ReadToolRequest:
+        if self.tool != "calendar" and any(
+            v is not None
+            for v in (self.range_start, self.range_end, self.priority, self.kind)
+        ):
+            raise ValueError(
+                "range_start, range_end, priority, and kind are only valid "
+                "for the calendar tool"
+            )
+        return self
 
 
 class ActionProposal(BaseModel):

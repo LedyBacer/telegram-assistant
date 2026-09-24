@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -26,7 +27,7 @@ from assistant.ai.schemas import (
 )
 from assistant.bot import callbacks
 from assistant.bot.handlers import on_action
-from assistant.models.calendar_items import CalendarItem, ItemKind
+from assistant.models.calendar_items import CalendarItem, ItemKind, ItemPriority
 from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.facts import FactStatus, UserFact
 from assistant.models.files import EMBEDDING_DIMENSIONS
@@ -559,6 +560,56 @@ async def test_read_tools_render_resolution_line(session: AsyncSession) -> None:
         session, user, tool="reminders", query="water"
     )
     assert out.splitlines()[0].startswith(f"match: id={reminder.id} Water plants")
+
+
+async def test_read_tool_calendar_structured_query(session: AsyncSession) -> None:
+    """The calendar read tool answers date/attribute questions via its typed
+    parameters (V4 §24), not just a free-text resolve."""
+    user = await _user(session)
+    tz = ZoneInfo(user.settings.timezone if user.settings is not None else "UTC")
+    today = datetime.now(tz=tz).date()
+    today_iso = today.isoformat()
+
+    event_today = await calendar_service.create_item(
+        session,
+        user,
+        title="Today event",
+        kind=ItemKind.event,
+        starts_at=datetime(today.year, today.month, today.day, 10, 0),
+    )
+    high_task = await calendar_service.create_item(
+        session,
+        user,
+        title="High task",
+        kind=ItemKind.task,
+        priority=ItemPriority.high,
+        due_at=datetime(today.year, today.month, today.day, 12, 0)
+        + timedelta(days=10),
+    )
+    await session.commit()
+
+    # A date range returns only items anchored in that window ("this month",
+    # "next Friday"): the 10-days-out task is excluded.
+    out, _ = await turns_service.run_read_tool(
+        session, user, tool="calendar", range_start=today_iso, range_end=today_iso
+    )
+    assert f"id={event_today.id}" in out
+    assert f"id={high_task.id}" not in out
+
+    # A priority filter over the default window (today..+30d) surfaces the
+    # high-priority item and hides the normal one.
+    out, _ = await turns_service.run_read_tool(
+        session, user, tool="calendar", priority="high"
+    )
+    assert f"id={high_task.id}" in out
+    assert f"id={event_today.id}" not in out
+
+    # A kind filter surfaces events and hides tasks.
+    out, _ = await turns_service.run_read_tool(
+        session, user, tool="calendar", kind="event"
+    )
+    assert f"id={event_today.id}" in out
+    assert f"id={high_task.id}" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -1321,5 +1372,6 @@ async def test_turn_prompts_carry_action_and_tool_docs(session: AsyncSession) ->
     await turns_service.run_turn(session, user, "hi", provider=provider)
     await session.commit()
     assert "- create_item(title:str" in provider.system
-    assert "query=<the item the user named> resolves it" in provider.system
+    assert "query=<item named> resolves it" in provider.system
+    assert "range_start/range_end (YYYY-MM-DD)" in provider.system
     assert "Each request: {tool, query" in provider.system
