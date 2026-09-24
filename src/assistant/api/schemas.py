@@ -166,6 +166,15 @@ class ReminderCreate(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
 
 
+class ItemReminderCreate(BaseModel):
+    # Item-linked reminder offsets for an existing item (V4 §28). The
+    # pydantic bounds mirror the shared SPEC §14.2 validation in the
+    # reminder service, which is the authoritative gate.
+    offsets_minutes: list[conint(ge=MIN_OFFSET_MINUTES, le=MAX_OFFSET_MINUTES)] = Field(
+        min_length=1, max_length=MAX_REMINDERS_PER_ITEM
+    )
+
+
 class ReminderOut(ORMModel):
     id: int
     fire_at: datetime

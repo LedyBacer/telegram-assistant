@@ -66,8 +66,8 @@ export function btn(label, onClick, { variant = "ghost", disabled = false, ariaL
   );
 }
 
-export function field(labelText, control) {
-  return el("label", { class: "field" }, el("span", { class: "field-label" }, labelText), control);
+export function field(labelText, ...controls) {
+  return el("label", { class: "field" }, el("span", { class: "field-label" }, labelText), ...controls);
 }
 
 export function input(attrs = {}) {

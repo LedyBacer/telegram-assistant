@@ -145,10 +145,29 @@ async def create_item_reminders(
     An offset of ``0`` fires at ``item.starts_at``. Offsets are only applied
     when the item has a ``starts_at``; otherwise the item is skipped.
     Offsets pass the shared SPEC §14.2 validation (bounds, deduplication,
-    maximum per item). Returns the created reminders (empty when the item
+    maximum per item). The maximum is enforced over the item's total pending
+    ``item_linked`` reminders, so a second create cannot push an item past
+    the cap (V4 §28). Returns the created reminders (empty when the item
     has no ``starts_at``).
     """
     unique = validate_reminder_offsets(offsets_minutes)
+    existing_count = (
+        await session.scalar(
+            select(func.count())
+            .select_from(Reminder)
+            .where(
+                Reminder.calendar_item_id == item.id,
+                Reminder.status == ReminderStatus.pending.value,
+                Reminder.trigger_type == "item_linked",
+            )
+        )
+        or 0
+    )
+    if existing_count + len(unique) > MAX_REMINDERS_PER_ITEM:
+        raise ValueError(
+            f"At most {MAX_REMINDERS_PER_ITEM} reminders per item "
+            f"({existing_count} already scheduled; {len(unique)} requested)."
+        )
     if item.starts_at is None:
         return []
     created: list[Reminder] = []

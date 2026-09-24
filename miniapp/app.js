@@ -544,31 +544,18 @@ function actionCard(a) {
 }
 
 /* ------------------------------------------------------------------ */
-/* New task / event                                                    */
+/* Reminder-offset picker (shared by New and Edit, V4 §28)             */
 /* ------------------------------------------------------------------ */
 
-async function viewNew(view) {
-  const formState = {
-    title: "",
-    description: "",
-    kind: "task",
-    priority: "normal",
-    startsAt: null,
-    endsAt: null,
-    dueAt: null,
-  };
-
-  const titleInput = input({
-    placeholder: S("miniapp.new_title_ph"),
-    "aria-label": S("miniapp.new_title"),
-  });
-  const descInput = input({
-    placeholder: S("miniapp.new_description_ph"),
-    "aria-label": S("miniapp.new_description"),
-  });
-  // Reminder-offset picker (V3 P31): presets plus a custom value, multi-
-  // select within the backend bound (SPEC §14.2). Offsets are minutes
-  // before the start; 0 fires at the start.
+/**
+ * Presets plus a custom value, multi-select within the shared backend
+ * bounds (SPEC §14.2: max 5, 0..1440 minutes). Offsets are minutes before
+ * the start; 0 fires at the start. The local bounds are UX-only sugar —
+ * the server re-validates everything and also caps the item's TOTAL
+ * reminders, so no validation logic is duplicated beyond these constants.
+ * Returns { node, get, clear }.
+ */
+function reminderPicker() {
   const REMINDER_MAX = 5;
   const REMINDER_MAX_MIN = 1440;
   const offsets = new Set();
@@ -644,10 +631,46 @@ async function viewNew(view) {
     refreshChips();
   });
   refreshChips();
-  const remindPicker = el("div", { class: "remind-picker" },
+  const node = el("div", { class: "remind-picker" },
     chips,
     el("div", { class: "remind-custom-row" }, customInput, customAdd)
   );
+  return {
+    node,
+    get: () => [...offsets],
+    clear: () => {
+      offsets.clear();
+      customInput.value = "";
+      refreshChips();
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* New task / event                                                    */
+/* ------------------------------------------------------------------ */
+
+async function viewNew(view) {
+  const formState = {
+    title: "",
+    description: "",
+    kind: "task",
+    priority: "normal",
+    startsAt: null,
+    endsAt: null,
+    dueAt: null,
+  };
+
+  const titleInput = input({
+    placeholder: S("miniapp.new_title_ph"),
+    "aria-label": S("miniapp.new_title"),
+  });
+  const descInput = input({
+    placeholder: S("miniapp.new_description_ph"),
+    "aria-label": S("miniapp.new_description"),
+  });
+  // Reminder-offset picker (V3 P31, shared with the Edit view, V4 §28).
+  const remindPicker = reminderPicker();
 
   const kindBtn = pickerBtn(S("miniapp.new_kind"), S("miniapp.new_task"), async () => {
     const chosen = await openSheet({
@@ -723,7 +746,7 @@ async function viewNew(view) {
         ends_at: formState.endsAt,
         due_at: formState.dueAt,
         priority: formState.priority,
-        remind_offsets_minutes: [...offsets],
+        remind_offsets_minutes: remindPicker.get(),
       });
       toast(S("miniapp.saved"));
       state.tab = "today";
@@ -742,7 +765,7 @@ async function viewNew(view) {
       el("div", { class: "form-row" }, field(S("miniapp.new_kind"), kindBtn), field(S("miniapp.new_priority"), priorityBtn)),
       el("div", { class: "form-row" }, field(S("miniapp.new_starts"), startsBtn), field(S("miniapp.new_end"), endBtn)),
       el("div", { class: "form-row" }, field(S("miniapp.new_due"), dueBtn)),
-      el("div", { class: "field" }, el("span", { class: "field-label" }, S("miniapp.new_reminders")), remindPicker),
+      el("div", { class: "field" }, el("span", { class: "field-label" }, S("miniapp.new_reminders")), remindPicker.node),
       saveBtn
     )
   );
@@ -884,6 +907,35 @@ async function viewEdit(view, gen, signal) {
   };
   renderReminders();
 
+  // Add reminders to the existing item (V4 §28): the same shared picker as
+  // the New view; the server re-validates and caps the item's total.
+  const remindPicker = reminderPicker();
+  const addReminderBtn = btn(S("miniapp.reminder_save"), async () => {
+    const selected = remindPicker.get();
+    if (!selected.length) return;
+    if (!item.starts_at) {
+      toast(S("miniapp.reminder_needs_start"), "error");
+      return;
+    }
+    addReminderBtn.disabled = true;
+    try {
+      const created = await api(
+        `/api/v1/items/${id}/reminders`,
+        "POST",
+        { offsets_minutes: selected },
+        signal,
+      );
+      toast(S("miniapp.reminder_added"));
+      reminders.push(...created);
+      renderReminders();
+      remindPicker.clear();
+    } catch {
+      toast(S("miniapp.error_generic"), "error");
+    } finally {
+      addReminderBtn.disabled = false;
+    }
+  });
+
   const saveBtn = btn(S("miniapp.save"), async () => {
     const title = titleInput.value.trim();
     const description = descInput.value.trim();
@@ -924,7 +976,7 @@ async function viewEdit(view, gen, signal) {
       whenField("miniapp.new_starts", () => formState.startsAt, (v) => { formState.startsAt = v; }),
       whenField("miniapp.new_ends", () => formState.endsAt, (v) => { formState.endsAt = v; }),
       whenField("miniapp.new_due", () => formState.dueAt, (v) => { formState.dueAt = v; }),
-      field(S("miniapp.new_reminders"), reminderList),
+      field(S("miniapp.new_reminders"), reminderList, remindPicker.node, addReminderBtn),
       saveBtn
     )
   );

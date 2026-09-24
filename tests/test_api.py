@@ -466,6 +466,112 @@ async def test_reminder_validation(client: httpx.AsyncClient) -> None:
     assert res.status_code == 422
 
 
+async def test_item_add_reminders(client: httpx.AsyncClient) -> None:
+    """Add item-linked reminders to an existing item (V4 §28)."""
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={"title": "Standup", "starts_at": TODAY_NOON},
+    )
+    assert res.status_code == 201
+    item_id = res.json()["id"]
+
+    # Duplicates are deduplicated; fire_at = starts_at - offset.
+    res = await client.post(
+        f"/api/v1/items/{item_id}/reminders",
+        headers=HEADERS,
+        json={"offsets_minutes": [10, 30, 10]},
+    )
+    assert res.status_code == 201
+    rows = res.json()
+    assert [r["offset_minutes"] for r in rows] == [10, 30]
+    assert all(r["status"] == "pending" for r in rows)
+    assert all(r["calendar_item_id"] == item_id for r in rows)
+    assert all(r["message"] == "Standup" for r in rows)
+    fire10 = datetime.fromisoformat(rows[0]["fire_at"].replace("Z", "+00:00"))
+    expected_fire = (
+        datetime.fromisoformat(TODAY_NOON).replace(tzinfo=UTC) - timedelta(minutes=10)
+    )
+    assert fire10 == expected_fire
+
+
+async def test_item_add_reminders_enforces_total_cap(client: httpx.AsyncClient) -> None:
+    """The SPEC §14.2 cap counts the item's TOTAL pending linked reminders."""
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={
+            "title": "Capped",
+            "starts_at": TODAY_NOON,
+            "remind_offsets_minutes": [0, 10],
+        },
+    )
+    assert res.status_code == 201
+    item_id = res.json()["id"]
+
+    # 2 scheduled + 3 requested reaches the cap of 5 exactly: allowed.
+    res = await client.post(
+        f"/api/v1/items/{item_id}/reminders",
+        headers=HEADERS,
+        json={"offsets_minutes": [30, 60, 90]},
+    )
+    assert res.status_code == 201
+    assert len(res.json()) == 3
+    # Item is now full: the sixth reminder is rejected.
+    res = await client.post(
+        f"/api/v1/items/{item_id}/reminders",
+        headers=HEADERS,
+        json={"offsets_minutes": [120]},
+    )
+    assert res.status_code == 400
+
+
+async def test_item_add_reminders_validation(client: httpx.AsyncClient) -> None:
+    res = await client.post(
+        "/api/v1/items", headers=HEADERS, json={"title": "No start"}
+    )
+    assert res.status_code == 201
+    item_id = res.json()["id"]
+
+    # Empty list, out-of-bounds, and >5 unique offsets are rejected at the
+    # schema gate (422).
+    res = await client.post(
+        f"/api/v1/items/{item_id}/reminders", headers=HEADERS, json={"offsets_minutes": []}
+    )
+    assert res.status_code == 422
+    res = await client.post(
+        f"/api/v1/items/{item_id}/reminders", headers=HEADERS, json={"offsets_minutes": [2000]}
+    )
+    assert res.status_code == 422
+    res = await client.post(
+        f"/api/v1/items/{item_id}/reminders",
+        headers=HEADERS,
+        json={"offsets_minutes": list(range(6))},
+    )
+    assert res.status_code == 422
+
+    # An item without starts_at creates nothing (201 with an empty list).
+    res = await client.post(
+        f"/api/v1/items/{item_id}/reminders", headers=HEADERS, json={"offsets_minutes": [30]}
+    )
+    assert res.status_code == 201
+    assert res.json() == []
+
+    # Another user's item is not visible (404, not 403).
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS_OTHER,
+        json={"title": "Other's", "starts_at": TODAY_NOON},
+    )
+    other_item_id = res.json()["id"]
+    res = await client.post(
+        f"/api/v1/items/{other_item_id}/reminders",
+        headers=HEADERS,
+        json={"offsets_minutes": [30]},
+    )
+    assert res.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # Files
 # ---------------------------------------------------------------------------

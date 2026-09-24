@@ -10,7 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.api.auth import get_current_user
 from assistant.api.routes.common import _aware, _bad_request, _not_found
-from assistant.api.schemas import ItemCreate, ItemOut, ItemUpdate
+from assistant.api.schemas import (
+    ItemCreate,
+    ItemOut,
+    ItemReminderCreate,
+    ItemUpdate,
+    ReminderOut,
+)
 from assistant.db import get_session
 from assistant.models.users import User
 from assistant.services import calendar as calendar_service
@@ -80,6 +86,36 @@ async def create_item(
     await session.commit()
     await session.refresh(item)
     return ItemOut.model_validate(item)
+
+
+@router.post(
+    "/items/{item_id}/reminders",
+    response_model=list[ReminderOut],
+    status_code=201,
+)
+async def create_item_reminders(
+    item_id: int,
+    body: ItemReminderCreate,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[ReminderOut]:
+    """Add item-linked reminders to an existing item (V4 §28).
+
+    All validation (bounds, deduplication, max per item including already
+    scheduled reminders) stays in the shared reminder service, so the Mini
+    App and every other surface cannot drift apart.
+    """
+    item = await calendar_service.get_item(session, user, item_id)
+    if item is None:
+        raise _not_found()
+    try:
+        created = await reminders_service.create_item_reminders(
+            session, user, item, offsets_minutes=body.offsets_minutes
+        )
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    await session.commit()
+    return [ReminderOut.model_validate(r) for r in created]
 
 
 @router.get("/items/{item_id}", response_model=ItemOut)

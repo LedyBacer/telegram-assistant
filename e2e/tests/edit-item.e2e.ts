@@ -137,20 +137,32 @@ test("edit view: change + clear via tri-state PATCH, reminder cancel, ends_at on
   await expect(reloadedCard.locator(".item-meta")).not.toContainText("Конец");
   await expect(reloadedCard.locator(".item-head .badge")).toHaveText("Высокий");
 
-  // Cancel the pending reminder from the edit view.
+  // Reopen the edit view: add a "10 min" reminder through the shared picker
+  // (V4 §28), then cancel both pending reminders.
   await reloadedCard.locator(".item-actions .btn", { hasText: "Изменить" }).click();
-  const cancelRow = page.locator("#view .reminder-row").first();
-  await cancelRow.locator(".btn", { hasText: "Отменить" }).click();
+  await view.locator(".chip", { hasText: "за 10 мин" }).click();
+  await view.locator(".btn", { hasText: "Сохранить напоминания" }).click();
+  await expect(page.locator("#toast")).toContainText("Напоминания сохранены.");
+  // The new pending reminder (09:50 = 10:00 - 10 min) is listed.
+  await expect(view.locator(".reminder-row")).toHaveCount(2);
+  await expect(view.locator(".reminder-row", { hasText: "09:50" })).toContainText(
+    "за 10 мин",
+  );
+
+  // Cancel both pending reminders from the edit view.
+  const rows = view.locator(".reminder-row");
+  await rows.nth(0).locator(".btn", { hasText: "Отменить" }).click();
   await expect(page.locator("#toast")).toContainText("Напоминание отменено.");
-  await expect(page.locator("#view .reminder-none")).toHaveCount(1);
+  await rows.nth(0).locator(".btn", { hasText: "Отменить" }).click();
+  await expect(view.locator(".reminder-none")).toHaveCount(1);
 
   const remindRes = await page.request.get(
     `${base}/api/v1/reminders?item_id=${item.id}`,
   );
   expect(remindRes.status()).toBe(200);
   const reminders = (await remindRes.json()) as Array<{ status: string }>;
-  expect(reminders).toHaveLength(1);
-  expect(reminders[0].status).toBe("cancelled");
+  expect(reminders).toHaveLength(2);
+  expect(reminders.every((r) => r.status === "cancelled")).toBe(true);
 
   guard.assertClean();
 });
