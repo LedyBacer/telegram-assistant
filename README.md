@@ -19,7 +19,8 @@ task drafting and document embeddings (pgvector).
 On top of the calendar/reminders/workouts/files/facts/chat core:
 
 - **Conversational actions (confirm-before-write).** When chat implies a
-  mutation (create/cancel a calendar item), the model proposes a *typed*
+  mutation (calendar item create/update/complete/cancel/delete, standalone
+  reminders, workout log/schedule), the model proposes a *typed*
   `PendingAction` (closed kind registry, validated JSON payload, TTL) instead
   of writing. The proposal appears in the bot (inline buttons) and in the
   Mini App ⏳ Actions tab; only an explicit Confirm executes it. A stale
@@ -28,17 +29,22 @@ On top of the calendar/reminders/workouts/files/facts/chat core:
 - **Long-term memory.** Salient facts can also be proposed automatically by
   the chat turn engine; every fact — wherever it comes from — stays
   `proposed` until the user confirms it, and only `confirmed` facts reach the
-  chat context. Replacing a fact (`/remember`, Mini App "Replace") marks the
-  old value `superseded` (with provenance) and proposes the new one.
+  chat context. Replacing a fact (`/remember`, Mini App "Replace") proposes
+  the new value as a replacement (linked by `replaces_fact_id`); the old
+  `confirmed` fact stays confirmed until the user confirms the replacement —
+  at which point it is atomically marked `superseded` (with provenance) — and
+  a rejected replacement leaves it untouched.
 - **Proactivity.** The worker runs a bounded, deterministic pass (no AI):
   a weekly review nudge on the user's local Monday and a workout nudge after
   48 h without a workout, gated by per-user settings (enabled, quiet hours,
   max nudges/day, min interval) and deduped durably — all adjustable in
   Mini App Settings ("Проактивные уведомления").
-- **Hybrid file search (lexical-gated).** File search always runs a full-text
-  (tsvector) arm; the vector arm is queried only when the lexical arm
-  matches, and the two ranked lists are fused with RRF. An embedding outage
-  degrades to lexical-only results instead of failing.
+- **Hybrid file search.** File search runs a lexical (full-text tsvector) arm
+  and a semantic (pgvector) arm **independently** — no lexical prerequisite,
+  so a paraphrase with zero keyword overlap is still findable — and fuses the
+  two ranked lists with RRF. Vector candidates beyond a configurable semantic
+  distance are dropped (lexical hits are always kept). An embedding outage (or
+  a chat-only deployment) degrades to lexical-only results instead of failing.
 - **Workout scheduling.** Mini App "Schedule a workout" creates a calendar
   item + a start-time reminder (`POST /api/v1/workouts/schedule`).
 - **File ingestion retry.** A failed file can be re-queued for indexing

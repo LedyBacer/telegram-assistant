@@ -1,11 +1,58 @@
 # Progress
 
-Status: V3 PRIORITIES 38–48 COMPLETE (P48: removed the dead `APP_TIMEZONE`
-setting and audited every env var for use, defaults, and README parity —
-`app_timezone` was the only unused field; corrected the README
-`CHAT_THINKING_ENABLED` default `true` → `false`; 493 tests / 14 E2E /
-acceptance all green).
-Next: V3 Priority 49.
+Status: V3 PRIORITIES 38–49 COMPLETE (P49: documentation reality audit —
+checked the ten known drift areas against the code and fixed the seven that
+had gone stale across README/ARCHITECTURE/RESEARCH/ASSUMPTIONS/REPORT;
+doc-only change, Ruff clean).
+Next: V3 Priority 50.
+
+## V3 — Priority 49: documentation reality audit
+
+Checked the ten areas named in the priority against the code (a targeted
+audit, not a claim that every documentation claim in the repository was
+verified). Result: **7 stale, 3 already accurate.**
+
+Fixed (stale → reality):
+- **Structured AI output** (`docs/ASSUMPTIONS.md` row 13, `docs/RESEARCH.md`):
+  the docs described `response_format=json_schema`; the provider sends no
+  `response_format` (llama.cpp rejects/ignores the OpenAI-only `json_schema`
+  type) — the JSON contract lives in the system prompt
+  (`JSON_OUTPUT_INSTRUCTION`), the object is extracted with
+  `extract_json_object`, and validated client-side with bounded retries.
+- **`APP_TIMEZONE`** (`docs/ASSUMPTIONS.md` row 3): marked superseded — the
+  setting was removed in P48; all "today" boundaries use the per-user IANA
+  timezone.
+- **Action kinds** (`docs/ARCHITECTURE.md` invariant 7): listed the nine
+  actually registered kinds (`create_item`, `update_item`, `complete_item`,
+  `cancel_item`, `delete_item`, `create_reminder`, `cancel_reminder`,
+  `log_workout`, `schedule_workout`) per the registry in
+  `src/assistant/actions/__init__.py`.
+- **Fact replacement semantics** (`docs/ARCHITECTURE.md` invariant 8,
+  `README.md`, `REPORT.md`): deferred supersede — the referenced fact keeps
+  its state (`confirmed` stays confirmed), the new value is `proposed` linked
+  by `replaces_fact_id`, and only confirming the replacement atomically moves
+  the old fact to `superseded`; a rejected replacement leaves it untouched.
+- **RAG semantics** (`docs/RESEARCH.md` "Hybrid retrieval", `README.md`,
+  `REPORT.md`): the lexical (tsvector/ts_rank) and semantic (pgvector cosine)
+  arms run independently — no lexical prerequisite — fused with RRF
+  (`RRF_K=60`); vector candidates beyond `RETRIEVAL_MAX_DISTANCE` are dropped
+  (lexical kept); embedding outages degrade to lexical-only.
+- **`CHAT_THINKING_ENABLED` default** (`README.md`, `REPORT.md`): `false`
+  (fast/no-think), matching `config.py`.
+
+Verified accurate (no change needed):
+- **Telegram delivery guarantees** and **proactivity durability**
+  (`docs/ARCHITECTURE.md`): job handlers are durable at-least-once
+  (idempotency keys, lease/heartbeat, `recover_abandoned`); nudges are
+  at-most-once via commit-before-send — already stated correctly.
+- **Flatpickr loading** (`README.md`): self-hosted in `miniapp/vendor/`
+  (P36) — already stated correctly.
+- **Worker transaction ownership** (`docs/ARCHITECTURE.md`): the worker owns
+  claiming and final job state; handlers own their domain transactions; no
+  outer `session.begin()` around handlers — already stated correctly.
+
+- **Verification.** Doc-only change (no code touched): `uv run ruff check .`
+  clean; prior P48 gates (493 pytest, 14 E2E) remain the last green baseline.
 
 ## V3 — Priority 48: remove dead config, audit env vars
 

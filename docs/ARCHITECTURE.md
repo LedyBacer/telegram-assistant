@@ -60,17 +60,22 @@ worker ─────────────────────> durable 
   fallback for unknown languages and missing keys, and a key missing from
   Russian returns the key itself (never an exception).
 7. **Bounded typed conversational actions.** Model-proposed mutations are
-  `PendingAction` rows with a fixed `kind` (closed registry; built-ins:
-  `create_item`, `cancel_item`), a kind-validated JSON payload, and a TTL;
+  `PendingAction` rows with a fixed `kind` (closed registry: `create_item`,
+  `update_item`, `complete_item`, `cancel_item`, `delete_item`,
+  `create_reminder`, `cancel_reminder`, `log_workout`, `schedule_workout`), a
+  kind-validated JSON payload, and a TTL;
   execution happens only on explicit user Confirm (bot inline button or
   Mini App). A stale target expires the action *and re-raises* inside the
   transaction; every API path persists that expiry (commit before the 409/400
   is raised) so an expired action can never replay.
 8. **Facts are never auto-confirmed.** Whether proposed via `/remember`,
   the Mini App, or the chat turn engine, a fact enters `proposed` and only a
-  user Confirm promotes it to `confirmed`; replacing a fact
-  (`supersede_fact`) marks the old fact `superseded` (with provenance via
-  `superseded_by`) and stores the new value as a distinct `proposed` fact.
+  user Confirm promotes it to `confirmed`. Replacing a fact (`supersede_fact`)
+  keeps the referenced fact in its current state — a `confirmed` fact stays
+  confirmed — and stores the new value as a distinct `proposed` fact linked by
+  `replaces_fact_id`; only when the user confirms the replacement is the
+  referenced fact atomically moved to `superseded` (provenance via
+  `superseded_by`). A rejected replacement never touches the old fact.
 9. **Proactivity is deterministic and deduped.** Nudges derive from stored
   state only (no AI), run through per-user anti-spam gates (enabled → quiet
   hours → daily cap → min interval), and **commit** the `NudgeDelivery`

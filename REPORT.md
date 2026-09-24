@@ -55,11 +55,13 @@ Features implemented (SPEC §1–§30):
   Mini App Actions inbox; stale targets expire the action in-transaction
   and the API persists that expiry before answering 409/400; Reject and
   timeout are terminal.
-- **Long-term memory (V2)** — the chat turn engine can propose salient
+- **Long-term memory** — the chat turn engine can propose salient
   facts automatically (deduped against existing values); every fact
-  stays `proposed` until a user confirm; replacing a fact marks the old
-  value `superseded` (with `superseded_by` provenance) and proposes the new
-  one.
+  stays `proposed` until a user confirm. Replacing a fact proposes the new
+  value linked by `replaces_fact_id`; the old `confirmed` fact stays
+  confirmed until the replacement is confirmed (then atomically
+  `superseded`, with `superseded_by` provenance); a rejected replacement
+  leaves the old fact untouched.
 - **Proactivity (V2)** — bounded, deterministic worker pass (no AI calls):
   weekly review nudge on the user's local Monday, workout nudge after 48 h
   without a workout; per-user `ProactiveSettings` (enabled, quiet hours,
@@ -114,7 +116,8 @@ Features implemented (SPEC §1–§30):
   for chat + structured generation while embeddings keep their own short
   timeout, with `APITimeoutError` mapped to the narrow `AITimeoutError`
   (logged, localized to the user, never a raw provider string); **explicit
-  Qwen thinking mode** (`CHAT_THINKING_ENABLED`, default true) is sent on
+  Qwen thinking mode** (`CHAT_THINKING_ENABLED`, default false — the
+  fast/no-think profile; opt-in per deployment) is sent on
   every chat/structured completion as
   `extra_body → chat_template_kwargs.enable_thinking` (the llama.cpp
   OpenAI-compatible field), built centrally and never applied to
@@ -206,7 +209,7 @@ inside the same run):
 | Worker smoke path | `python -m assistant.worker.main` started, polled an empty queue for 15 s, stopped cleanly (exit 0) |
 | Concurrency test (PostgreSQL locking) | `tests/test_jobs.py` — concurrent claimers, no double-claim via `FOR UPDATE SKIP LOCKED`, against real PostgreSQL |
 | Mini App auth tests | `tests/test_init_data.py` — 17 unit tests (valid/wrong-token/tampered/stale/future/missing/malformed payloads) + 4 authed-API 401 tests in `tests/test_api.py` |
-| Real-PostgreSQL flows | items CRUD + reminders, workout stats + scheduling, file search (hybrid, lexical-gated), facts lifecycle incl. supersede, digest scheduling, bot draft flows, pending actions, nudge dedupe — all in the 351-test suite against a real PG 17 |
+| Real-PostgreSQL flows | items CRUD + reminders, workout stats + scheduling, file search (hybrid — lexical and vector arms independent, RRF-fused), facts lifecycle incl. supersede, digest scheduling, bot draft flows, pending actions, nudge dedupe — all in the 351-test suite against a real PG 17 |
 | i18n: column + default | `user_settings.language` VARCHAR(16) NOT NULL, column default `'ru'`; new users default `ru`; existing rows migrated to `ru` (asserted in `tests/test_i18n.py`) |
 | i18n: ru/en parity | identical key sets in `locales/ru.json` / `locales/en.json` — **264 keys each** (enforced by `test_locale_key_parity_ru_en`); two users in two languages verified end-to-end (bot start, reminders, digest, API) |
 | pgvector column + index | `file_chunks.embedding` is `vector(384)` (atttypmod 384) and `ix_file_chunks_embedding_hnsw` (hnsw, cosine) present in the catalog after `alembic upgrade head` |
