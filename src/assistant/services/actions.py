@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions import get_action_kind
@@ -146,16 +146,37 @@ async def list_actions(
     status: ActionStatus | None = None,
     limit: int = 50,
 ) -> list[PendingAction]:
-    """List the user's actions, newest first, optionally filtered by (stored)
-    status. Pure read: it never mutates; report each row's
-    :func:`effective_status` to the caller."""
+    """List the user's actions, newest first, optionally filtered by
+    *effective* status. Pure read: it never mutates.
+
+    The filter is TTL-aware (V4 §29): a ``proposed``/``confirmed`` row whose
+    ``expires_at`` has passed is treated as ``expired`` in the query itself,
+    so ``?status=proposed`` excludes overdue rows and ``?status=expired``
+    includes them — without requiring the worker to have flushed the durable
+    ``expired`` transition first."""
     stmt = (
         select(PendingAction)
         .where(PendingAction.user_id == user.id)
         .order_by(PendingAction.created_at.desc(), PendingAction.id.desc())
         .limit(limit)
     )
-    if status is not None:
+    if status is None:
+        return list((await session.scalars(stmt)).all())
+
+    now = _now()
+    live = (PendingAction.expires_at.is_(None)) | (PendingAction.expires_at > now)
+    overdue = and_(
+        PendingAction.status.in_(
+            (ActionStatus.proposed.value, ActionStatus.confirmed.value)
+        ),
+        PendingAction.expires_at.is_not(None),
+        PendingAction.expires_at <= now,
+    )
+    if status == ActionStatus.expired:
+        stmt = stmt.where(or_(PendingAction.status == status.value, overdue))
+    elif status in (ActionStatus.proposed, ActionStatus.confirmed):
+        stmt = stmt.where(PendingAction.status == status.value, live)
+    else:
         stmt = stmt.where(PendingAction.status == status.value)
     return list((await session.scalars(stmt)).all())
 

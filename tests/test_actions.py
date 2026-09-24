@@ -470,6 +470,34 @@ async def test_read_does_not_mutate_overdue_action(session: AsyncSession) -> Non
     )
 
 
+async def test_list_actions_status_filter_is_ttl_aware(session: AsyncSession) -> None:
+    """?status= must reflect effective status: an overdue proposed row is
+    'expired' in the SQL filter even before the worker flushes the durable
+    transition (V4 §29)."""
+    user = await _user(session)
+    item = await cal.create_item(session, user, title="P")
+    fresh = await act.propose_action(
+        session, user, kind="update_item",
+        payload={"item_id": item.id, "title": "P"}, summary="fresh",
+        expires_in=timedelta(hours=2),
+    )
+    overdue = await act.propose_action(
+        session, user, kind="update_item",
+        payload={"item_id": item.id, "title": "P"}, summary="old",
+        expires_in=timedelta(seconds=-1),
+    )
+    await session.commit()
+
+    by_status = await act.list_actions(session, user, status=ActionStatus.proposed)
+    assert [a.id for a in by_status] == [fresh.id]
+    # Both rows are still stored as proposed (no durable transition yet),
+    # but the expired filter surfaces the overdue one.
+    expired = await act.list_actions(session, user, status=ActionStatus.expired)
+    assert [a.id for a in expired] == [overdue.id]
+    all_rows = await act.list_actions(session, user)
+    assert {a.id for a in all_rows} == {fresh.id, overdue.id}
+
+
 # ---------------------------------------------------------------------------
 # Atomic confirm + execute (row-locked, double-click safe)
 # ---------------------------------------------------------------------------
