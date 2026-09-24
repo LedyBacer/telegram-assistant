@@ -92,16 +92,33 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   schema validator, so "this month" / "next Friday" / "high-priority tasks"
   are answered by a bounded `list_range` + bounded Python filter (no
   arbitrary SQL, no unbounded loop).
+- **§25** (`1cb1501`) Mini App datetime picker no longer drifts by the
+  browser/user offset. `time.js` splits the two wall-clock concepts:
+  `instantIsoToUserWallBrowserDate` (the only aware-instant→user-TZ
+  conversion, for the empty-picker "now" default) and
+  `wallStringToBrowserDatePreservingFields` (a naive user-TZ wall string is
+  mapped to a flatpickr `Date` by its fields directly, never via
+  `new Date()` + TZ conversion). `ui.js` seeds the pickers from these
+  helpers, so an empty picker defaults to the user's "now" and a re-seeded
+  picker round-trips exactly.
+- **§26** (`3d92add`) E2E proves §25: browser Europe/Amsterdam, user
+  Europe/Moscow, frozen clock. An empty picker defaults to the user's wall
+  time (not the browser's); a chosen value survives close+reopen with no
+  drift; saving stores the exact user-TZ instant; a reload renders the
+  user's time. A second spec freezes an instant where Moscow is just past
+  midnight and Amsterdam is still the previous day, proving the picker's
+  DATE follows the user's zone.
 - **§29** TTL-aware effective status filter on `GET /actions`.
 - **§30** service owns local-upload artifact cleanup on write-failure; the
   API layer also cleans on commit-failure.
 - **§31** local-upload disk I/O (mkdir/write) is off the event loop via
   `asyncio.to_thread`.
 
-**Next (in order):** §25/§26 Mini App wall-clock helpers + timezone-picker
-E2E; §27/§28 `ends_at` on New + reminder picker on Edit; §32-39 CI/acceptance
-reproducibility, readiness terminology, logging correlation; §40-47 named
-regression tests, docs sync, Definition of Done.
+**Next (in order):** §27 `ends_at` on the Mini App New-create surface +
+end≥start invariant; §28 reuse the reminder picker in Edit Item; §32-39
+CI/acceptance reproducibility (self-contained acceptance, real bot smoke,
+actionlint, real GitHub Actions run), readiness terminology, logging
+correlation; §40-47 named regression tests, docs sync, Definition of Done.
 
 
 ## V3 — Priority 55: Definition of Done (final verification)
