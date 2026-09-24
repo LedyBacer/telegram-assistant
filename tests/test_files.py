@@ -292,6 +292,42 @@ async def test_register_local_upload_cleans_up_when_create_job_fails(
     assert rows == []
 
 
+async def test_register_local_upload_cleans_up_when_flush_fails_after_write(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """V5 §8: cleanup ownership begins before the first filesystem write, so a
+    failure that lands BETWEEN the byte write and the job-creation block —
+    the ``local_upload`` flush — still removes the artifact. There is no
+    orphan window between the write and the try/except."""
+    storage = tmp_path / "files"
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(storage))
+    monkeypatch.setattr(get_settings(), "embedding_api_key", "test-key")
+    user = await _user(session)
+
+    async def _boom_flush() -> None:
+        raise RuntimeError("injected post-write flush failure")
+
+    monkeypatch.setattr(session, "flush", _boom_flush)
+
+    with pytest.raises(RuntimeError, match="injected post-write flush failure"):
+        await files.register_local_upload(
+            session,
+            user,
+            original_filename="local.txt",
+            mime_type="text/plain",
+            data=b"hello orphan",
+        )
+
+    # The service removed its own disk artifact (no orphan) even though the
+    # failure happened after the bytes were written.
+    assert list(storage.iterdir()) == []
+    await session.rollback()
+    rows = list((await session.scalars(select(UserFile))).all())
+    assert rows == []
+
+
 # ---------------------------------------------------------------------------
 # Extraction + chunking unit tests
 # ---------------------------------------------------------------------------

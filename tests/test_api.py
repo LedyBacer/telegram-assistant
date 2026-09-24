@@ -1110,14 +1110,16 @@ async def test_workout_schedule_creates_item_and_reminder(
     )
     assert res.status_code == 201
     item = res.json()
-    assert item["title"] == "Workout: Legs"
+    # V5 §6.1: raw name is persisted (no "Workout: " prefix); identity is
+    # carried by source="workout". The start-time reminder mirrors the title.
+    assert item["title"] == "Legs"
     assert item["source"] == "workout"
     assert item["status"] == "scheduled"
 
     reminders = await client.get("/api/v1/reminders", headers=HEADERS)
     data = reminders.json()
     assert len(data) == 1
-    assert data[0]["message"] == "Workout: Legs"
+    assert data[0]["message"] == "Legs"
     fire_at = datetime.fromisoformat(data[0]["fire_at"].replace("Z", "+00:00"))
     expected_fire = (
         datetime.fromisoformat(TOMORROW_NOON).replace(tzinfo=UTC)

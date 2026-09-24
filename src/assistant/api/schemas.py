@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from pydantic import (
@@ -251,6 +251,28 @@ class WorkoutSchedule(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     starts_at: datetime
     duration_minutes: int | None = Field(default=None, gt=0)
+    ends_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _validate_interval(self) -> "WorkoutSchedule":
+        # V5 §6.4: API parity with the schedule_workout action payload —
+        # reject an inverted interval and contradictory end representations.
+        if (
+            self.ends_at is not None
+            and self.starts_at is not None
+            and self.ends_at < self.starts_at
+        ):
+            raise ValueError("ends_at must be after starts_at")
+        if (
+            self.duration_minutes is not None
+            and self.ends_at is not None
+            and self.ends_at
+            != self.starts_at + timedelta(minutes=self.duration_minutes)
+        ):
+            raise ValueError(
+                "duration_minutes and ends_at must be consistent with starts_at"
+            )
+        return self
 
 
 class FactOut(ORMModel):

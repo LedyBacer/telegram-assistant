@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from assistant.models.calendar_items import CalendarItem
 from assistant.models.jobs import BackgroundJob, JobStatus
-from assistant.models.reminders import ReminderStatus
+from assistant.models.reminders import Reminder, ReminderStatus
 from assistant.models.users import User
 from assistant.services import calendar as cal
 from assistant.services import notifications
@@ -321,3 +324,51 @@ async def test_list_reminders_tiebreak_by_id(session: AsyncSession) -> None:
     await session.commit()
     rows = await rem.list_reminders(session, user)
     assert [r.id for r in rows] == sorted([r1.id, r2.id])
+
+
+async def test_create_item_reminders_concurrent_same_offsets(
+    session: AsyncSession, engine: AsyncEngine
+) -> None:
+    """V5 §7: two concurrent creates of the SAME offsets on one item must not
+    duplicate an offset. The item-row ``FOR UPDATE`` lock serializes the two
+    creates; the second dedupes against the first's committed offsets, so
+    exactly one create inserts the full set and the other inserts none."""
+    user = await _user(session)
+    item = await cal.create_item(
+        session, user, title="Standup", starts_at=FIRE_AT
+    )
+    await session.commit()
+    uid, iid = user.id, item.id
+
+    offsets = [0, 15, 30, 60, 120]  # exactly MAX_REMINDERS_PER_ITEM
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def create_in_new_session() -> int:
+        async with factory() as s2:
+            u = await s2.get(User, uid)
+            it = await s2.get(CalendarItem, iid)
+            created = await rem.create_item_reminders(
+                s2, u, it, offsets_minutes=list(offsets)
+            )
+            await s2.commit()
+            return len(created)
+
+    results = await asyncio.gather(
+        create_in_new_session(), create_in_new_session()
+    )
+    # One create inserted all five; the other deduped to zero (no cap breach:
+    # the union of identical offsets stays at five).
+    assert sorted(results) == [0, 5]
+
+    rows = (
+        await session.scalars(
+            select(Reminder).where(
+                Reminder.calendar_item_id == iid,
+                Reminder.status == ReminderStatus.pending.value,
+                Reminder.trigger_type == "item_linked",
+            )
+        )
+    ).all()
+    assert len(rows) == len(offsets)
+    assert sorted(r.offset_minutes for r in rows) == sorted(offsets)

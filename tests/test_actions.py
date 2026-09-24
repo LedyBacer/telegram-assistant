@@ -642,7 +642,8 @@ async def test_execute_schedule_workout_creates_item_and_reminder(
     assert done.status == ActionStatus.executed.value
     item = await cal.get_item(session, user, result["item_id"])
     assert item is not None
-    assert item.title == "Workout: Run"
+    # V5 §6.1: raw workout name persisted (no "Workout: " prefix).
+    assert item.title == "Run"
     assert item.starts_at == MOVED
     assert item.extra.get("duration_minutes") == 30
     rows = list(
@@ -712,7 +713,52 @@ async def test_preview_update_item_lists_changed_fields(session: AsyncSession) -
         payload={"item_id": item.id, "starts_at": MOVED.isoformat()},
         summary="s",
     )
-    assert action.summary == "Update item 'Move me': starts_at"
+    # V5 §9: the changed field is rendered as its localized label, never the
+    # raw identifier ``starts_at``.
+    assert action.summary == "Update item 'Move me': start"
+
+
+async def test_preview_ru_has_no_raw_identifiers(session: AsyncSession) -> None:
+    """V5 §9: RU/EN previews must not leak raw identifiers — the item kind and
+    the changed field names (task/event, starts_at/ends_at/due_at/priority)
+    must all be rendered as localized labels."""
+    user = await _user(session)
+    # Russian is the default language, so no override is needed.
+    assert user.settings.language == "ru"
+    item = await cal.create_item(
+        session, user, title="Move me", starts_at=START
+    )
+    action = await act.propose_action(
+        session,
+        user,
+        kind="update_item",
+        payload={
+            "item_id": item.id,
+            "starts_at": MOVED.isoformat(),
+            "ends_at": MOVED.isoformat(),
+            "due_at": MOVED.isoformat(),
+            "priority": "high",
+            "title": "New title",
+        },
+        summary="s",
+    )
+    raw = ["starts_at", "ends_at", "due_at", "priority", "title", "description"]
+    for ident in raw:
+        assert ident not in action.summary, (ident, action.summary)
+    # Localized RU labels are present instead.
+    for label in ("название", "начало", "окончание", "срок", "приоритет"):
+        assert label in action.summary, (label, action.summary)
+
+    # The item kind is localized too (no raw ``event`` enum value).
+    create = await act.propose_action(
+        session,
+        user,
+        kind="create_item",
+        payload={"title": "Планировка", "kind": "event"},
+        summary="s",
+    )
+    assert "событие" in create.summary
+    assert "event" not in create.summary
 
 
 async def test_preview_complete_item_uses_current_title(session: AsyncSession) -> None:
@@ -777,7 +823,8 @@ async def test_preview_localizes_to_russian_by_default(session: AsyncSession) ->
         payload={"title": "Standup", "starts_at": START.isoformat()},
         summary="s",
     )
-    assert action.summary == "Создать task «Standup» в 2026-10-01 14:00"
+    # V5 §9: the kind is localized ("задачу"), not the raw enum value "task".
+    assert action.summary == "Создать задачу «Standup» в 2026-10-01 14:00"
 
 
 # ---------------------------------------------------------------------------

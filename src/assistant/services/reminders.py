@@ -151,27 +151,41 @@ async def create_item_reminders(
     has no ``starts_at``).
     """
     unique = validate_reminder_offsets(offsets_minutes)
-    existing_count = (
-        await session.scalar(
-            select(func.count())
-            .select_from(Reminder)
-            .where(
-                Reminder.calendar_item_id == item.id,
-                Reminder.status == ReminderStatus.pending.value,
-                Reminder.trigger_type == "item_linked",
+    # V5 §7: serialize concurrent creates on the same item by locking its
+    # row, and dedupe the requested offsets against the item's *existing*
+    # pending ``item_linked`` reminders so a retried / second create cannot
+    # duplicate an offset the item already has (the old code only counted,
+    # so two concurrent creates could both pass the count check and insert
+    # the same offset twice).
+    locked = await session.get(CalendarItem, item.id, with_for_update=True)
+    if locked is None:
+        raise ValueError("Calendar item no longer exists.")
+    item = locked
+    existing_offsets = set(
+        (
+            await session.scalars(
+                select(Reminder.offset_minutes).where(
+                    Reminder.calendar_item_id == item.id,
+                    Reminder.status == ReminderStatus.pending.value,
+                    Reminder.trigger_type == "item_linked",
+                )
             )
-        )
-        or 0
+        ).all()
     )
-    if existing_count + len(unique) > MAX_REMINDERS_PER_ITEM:
+    new_offsets = [o for o in unique if o not in existing_offsets]
+    union = existing_offsets | set(unique)
+    # The cap is enforced on the union (existing + requested, deduplicated),
+    # so a second create cannot push an item past MAX_REMINDERS_PER_ITEM.
+    if len(union) > MAX_REMINDERS_PER_ITEM:
         raise ValueError(
             f"At most {MAX_REMINDERS_PER_ITEM} reminders per item "
-            f"({existing_count} already scheduled; {len(unique)} requested)."
+            f"({len(existing_offsets)} already scheduled; "
+            f"{len(new_offsets)} new requested)."
         )
     if item.starts_at is None:
         return []
     created: list[Reminder] = []
-    for offset in unique:
+    for offset in new_offsets:
         fire_at = item.starts_at - timedelta(minutes=offset)
         reminder = await create_reminder(
             session,

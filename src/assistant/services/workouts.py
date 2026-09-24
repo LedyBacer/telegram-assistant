@@ -193,7 +193,10 @@ async def schedule_workout(
     item = await calendar_service.create_item(
         session,
         user,
-        title=f"Workout: {name.strip()}",
+        # V5 §6.1: persist the raw workout name — the "workout" identity is
+        # carried by ``source="workout"``, not a title prefix, so the Mini
+        # App / calendar can render a distinct workout visual.
+        title=name.strip(),
         kind=ItemKind.task,
         starts_at=starts_at,
         ends_at=effective_end,

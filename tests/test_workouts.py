@@ -157,7 +157,9 @@ async def test_schedule_workout_creates_item_and_reminder(
         session, user, name="Running", starts_at=when, duration_minutes=45
     )
     await session.commit()
-    assert item.title == "Workout: Running"
+    # V5 §6.1: the raw workout name is persisted; the workout identity is
+    # carried by source (and kind=task), not a "Workout: " title prefix.
+    assert item.title == "Running"
     assert item.starts_at == when
     assert item.source == "workout"
     assert item.extra.get("duration_minutes") == 45

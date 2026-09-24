@@ -9,10 +9,10 @@ surface.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions import register_action_kind
@@ -56,6 +56,28 @@ class ScheduleWorkoutPayload(BaseModel):
     starts_at: datetime
     duration_minutes: int | None = Field(default=None, gt=0)
     ends_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _validate_interval(self) -> ScheduleWorkoutPayload:
+        # V5 §5.1: reject an inverted interval, and reject the two mutually
+        # exclusive representations of the end (explicit end vs start+duration)
+        # when they disagree.
+        if (
+            self.ends_at is not None
+            and self.starts_at is not None
+            and self.ends_at < self.starts_at
+        ):
+            raise ValueError("ends_at must be after starts_at")
+        if (
+            self.duration_minutes is not None
+            and self.ends_at is not None
+            and self.starts_at is not None
+            and self.ends_at != self.starts_at + timedelta(minutes=self.duration_minutes)
+        ):
+            raise ValueError(
+                "duration_minutes and ends_at must be consistent with starts_at"
+            )
+        return self
 
 
 async def exec_log_workout(

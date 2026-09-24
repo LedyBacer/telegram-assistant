@@ -259,6 +259,18 @@ async def execute_action(
         action.last_error = str(exc)[:1000]
         await session.flush()
         raise
+    except ValueError as exc:
+        # Expected domain validation failure from the executor (interval
+        # inversion, reminder cap, entity state, ...): the action can no
+        # longer run, so make it terminal instead of leaving it stuck
+        # ``confirmed`` (V5 §5.2). The error re-raises so the caller reports
+        # the failure; infra exceptions (DB, network) are NOT caught here and
+        # propagate with the action state untouched.
+        action.status = ActionStatus.expired.value
+        action.expired_at = _now()
+        action.last_error = str(exc)[:1000]
+        await session.flush()
+        raise
 
     if result is None:
         result = {}

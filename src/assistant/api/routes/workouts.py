@@ -79,6 +79,7 @@ async def schedule_workout(
             name=body.name,
             starts_at=_aware(body.starts_at, user),
             duration_minutes=body.duration_minutes,
+            ends_at=_aware(body.ends_at, user) if body.ends_at else None,
         )
     except ValueError as exc:
         raise _bad_request(exc) from exc

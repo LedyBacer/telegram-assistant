@@ -229,7 +229,13 @@ async def _calendar_structured_query(
     if priority:
         items = [i for i in items if i.priority == priority]
     if kind:
-        items = [i for i in items if i.kind == kind]
+        # V5 §6.2: workouts are `kind=task` + `source="workout"` (the DB
+        # `kind` column only stores task/event), so `kind=workout` must be
+        # matched on the source, not the kind column.
+        if kind == "workout":
+            items = [i for i in items if (i.source or "") == "workout"]
+        else:
+            items = [i for i in items if i.kind == kind]
     return items
 
 

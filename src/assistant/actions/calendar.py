@@ -81,6 +81,16 @@ class CreateItemPayload(BaseModel):
         conint(ge=MIN_OFFSET_MINUTES, le=MAX_OFFSET_MINUTES)
     ] = Field(default_factory=list, max_length=MAX_REMINDERS_PER_ITEM)
 
+    @model_validator(mode="after")
+    def _validate_interval(self) -> CreateItemPayload:
+        if (
+            self.starts_at is not None
+            and self.ends_at is not None
+            and self.ends_at < self.starts_at
+        ):
+            raise ValueError("ends_at must be after starts_at")
+        return self
+
 
 class UpdateItemPayload(BaseModel):
     """Partial update: only fields present in the dict are applied; an
@@ -95,8 +105,8 @@ class UpdateItemPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     item_id: int
-    title: str | None = None
-    description: str | None = None
+    title: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=4000)
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     due_at: datetime | None = None
@@ -107,15 +117,10 @@ class UpdateItemPayload(BaseModel):
     def _rejects_no_op_update(self) -> UpdateItemPayload:
         # A partial update that sets no mutable field is a no-op: reject it
         # so the model's empty "update" can never become a PendingAction
-        # (V4 §18).
-        if (
-            self.title is None
-            and self.description is None
-            and self.starts_at is None
-            and self.ends_at is None
-            and self.due_at is None
-            and self.priority is None
-        ):
+        # (V4 §18, V5 §4: use field PRESENCE, not value, to distinguish
+        # omitted from explicit null).
+        mutable = {"title", "description", "starts_at", "ends_at", "due_at", "priority"}
+        if not (self.model_fields_set & mutable):
             raise ValueError("update_item requires at least one field to change")
         return self
 
@@ -219,11 +224,28 @@ async def _item_title(session: AsyncSession, user: User, item_id: int) -> str:
     return item.title
 
 
+# Map a calendar field name to its localized label key (V5 §9): raw
+# identifiers (``starts_at``/``ends_at``/``due_at``/``priority``) must never
+# leak into a user-facing preview.
+_FIELD_LABEL_KEY: dict[str, str] = {
+    "title": "action.preview.field.title",
+    "description": "action.preview.field.description",
+    "starts_at": "action.preview.field.starts",
+    "ends_at": "action.preview.field.ends",
+    "due_at": "action.preview.field.due",
+    "priority": "action.preview.field.priority",
+}
+
+
 async def _preview_create_item(
     session: AsyncSession, user: User, payload: CreateItemPayload
 ) -> str:
     lang = _lang(user)
-    parts = [t(lang, "action.preview.create", kind=payload.kind.value, title=payload.title)]
+    # Localize the kind (``task``/``event``) — never render the raw enum value.
+    kind_label = t(lang, f"action.preview.kind.{payload.kind.value}")
+    parts = [
+        t(lang, "action.preview.create", kind=kind_label, title=payload.title)
+    ]
     starts = _fmt(payload.starts_at, user)
     if starts:
         parts.append(t(lang, "action.preview.create.at", when=starts))
@@ -243,8 +265,9 @@ async def _preview_update_item(
     title = await _item_title(session, user, payload.item_id)
     present = payload.model_fields_set - {"item_id", "expected_updated_at"}
     fields = ("title", "starts_at", "ends_at", "due_at", "priority", "description")
-    changed = [name for name in fields if name in present]
-    summary = ", ".join(changed) if changed else "(no fields)"
+    # Render each changed field as its localized label — never the raw name.
+    changed = [t(lang, _FIELD_LABEL_KEY[name]) for name in fields if name in present]
+    summary = ", ".join(changed) if changed else t(lang, "action.preview.update.no_fields")
     return t(lang, "action.preview.update", title=title, fields=summary)
 
 
@@ -400,6 +423,14 @@ async def exec_cancel_reminder(
     reminder = await session.get(Reminder, payload.reminder_id)
     if reminder is None or reminder.user_id != user.id:
         raise ActionStaleError("reminder no longer exists")
+    await session.refresh(reminder)
+    # V5 §5.3: only a *pending* reminder is cancellable. If it was already
+    # sent or cancelled (e.g. it fired while the action was pending), the
+    # action is stale — the service's idempotent cancel must not mask that.
+    if reminder.status != "pending":
+        raise ActionStaleError(
+            f"reminder is {reminder.status}, not cancellable"
+        )
     cancelled = await reminders_service.cancel_reminder(
         session, user, payload.reminder_id
     )

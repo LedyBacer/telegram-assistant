@@ -184,14 +184,19 @@ async def register_local_upload(
         return file
 
     path = _storage_path(file.storage_key)
-    await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
-    # Blocking disk write off the event loop so a slow volume cannot stall the
-    # API worker's other handlers (SPEC §21).
-    await asyncio.to_thread(path.write_bytes, data)
-    file.extra = {**(file.extra or {}), "local_upload": True}
-    await session.flush()
-
+    # V5 §8: cleanup ownership begins BEFORE the first filesystem write. The
+    # whole write + registration block is one try, so a failure at ANY point
+    # after the artifact starts appearing on disk (mkdir, byte write, the
+    # ``local_upload`` flush, or job creation) removes the only copy of the
+    # bytes — there is no orphan window (SPEC §21 / V4 §30).
     try:
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        # Blocking disk write off the event loop so a slow volume cannot stall
+        # the API worker's other handlers (SPEC §21).
+        await asyncio.to_thread(path.write_bytes, data)
+        file.extra = {**(file.extra or {}), "local_upload": True}
+        await session.flush()
+
         job = await create_job(
             session,
             type=FILES_INGEST_JOB_TYPE,
@@ -203,10 +208,10 @@ async def register_local_upload(
         file.job_id = job.id
         await session.flush()
     except BaseException:
-        # The bytes are on disk but the registration did not survive: this
-        # layer owns the filesystem write, so it must not leave an orphan
-        # behind (SPEC §21 / V4 §30). The caller's transaction rolls back the
-        # row; here we remove the only copy of the bytes.
+        # The bytes are (or may be) on disk but the registration did not
+        # survive: this layer owns the filesystem write, so it must not leave
+        # an orphan behind. The caller's transaction rolls back the row; here
+        # we remove the only copy of the bytes.
         _remove_disk_file(file.storage_key)
         raise
     return file
