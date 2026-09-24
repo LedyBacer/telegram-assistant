@@ -159,4 +159,12 @@ timeout 900 uv run pytest -q
 step "11. Ruff"
 uv run ruff check .
 
+step "14. Lockfile integrity (production must build from uv.lock, not pyproject ranges)"
+# `uv lock --check` exits non-zero if uv.lock is missing or would be changed
+# to match pyproject.toml — i.e. a dependency added/edited without a matching
+# `uv lock`. This is what keeps `uv sync --frozen` in the Dockerfile from
+# silently installing a drifted (bypassed) set of pins.
+uv lock --check
+echo "OK: uv.lock is in sync with pyproject.toml"
+
 step "All acceptance checks passed"

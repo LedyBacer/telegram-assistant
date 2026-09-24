@@ -1,12 +1,52 @@
 # Progress
 
-Status: V3 PRIORITIES 38–42 COMPLETE (P42: optional embedding degradation —
-a deployment without an embedding provider runs chat-only: chat, actions,
-and every non-embedding feature are unaffected; document search reports
-lexical-only (the vector arm is skipped by construction, no outage);
-document uploads fail fast and visibly at registration; an ingest job
-enqueued before a config change fast-fails at pipeline start).
-Next: V3 Priority 43.
+Status: V3 PRIORITIES 38–43 COMPLETE (P43: production installs are
+lockfile-pinned — the Dockerfile builds via `uv sync --frozen --no-dev`
+from uv.lock, so no dependency can be silently re-resolved from
+pyproject.toml ranges at image-build time; `uv lock --check` in the
+acceptance suite fails on lockfile drift; tests/test_packaging.py guards
+the Dockerfile against regression to `pip install`).
+Next: V3 Priority 44.
+
+## V3 — Priority 43: production builds from the lockfile
+
+Production must install exactly what `uv.lock` pins, and a check must
+prevent the lockfile from being silently bypassed. The old image used
+`pip install .`, which re-resolved the `pyproject.toml` ranges at build
+time — a dependency edit could change the shipped image without the
+lockfile (or CI) noticing.
+
+- `Dockerfile` (rewritten):
+  - Multi-stage: pinned `ghcr.io/astral-sh/uv:0.12.17` supplies the uv
+    binary (no network fetch of uv at install time), over
+    `python:3.12-slim`.
+  - `VIRTUAL_ENV=/app/.venv` with `/app/.venv/bin` first on `PATH`, so the
+    `python -m assistant.*` entrypoints used by docker-compose resolve
+    from the venv.
+  - `COPY pyproject.toml uv.lock README.md ./` before `COPY src ./src`
+    (layer caching on code-only changes).
+  - `RUN uv sync --frozen --no-dev` — `--frozen` fails the build if
+    `uv.lock` is missing (production never resolves from ranges);
+    `--no-dev` excludes the pytest/ruff dev group.
+  - Non-root `appuser`, `FILE_STORAGE_DIR=/data/storage/files` volume
+    pre-created, `EXPOSE 8000`, unchanged entrypoint.
+- `scripts/acceptance.sh`: new step "14. Lockfile integrity" runs
+  `uv lock --check` — exits non-zero if `uv.lock` is missing or would
+  change to match `pyproject.toml` (i.e. a dependency added/edited
+  without a matching `uv lock`). This is the bypass check: the install
+  side (`--frozen`) and the maintenance side (`--check`) together keep
+  the image and the lockfile in lockstep.
+- `tests/test_packaging.py` (new): `test_uv_lockfile_is_present` and
+  `test_dockerfile_installs_from_the_lockfile` — cheap file-level
+  regression guards that fail if the Dockerfile regresses to
+  `pip install`/range-based resolution or the lockfile disappears,
+  independent of an acceptance run.
+
+Verified: `docker build` succeeds; runtime imports (`assistant`,
+sqlalchemy, aiogram, alembic, openai, fastapi, uvicorn, asyncpg, pypdf,
+docx, multipart, pgvector) all resolve in the image on Python 3.12.14;
+`uv lock --check` passes; `uv run pytest -q` 480 passed (was 478);
+`uv run ruff check .` clean; full E2E suite 14 passed.
 
 ## V3 — Priority 42: optional embedding degradation (chat-only deployments)
 
