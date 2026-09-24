@@ -404,8 +404,19 @@ const ACTION_KIND_ICONS = {
   delete_item: "🗑",
   create_reminder: "⏰",
   cancel_reminder: "🔕",
-  replace_fact: "🧠",
+  log_workout: "🏋️",
+  schedule_workout: "🏋️",
 };
+
+/** Target-entity hint derived from the validated payload (SPEC: inbox must
+ * show which item/reminder a proposal acts on). */
+function actionTarget(a) {
+  const p = a.payload;
+  if (!p) return null;
+  if (p.item_id !== undefined) return S("miniapp.action_target_item", { id: p.item_id });
+  if (p.reminder_id !== undefined) return S("miniapp.action_target_reminder", { id: p.reminder_id });
+  return null;
+}
 const ACTION_STATUS_KEYS = {
   proposed: "miniapp.action_proposed",
   confirmed: "miniapp.action_proposed",
@@ -438,6 +449,9 @@ function actionCard(a) {
     ...meta,
     badge(S(ACTION_STATUS_KEYS[a.status] || a.status), ACTION_STATUS_TONES[a.status] || "muted"));
 
+  const target = actionTarget(a);
+  const reason = a.status === "expired" && a.last_error ? a.last_error : null;
+
   const actions = [];
   if (a.status === "proposed") {
     actions.push(
@@ -447,7 +461,15 @@ function actionCard(a) {
           toast(S("miniapp.saved"));
           render();
         } catch (e) {
-          toast(e && e.status === 409 ? S("miniapp.action_stale") : S("miniapp.error_generic"), "error");
+          // 409 = stale target (server already expired the action): surface
+          // the server reason and refresh so the card shows "expired".
+          // 400 = payload no longer valid (same outcome).
+          if (e && (e.status === 409 || e.status === 400)) {
+            toast(S("miniapp.action_stale_detail", { reason: e.message }), "error");
+          } else {
+            toast(S("miniapp.error_generic"), "error");
+          }
+          render();
         }
       }, { variant: "primary" }),
       btn(S("miniapp.reject"), async () => {
@@ -468,6 +490,8 @@ function actionCard(a) {
       el("span", { class: "item-title" }, a.summary),
     ),
     status,
+    target ? el("p", { class: "item-desc" }, target) : null,
+    reason ? el("p", { class: "item-error" }, reason) : null,
     el("div", { class: "item-actions" }, ...actions)
   );
 }

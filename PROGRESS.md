@@ -1,13 +1,50 @@
 # Progress
 
-Status: V3 PRIORITY 32 COMPLETE (Mini App Files screen has working
-document search: loading/empty/error+retry states, results show source
-file, 1-based chunk position, excerpt).
+Status: V3 PRIORITY 33 COMPLETE (Mini App action inbox inspection:
+kind icon, typed preview, payload-derived target info, expired reason
+(last_error) on the card, stale-confirm toast carrying the server's
+409 detail + re-render; live propose/confirm/reject flow preserved).
 P26 (do-not-redesign constraint) is carried by every change in this
 Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 33 (assistant action inbox in the Mini App —
-GET /actions, validated action type, typed preview, target info,
-stale/conflict reason; proposal editing optional).
+Next: V3 Priority 34 (memory UX — distinguish confirmed/proposed/
+replacement/rejected/superseded facts in the Mini App).
+
+## V3 — Priority 33: Assistant action inbox inspection
+
+- `miniapp/app.js` `actionCard`: inspection surface per SPEC (kind
+  icon, typed preview, target info, stale/conflict reason) added on
+  top of the existing card without redesign:
+  - `ACTION_KIND_ICONS` now covers every registered kind, incl.
+    `log_workout` / `schedule_workout`; the dead `replace_fact` entry
+    was removed (unknown kinds still fall back to "⚡").
+  - `actionTarget(a)` renders a target hint from the validated
+    payload: `item_id` → "Цель: запись №{id}", `reminder_id` →
+    "Цель: напоминание №{id}" (create_* payloads carry no entity id
+    and show nothing — the typed preview already names the target).
+  - Expired cards surface `last_error` (the server's staleness reason,
+    e.g. "calendar item no longer exists") in a `.item-error` line.
+  - Stale confirm: a 409 (or 400 "payload no longer valid") toast now
+    shows the server detail via `miniapp.action_stale_detail` and the
+    view re-renders so the card immediately shows the expired state
+    instead of requiring a manual navigation.
+- i18n (en+ru): `miniapp.action_stale_detail`,
+  `miniapp.action_target_item`, `miniapp.action_target_reminder`.
+- Backend unchanged: `GET /actions` already returned the full
+  `ActionOut` (kind, typed summary from the preview builder, payload,
+  last_error, effective status with read-side expiry); the live
+  propose/confirm/409/reject flow stays covered by
+  `e2e/tests/v2-features.e2e.ts` (its stale-toast assertion now
+  expects the detail-rich message).
+- `e2e/tests/action-inbox.e2e.ts` (new, GET /actions mocked with exact
+  ActionOut shapes): asserts 4 cards render; kind icons
+  (✅/⏰/✏️/🏋️); typed previews; target hint "Цель: запись №42" on the
+  expired update_item and its `last_error` line; executed workout has
+  no buttons; only proposed cards carry confirm/reject; a 409 confirm
+  shows "Действие неактуально: calendar item no longer exists" and the
+  re-rendered list reaches the empty state.
+
+Verified: full E2E suite 13 passed; `uv run pytest -q` 454 passed;
+`uv run ruff check .` clean.
 
 ## V3 — Priority 32: Document search in the Mini App
 

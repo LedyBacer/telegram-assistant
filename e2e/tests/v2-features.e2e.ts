@@ -151,11 +151,12 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
   // The stale confirm is expected to return 409 (controlled error).
   guard.allow("/actions/2/confirm");
   await staleCard.locator(".item-actions .btn").first().click(); // Confirm
+  // V3 P33: the stale toast now carries the server's 409 detail.
   await expect(page.locator("#toast")).toContainText(
-    "Это действие больше не актуально.",
+    "Действие неактуально: proposal no longer applies to current data",
   );
-  // The stale branch does not re-render in place: a navigation forces the
-  // fresh fetch, which shows the expired state.
+  // V3 P33: the stale branch re-renders; the navigation below re-fetches
+  // and shows the expired state.
   await goTab(page, "today");
   await goTab(page, "actions");
   await expect(staleCard.locator(".badge")).toHaveText("истекло");
