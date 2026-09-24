@@ -58,7 +58,28 @@ trap 'docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true; rm -f "$WORKER_LOG" 
 step() { printf '\n=== %s ===\n' "$*"; }
 
 step "1. Docker Compose validation"
-docker compose config -q
+COMPOSE_DISABLE_ENV_FILE=1 docker compose config -q
+echo "OK: compose config valid without env file"
+
+step "1b. Clean-checkout compose validation (git archive)"
+CLEAN_TMP="$(mktemp -d)"
+trap 'rm -rf "$CLEAN_TMP"' EXIT
+git archive HEAD | tar -x -C "$CLEAN_TMP"
+(
+  cd "$CLEAN_TMP"
+  COMPOSE_DISABLE_ENV_FILE=1 docker compose config --quiet
+)
+rm -rf "$CLEAN_TMP"
+trap 'docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true; rm -f "$WORKER_LOG" "$API_LOG"' EXIT
+echo "OK: compose valid in clean tracked checkout"
+
+step "1c. Pinned actionlint (rhysd/actionlint:1.7.12)"
+docker run --rm \
+  -v "$PWD:/repo" \
+  --workdir /repo \
+  rhysd/actionlint:1.7.12 \
+  -color
+echo "OK: actionlint passed on all workflows"
 
 step "2. Port exposure audit (no public API/Postgres bind)"
 published=$(awk '

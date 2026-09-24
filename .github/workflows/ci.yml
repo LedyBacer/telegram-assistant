@@ -25,12 +25,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Semantic lint of the GitHub Actions workflow itself (V4 P37). A plain
-      # YAML parse misses context-availability errors like `runner` used in
-      # job-level `env` (the V3 CI failure); actionlint catches those. Pinned
-      # to a concrete version for reproducibility.
-      - name: Lint the CI workflow (actionlint)
-        uses: rsteube/actionlint@v3.5.0
+      # Semantic lint of the GitHub Actions workflow itself (V4 P37, V5 §2.2).
+      # A plain YAML parse misses context-availability errors like `runner`
+      # used in job-level `env` (the V3 CI failure); actionlint catches those.
+      # Uses the official rhysd/actionlint Docker image pinned to 1.7.12.
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -133,6 +135,8 @@ jobs:
   compose:
     name: Docker Compose validation
     runs-on: ubuntu-latest
+    env:
+      COMPOSE_DISABLE_ENV_FILE: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Validate docker-compose.yml

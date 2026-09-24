@@ -16,7 +16,9 @@ services:
   api:
     build: .
     command: python -m assistant.api.main
-    env_file: .env
+    env_file:
+      - path: ./.env
+        required: false
     # Loopback-only: Uvicorn is never exposed directly to the network. A
     # public Mini App is served through an HTTPS reverse proxy that
     # terminates TLS and forwards to 127.0.0.1:8000 (see README "Network
@@ -32,7 +34,9 @@ services:
   bot:
     build: .
     command: python -m assistant.bot.main
-    env_file: .env
+    env_file:
+      - path: ./.env
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,7 +46,9 @@ services:
   worker:
     build: .
     command: python -m assistant.worker.main
-    env_file: .env
+    env_file:
+      - path: ./.env
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
