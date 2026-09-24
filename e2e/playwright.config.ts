@@ -37,10 +37,11 @@ export default defineConfig({
     },
   ],
   webServer: {
-    // The test-only entry point wraps the production app and installs a
+    // The test-only entry point (outside src/, so it is absent from the
+    // production image) wraps the production app and installs a
     // deterministic test user (no initData). The production
     // `assistant.api.main` has no such bypass — see tests/test_minapp_shell.py.
-    command: "uv run python -m assistant.api.testing",
+    command: "uv run python e2e/support/test_app.py",
     cwd: "..",
     url: `${BASE}/healthz`,
     reuseExistingServer: !process.env.CI,

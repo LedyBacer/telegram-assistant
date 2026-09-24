@@ -1,4 +1,4 @@
-"""Test-only API entry point (Playwright E2E): ``python -m assistant.api.testing``.
+"""Test-only API entry point (Playwright E2E): ``uv run python e2e/support/test_app.py``.
 
 The production app (``assistant.api.main``) authenticates every Mini App
 request with a signed Telegram ``initData`` and has **no** test-auth bypass.
@@ -7,11 +7,14 @@ This module builds that same production app and then overrides the
 browser specs can exercise authenticated flows without a real Telegram user
 or a signed ``initData``.
 
-This is a separate, explicitly test-only entry point: nothing in the
-production runtime imports it, and the production :func:`create_app` never
-consults an environment flag to enable the override. The override is applied
-only because the test harness deliberately runs *this* module (see
-``e2e/playwright.config.ts``).
+This file lives OUTSIDE ``src/`` on purpose (V4 §33): the production Docker
+image copies only ``src/`` and installs only the ``assistant`` package, so
+the test-auth override is structurally absent from every production
+artifact. Nothing in the production runtime imports it; the production
+:func:`create_app` never consults an environment flag to enable the
+override. The override is applied only because the test harness (Playwright
+``webServer`` in ``e2e/playwright.config.ts``) deliberately runs *this*
+script.
 """
 
 from __future__ import annotations
@@ -73,7 +76,7 @@ def main() -> None:
     settings = get_settings()
     setup_logging(settings.log_level)
     port = int(os.environ.get("ASSISTANT_API_PORT", "8000"))
-    uvicorn.run("assistant.api.testing:app", host="0.0.0.0", port=port)
+    uvicorn.run("test_app:app", host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":

@@ -89,7 +89,11 @@ docker run --rm \
     -e CHAT_API_KEY="fake-acceptance" -e CHAT_BASE_URL="http://127.0.0.1:9/v1" \
     "$IMAGE_TAG" \
     python -c "from assistant.api.main import app; from assistant.bot.main import main; print('imports OK')"
-echo "OK: image built from uv.lock and API/bot entrypoints import"
+# V4 §33: the test-auth entry point lives in e2e/support/ (outside src/), so
+# the installed package in the production image must not contain it.
+docker run --rm "$IMAGE_TAG" \
+    python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('assistant.api.testing') is None else 1)"
+echo "OK: image built from uv.lock, API/bot entrypoints import, no test-auth module in image"
 
 step "4. Fresh Docker PostgreSQL"
 docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
@@ -244,8 +248,10 @@ echo "OK: uv.lock is in sync with pyproject.toml"
 
 step "21. Production auth has no test-auth bypass"
 # The production create_app() never consults any environment flag for the
-# test-auth override; the bypass exists only in assistant.api.testing.
+# test-auth override; the override lives only in e2e/support/test_app.py
+# (outside src/, absent from the production image — see step 3).
 uv run pytest "tests/test_minapp_shell.py::test_production_app_has_no_test_auth_bypass" -q
+uv run pytest "tests/test_minapp_shell.py::test_package_has_no_test_auth_module" -q
 
 step "22. Mini App Playwright E2E (Playwright acceptance stage)"
 # Isolated assistant_e2e database on the dev PostgreSQL (created + migrated +

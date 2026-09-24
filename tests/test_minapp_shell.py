@@ -4,9 +4,10 @@ auth boundary.
 The production ``create_app()`` has **no** test-auth bypass: it authenticates
 only with a signed Telegram ``initData``, and setting ``ASSISTANT_TEST_AUTH``
 in the environment cannot enable one. The deterministic test user is installed
-by the separate test-only entry point ``assistant.api.testing.create_test_app``
-(used by Playwright), and a test here proves the production app rejects that
-bypass while the test-only app applies it.
+by the test-only entry point ``e2e/support/test_app.py`` (outside ``src/``,
+so the production image never ships it; used by Playwright), and tests here
+prove the production app rejects that bypass, the test-only app applies it,
+and the ``assistant`` package no longer contains a test-auth module.
 
 Environment is set before importing the app so ``get_settings()`` reads test
 values; no real Telegram/OpenAI credentials are used.
@@ -14,12 +15,27 @@ values; no real Telegram/OpenAI credentials are used.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
+
+#: The test-auth entry point lives outside src/ (V4 §33) so the production
+#: image never ships it; tests load it by path.
+_TEST_APP_PATH = Path(__file__).resolve().parents[1] / "e2e" / "support" / "test_app.py"
+
+
+def _load_test_app_module():
+    """Import ``e2e/support/test_app.py`` by path (it is not a package module)."""
+    spec = importlib.util.spec_from_file_location("e2e_test_app", _TEST_APP_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 os.environ["DATABASE_URL"] = os.environ.get(
     "TEST_DATABASE_URL",
@@ -157,15 +173,27 @@ async def test_production_app_has_no_test_auth_bypass(
         get_settings.cache_clear()
 
 
+def test_package_has_no_test_auth_module() -> None:
+    """The ``assistant`` package ships no test-auth module (V4 §33).
+
+    The test-only entry point moved to ``e2e/support/test_app.py``, outside
+    ``src/`` — the production image copies only ``src/`` and installs only
+    this package, so the test-auth override cannot exist in any production
+    artifact.
+    """
+    import importlib.util
+
+    assert importlib.util.find_spec("assistant.api.testing") is None
+    assert _TEST_APP_PATH.is_file()
+
+
 async def test_test_only_entrypoint_installs_deterministic_user(
     session: AsyncSession,
 ) -> None:
     """``create_test_app()`` (the Playwright entry point) resolves the
     deterministic test user with no initData, so browser specs can exercise
     authenticated flows without a real Telegram identity."""
-    from assistant.api.testing import create_test_app
-
-    app = create_test_app()
+    app = _load_test_app_module().create_test_app()
 
     async def _override() -> AsyncIterator[AsyncSession]:
         yield session

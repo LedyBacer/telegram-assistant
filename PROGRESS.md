@@ -162,11 +162,26 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   `EMBEDDING_*` block OPTIONAL with the same degradation notes.
   RESEARCH/ASSUMPTIONS/ARCHITECTURE already matched the behavior (no
   change). Docs-only.
+- **§33** the test-auth entry point moved from the production package to
+  `e2e/support/test_app.py` (outside `src/`). The Docker image copies only
+  `src/` and installs only the `assistant` package, so the test-auth
+  override is now structurally absent from every production artifact —
+  not merely unimported. `git rm src/assistant/api/testing.py`;
+  Playwright's `webServer` command is `uv run python e2e/support/test_app.py`
+  (cwd = repo root; the script dir is on sys.path so `uvicorn.run`
+  re-imports it by name). `tests/test_minapp_shell.py` loads the module by
+  path and gains `test_package_has_no_test_auth_module` (asserts
+  `find_spec("assistant.api.testing") is None` in the installed package and
+  the script exists). Acceptance step 3 now also runs the built production
+  image asserting `assistant.api.testing` is absent from it; step 21 runs
+  the new absence test. README + ASSUMPTIONS 40 updated to the new location
+  and the "absent from the image" guarantee. Verified: Ruff clean, full
+  pytest 526 passed, E2E 18/18 (webServer now runs the new script).
 
-**Next (in order):** §33-39 CI/acceptance reproducibility (self-contained
-acceptance, real bot smoke, actionlint, real GitHub Actions run), readiness
-terminology, logging correlation; §40-47 named regression tests, docs sync,
-Definition of Done.
+**Next (in order):** §34-39 CI/acceptance reproducibility (E2E_DATABASE_URL,
+self-contained acceptance, real bot smoke, actionlint, real GitHub Actions
+run), readiness terminology, logging correlation; §40-47 named regression
+tests, docs sync, Definition of Done.
 
 
 ## V3 — Priority 55: Definition of Done (final verification)

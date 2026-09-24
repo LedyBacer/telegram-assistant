@@ -320,13 +320,15 @@ started by Playwright itself. Viewport is 390x844 (ru-RU, UTC).
 **Authenticated tests without a production bypass:** the production app
 (`assistant.api.main`) authenticates every Mini App request with a signed
 Telegram `initData` and has **no** test-auth bypass. The E2E API is started
-from the separate test-only entry point `assistant.api.testing`
-(`python -m assistant.api.testing`), which wraps the production app and
-installs the `get_current_user` dependency with a deterministic test user.
-Because the bypass exists only in that module and the production
-`create_app()` never consults any environment flag for it, the real API can
-never be turned into an open endpoint from a (mis)configured environment. A
-normal production request without valid `initData` gets `401`. The Telegram
+from the separate test-only entry point `e2e/support/test_app.py`
+(`uv run python e2e/support/test_app.py`), which wraps the production app
+and installs the `get_current_user` dependency with a deterministic test
+user. Because that script lives **outside `src/`** — the Docker image copies
+only `src/` — and the production `create_app()` never consults any
+environment flag for the override, the test-auth code is structurally absent
+from every production artifact and the real API can never be turned into an
+open endpoint from a (mis)configured environment. A normal production
+request without valid `initData` gets `401`. The Telegram
 WebApp client itself is stubbed in the browser via `page.addInitScript`
 (`e2e/helpers/telegram-stub.ts`), providing `initData`, `themeParams`,
 `ready()/expand()`, BackButton, HapticFeedback, and runtime theme switching;
