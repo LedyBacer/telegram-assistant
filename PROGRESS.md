@@ -269,8 +269,38 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   oversized, replace when it contains control/format chars). Verified: the 4
   new tests pass; Ruff clean on the touched files.
 
-**Next (in order):** §4-8 lease safety, §9-11 proactivity, §12-16 turn
-protocol; §41-47 named regression tests, docs sync, Definition of Done.
+- **§41** Named regression tests audited against the suite: every one of
+  the goal's ~30 named scenarios maps to an existing named test (lease
+  lost mid-ingest → `test_stale_lease_commits_no_chunks` /
+  `test_lease_lost_failure_not_recorded` /
+  `test_run_job_cancels_handler_on_lost_lease` /
+  `test_run_job_stale_owner_cannot_complete`; cross-kind anti-spam →
+  `test_concurrent_passes_min_interval_suppresses_same_day` /
+  `test_concurrent_sessions_nudge_exactly_once`; stale-data guard →
+  `test_drifted_entity_expires_action` / `test_action_confirm_stale_target_is_409`;
+  readiness → `test_readyz_*`; bounded request id → `test_request_id_*`).
+  No gaps found; nothing to add.
+- **§44** Docs sync: `REPORT.md` rewritten as the V4 report. Corrects the
+  V3 false "CI present and runs" framing to the honest
+  "Remote CI verification pending (no push; single-turn)" status, updates
+  496 → 511 functions (530 collected) and 14 → 18 E2E specs, and records
+  the V4 §1–§40 closure summary with a fresh Definition-of-Done table.
+- **§45** Definition of Done — full verification re-run via
+  `scripts/acceptance.sh` (22 steps, fresh throwaway Docker PostgreSQL):
+  migrations from empty DB, full pytest (530 passed), Ruff, Compose
+  config/build, E2E (18 specs). One regression found and fixed:
+  `test_ci_workflow.py`'s broad `".env" in text` guard false-positived on
+  Node's `process.env` global (legitimately present in the acceptance E2E
+  step's webServer env-merge comment); the guard now strips `process.env`
+  before checking for a `.env` file reference, keeping the
+  self-containment guard intact.
+- **§46-47** Final: `git status` clean; `PROGRESS.md`, `REPORT.md`, and
+  `docs/ASSUMPTIONS.md` all match the code.
+
+**Next (in order):** (none — all V4 items §1–§47 are closed. The only
+outstanding step is the externally-gated remote CI run, which requires a
+push to `origin/main` and is out of scope for this single-turn milestone;
+it is recorded as "Remote CI verification pending" in `REPORT.md` §3.)
 
 
 ## V3 — Priority 55: Definition of Done (final verification)

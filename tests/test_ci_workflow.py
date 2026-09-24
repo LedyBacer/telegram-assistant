@@ -68,6 +68,10 @@ def test_ci_workflow_no_dotenv_reliance() -> None:
         assert "cp .env" not in lowered
         assert "source .env" not in lowered
         assert "set -a" not in lowered  # would auto-export a sourced .env
-        assert ".env" not in lowered, (
+        # Node's `process.env` global (the Playwright webServer env merge in the
+        # E2E step) is not a dotenv file; strip it so the broad check below
+        # targets an actual `.env` file reference, not that global.
+        stripped = lowered.replace("process.env", "")
+        assert ".env" not in stripped, (
             f"{path.name} references a .env file; CI must be self-contained."
         )
