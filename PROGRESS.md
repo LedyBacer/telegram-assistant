@@ -73,6 +73,36 @@ Defects found, grouped by the eight V4 primary goals:
    GitHub Actions run (or explicitly state "Remote CI verification
    pending" if the run is unreachable).
 
+## V4 — Implementation progress
+
+Goal items are tracked by their `§` number. Committed on `main`; working
+tree clean at each boundary (full suite + Ruff green before each commit).
+
+- **§17-18** action payload schemas reject unknown / ignore-no-op fields.
+- **§19-20** NL draft path releases its DB transaction before model I/O.
+- **§21** localized (RU/EN) deterministic action previews.
+- **§22** scheduled workouts get a real `ends_at`, no hard-coded prefix.
+- **§23** (`a45a4cc`) free-text entity resolution
+  (`calendar.resolve_item`, `reminders.resolve_reminder`) is bounded at the
+  SQL layer: exact match then a metachar-escaped substring search, each
+  capped at 25 rows in deterministic order — an unbounded history is never
+  scanned into Python.
+- **§24** (`074b093`) the calendar read tool gains four strongly-typed,
+  calendar-only params (`range_start`/`range_end`/`priority`/`kind`) with a
+  schema validator, so "this month" / "next Friday" / "high-priority tasks"
+  are answered by a bounded `list_range` + bounded Python filter (no
+  arbitrary SQL, no unbounded loop).
+- **§29** TTL-aware effective status filter on `GET /actions`.
+- **§30** service owns local-upload artifact cleanup on write-failure; the
+  API layer also cleans on commit-failure.
+- **§31** local-upload disk I/O (mkdir/write) is off the event loop via
+  `asyncio.to_thread`.
+
+**Next (in order):** §25/§26 Mini App wall-clock helpers + timezone-picker
+E2E; §27/§28 `ends_at` on New + reminder picker on Edit; §32-39 CI/acceptance
+reproducibility, readiness terminology, logging correlation; §40-47 named
+regression tests, docs sync, Definition of Done.
+
 
 ## V3 — Priority 55: Definition of Done (final verification)
 
