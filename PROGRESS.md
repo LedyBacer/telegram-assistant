@@ -1,10 +1,40 @@
 # Progress
 
-Status: V3 PRIORITIES 38–49 COMPLETE (P49: documentation reality audit —
-checked the ten known drift areas against the code and fixed the seven that
-had gone stale across README/ARCHITECTURE/RESEARCH/ASSUMPTIONS/REPORT;
-doc-only change, Ruff clean).
-Next: V3 Priority 50.
+Status: V3 PRIORITIES 38–50 COMPLETE (P50: credential-free CI workflow —
+lock sync + Ruff, pytest against a fresh PG 17 + pgvector service with
+migration from empty DB, Playwright E2E, Compose validation; no credentials
+needed).
+Next: V3 Priority 51.
+
+## V3 — Priority 50: credential-free CI
+
+Added `.github/workflows/ci.yml` (4 jobs, `pgvector/pgvector:pg17` service
+container, nothing published, no secrets required):
+
+- **lint** — `uv lock --check` (the lockfile cannot silently drift from
+  `pyproject.toml`), `uv sync --frozen` (exact locked dependencies),
+  `uv run ruff check .`.
+- **tests** — fresh `assistant` database; `uv run alembic upgrade head`
+  migrates the empty DB (initial migration creates the `vector` extension);
+  `TEST_DATABASE_URL` pinned so fixtures and app-side session factories agree;
+  `FILE_STORAGE_DIR` under the runner temp dir; full pytest suite (includes
+  the ru/en locale-parity test).
+- **e2e** — same PG service; `npm ci`, `npx playwright install --with-deps
+  chromium`, `CI=1 npm run test:e2e` (isolated `assistant_e2e` DB is created,
+  migrated, and truncated by `e2e/global-setup.ts`; the test-only
+  `assistant.api.testing` entrypoint serves the app — production startup
+  cannot enable the test-auth bypass).
+- **compose** — `docker compose config --quiet`.
+
+`UV_VERSION` / `PYTHON_VERSION` are pinned to 0.12.17 / 3.12 to match the
+Dockerfile. Concurrency cancels superseded runs of the same ref.
+
+- **Verification (locally runnable subset).** YAML parses; `uv lock --check`
+  clean; `docker compose config --quiet` OK; Ruff clean. The pytest/E2E
+  steps invoke the exact commands last verified green locally (493 pytest /
+  14 E2E against the same PG 17 + pgvector setup); the GitHub runner
+  environment itself is not reproducible on this host, so first-run CI
+  output is the remaining unverified piece.
 
 ## V3 — Priority 49: documentation reality audit
 

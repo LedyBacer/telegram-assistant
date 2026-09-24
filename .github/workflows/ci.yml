@@ -1,0 +1,123 @@
+# Credential-free CI (V3 P50).
+#
+# Everything runs with mocks/fakes: no Telegram bot token, no real LLM keys.
+# The only external service is a throwaway PostgreSQL 17 + pgvector container
+# (no published ports, no volume persistence).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.12.17" # must match the uv pinned in the Dockerfile
+  PYTHON_VERSION: "3.12" # must match the Dockerfile base image
+
+jobs:
+  lint:
+    name: Lock sync + Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+      - name: Sync exactly the locked dependencies
+        run: uv sync --frozen
+      - name: Ruff
+        run: uv run ruff check .
+
+  tests:
+    name: pytest (real PostgreSQL + pgvector, fresh DB migration)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: assistant
+          POSTGRES_PASSWORD: assistant
+          POSTGRES_DB: assistant
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U assistant -d assistant"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # conftest.py pins DATABASE_URL to TEST_DATABASE_URL, so one value
+      # covers both the fixtures and app-side session factories.
+      TEST_DATABASE_URL: postgresql+asyncpg://assistant:assistant@127.0.0.1:5432/assistant
+      FILE_STORAGE_DIR: ${{ runner.temp }}/ci-files
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Sync exactly the locked dependencies
+        run: uv sync --frozen
+      - name: Migrate the empty database to head
+        run: uv run alembic upgrade head
+      - name: Full test suite (includes ru/en locale parity test)
+        run: uv run pytest -q
+
+  e2e:
+    name: Mini App Playwright E2E
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: assistant
+          POSTGRES_PASSWORD: assistant
+          POSTGRES_DB: assistant
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U assistant -d assistant"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      CI: "1" # Playwright: forbidOnly + no server reuse
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+      - name: Sync exactly the locked dependencies
+        run: uv sync --frozen
+      - name: Install dev dependencies
+        run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Playwright E2E
+        run: npm run test:e2e
+
+  compose:
+    name: Docker Compose validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
