@@ -1,13 +1,41 @@
 # Progress
 
-Status: V3 PRIORITY 31 COMPLETE (reminder offsets: preset chips +
-bounded custom input in the Mini App, shared min/max/max-count
-validation across API/action/bot/AI paths per SPEC §14.2).
+Status: V3 PRIORITY 32 COMPLETE (Mini App Files screen has working
+document search: loading/empty/error+retry states, results show source
+file, 1-based chunk position, excerpt).
 P26 (do-not-redesign constraint) is carried by every change in this
 Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 32 (restore document search in the Mini App —
-GET /files/search, results show source file + excerpt + chunk info,
-loading/empty/error states; keep upload/list/retry/delete working).
+Next: V3 Priority 33 (assistant action inbox in the Mini App —
+GET /actions, validated action type, typed preview, target info,
+stale/conflict reason; proposal editing optional).
+
+## V3 — Priority 32: Document search in the Mini App
+
+- `miniapp/app.js` `viewFiles`: search row (input + "Поиск" button,
+  Enter also submits) above the upload row; `doSearch()` calls
+  `GET /api/v1/files/search?q=&top_k=10` with the view signal and
+  renders into a `search-results` holder: `loading()` while in
+  flight, result cards / localized empty state / `errorState` with a
+  retry that re-issues the query. Empty (whitespace) queries are a
+  no-op. `searchResultCard()` shows the source filename, a
+  `miniapp.search_chunk` badge with the 1-based position (consistent
+  with `format_citations`) and the excerpt as text (safe `el()`).
+  Upload/list/retry/delete rows untouched.
+- `miniapp/styles.css`: `.search-row`, `.search-results`,
+  `.search-excerpt`.
+- Backend unchanged: `GET /files/search` already returned
+  `SearchResultOut` (file_id, file_name, position, text, score) with
+  lexical-only degradation on embedding outages; endpoint covered by
+  `tests/test_api.py::test_files_list_and_search`.
+- `e2e/tests/file-search.e2e.ts` (new): the endpoint is mocked with
+  the exact `SearchResultOut` shape (E2E has a dead embedding port, so
+  nothing can be indexed there). Asserts the loading state, result
+  rendering (filename, "фрагмент 1", both excerpts), the empty state,
+  the 500 error state with a working "Повторить" retry, and that an
+  empty query issues no request.
+
+Verified: full E2E suite 12 passed; `uv run pytest -q` 454 passed;
+`uv run ruff check .` clean.
 
 ## V3 — Priority 31: Reminder-offset controls (no comma text entry)
 

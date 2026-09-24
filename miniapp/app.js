@@ -1102,14 +1102,69 @@ async function viewFiles(view, gen, signal) {
   );
   uploadBtn.addEventListener("click", () => fileInput.click());
 
+  // Search (V3 P32): full-text + vector search over indexed files.
+  const searchInput = input({
+    placeholder: S("miniapp.search_ph"),
+    "aria-label": S("miniapp.search"),
+  });
+  const searchBtn = btn(S("miniapp.search"), null, { variant: "primary" });
+  const searchResults = el("div", { class: "search-results" });
+  let searchBusy = false;
+  const doSearch = async () => {
+    const q = searchInput.value.trim();
+    if (!q || searchBusy) return;
+    searchBusy = true;
+    searchBtn.disabled = true;
+    searchResults.replaceChildren(loading());
+    try {
+      const results = await api(
+        `/api/v1/files/search?q=${encodeURIComponent(q)}&top_k=10`,
+        "GET",
+        undefined,
+        signal,
+      );
+      if (isStale(gen)) return;
+      searchResults.replaceChildren(
+        results.length
+          ? el("div", { class: "list" }, ...results.map(searchResultCard))
+          : empty(S("miniapp.search_empty"))
+      );
+    } catch {
+      if (isStale(gen)) return;
+      searchResults.replaceChildren(errorState(S("miniapp.error_load"), doSearch));
+    } finally {
+      if (!isStale(gen)) {
+        searchBusy = false;
+        searchBtn.disabled = false;
+      }
+    }
+  };
+  searchBtn.onclick = doSearch;
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doSearch();
+  });
+
   view.replaceChildren(
     card(
       el("h2", { class: "view-title" }, S("miniapp.my_files")),
+      el("div", { class: "search-row" }, searchInput, searchBtn),
+      searchResults,
       el("div", { class: "upload-row" }, uploadBtn, fileInput),
       files.length
         ? el("div", { class: "list" }, ...files.map(fileCard))
         : empty(S("miniapp.files_empty"))
     )
+  );
+}
+
+function searchResultCard(r) {
+  return card(
+    el("div", { class: "item-head" },
+      el("span", { class: "item-icon", "aria-hidden": "true" }, "📄"),
+      el("span", { class: "item-title file-name" }, r.file_name),
+      badge(S("miniapp.search_chunk", { file: r.file_name, position: r.position + 1 }))
+    ),
+    el("p", { class: "search-excerpt" }, r.text)
   );
 }
 

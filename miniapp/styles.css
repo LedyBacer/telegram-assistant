@@ -935,6 +935,35 @@ textarea.field-input {
 /* Files                                                               */
 /* ------------------------------------------------------------------ */
 
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.search-row .field-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.search-row .btn {
+  flex: 0 0 auto;
+}
+
+.search-results {
+  margin-bottom: 12px;
+}
+
+.search-excerpt {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--hint);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .upload-row {
   display: flex;
   align-items: center;
