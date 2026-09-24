@@ -59,7 +59,9 @@ const TABS = [
   ["settings", "miniapp.tab_settings"],
 ];
 
-const TIMEZONES = [
+// Fallback for browsers without Intl.supportedValuesOf (Chrome 93+,
+// Safari 15.4+, Firefox 93+).
+const FALLBACK_TIMEZONES = [
   "UTC",
   "Europe/Berlin",
   "Europe/Madrid",
@@ -76,6 +78,22 @@ const TIMEZONES = [
   "Asia/Dubai",
   "Australia/Sydney",
 ];
+
+/**
+ * Canonical IANA timezone list for the picker (V3 P35): the browser's own
+ * list (400+ zones, no network, always valid IANA names), plus the user's
+ * currently configured zone when the browser does not know it.
+ */
+function timezoneOptions() {
+  let zones;
+  try {
+    zones = Intl.supportedValuesOf("timeZone");
+  } catch {
+    zones = FALLBACK_TIMEZONES;
+  }
+  const current = state.me && state.me.settings && state.me.settings.timezone;
+  return current && !zones.includes(current) ? [current, ...zones] : zones;
+}
 
 const PRIORITY_TONES = { high: "high", normal: "normal", low: "low" };
 const PRIORITY_LABELS = {
@@ -1466,13 +1484,12 @@ async function viewSettings(view, gen, signal) {
         render();
       }),
       settingsRow(S("miniapp.settings_timezone"), settings.timezone, async () => {
-        const zones = settings.timezone && !TIMEZONES.includes(settings.timezone)
-          ? [settings.timezone, ...TIMEZONES]
-          : TIMEZONES;
         const chosen = await openSheet({
           title: S("miniapp.settings_timezone"),
           value: settings.timezone,
-          options: zones.map((z) => ({ value: z, label: z })),
+          options: timezoneOptions().map((z) => ({ value: z, label: z })),
+          searchable: true,
+          searchPlaceholder: S("miniapp.tz_search_ph"),
         });
         if (!chosen) return;
         const saved = await api("/api/v1/settings", "PATCH", { timezone: chosen });

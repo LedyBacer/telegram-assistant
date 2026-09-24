@@ -229,6 +229,7 @@
   "miniapp.settings_motivation": "Send motivational messages",
   "miniapp.settings_language": "Language",
   "miniapp.settings_saved": "Settings saved.",
+  "miniapp.tz_search_ph": "Find a timezone…",
   "miniapp.lang_ru": "Русский",
   "miniapp.lang_en": "English",
   "miniapp.error_load": "Couldn't load this section. Please try again.",

@@ -229,6 +229,7 @@
   "miniapp.settings_motivation": "Присылать мотивационные сообщения",
   "miniapp.settings_language": "Язык",
   "miniapp.settings_saved": "Настройки сохранены.",
+  "miniapp.tz_search_ph": "Поиск часового пояса…",
   "miniapp.lang_ru": "Русский",
   "miniapp.lang_en": "English",
   "miniapp.error_load": "Не удалось загрузить раздел. Попробуй ещё раз.",

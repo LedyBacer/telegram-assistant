@@ -1,14 +1,43 @@
 # Progress
 
-Status: V3 PRIORITY 34 COMPLETE (Mini App memory UX: a pending
-replacement fact is visually distinguished from a plain proposal with
-a "замена" badge, and a superseded fact points at the fact that
-replaced it via a "Заменено на" line; all four fact statuses remain
-distinct and the confirm/reject/replace/delete flows are unchanged).
+Status: V3 PRIORITY 35 COMPLETE (searchable IANA timezone picker in
+the Mini App Settings: the hardcoded 15-zone TIMEZONES array is
+replaced by the browser's canonical Intl.supportedValuesOf("timeZone")
+list (400+ zones, no network, no new dependency) with a small fallback
+list; the bottom sheet gained a search filter with an empty state).
 P26 (do-not-redesign constraint) is carried by every change in this
 Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 35 (searchable IANA timezone picker replacing the
-hardcoded TIMEZONES array).
+Next: V3 Priority 36 (self-host Flatpickr instead of the jsDelivr CDN
+script in miniapp/index.html).
+
+## V3 — Priority 35: Searchable IANA timezone picker
+
+- `miniapp/app.js`: the hardcoded `TIMEZONES` array (15 zones) is gone.
+  `timezoneOptions()` returns `Intl.supportedValuesOf("timeZone")`
+  (browser-provided, 400+ canonical IANA names, no network request)
+  with the old 15 zones kept as `FALLBACK_TIMEZONES` for pre-2022
+  browsers, and prepends the user's currently configured zone when the
+  browser list does not include it. The Settings timezone row now opens
+  the sheet with `searchable: true`.
+- `miniapp/js/ui.js` `openSheet`: new optional `searchable` /
+  `searchPlaceholder` parameters — a `type="search"` filter input above
+  the options (auto-focused) hides non-matching rows on input
+  (case-insensitive substring on the value) and shows the localized
+  `miniapp.search_empty` state when nothing matches. The focus trap now
+  includes the search input. Non-searchable sheets are unchanged.
+- `miniapp/styles.css`: `.sheet-search`, `.sheet-empty`; plus a global
+  `[hidden] { display: none !important }` so component display rules
+  (e.g. `.sheet-row { display: flex }`) cannot defeat the `hidden`
+  attribute.
+- i18n (en+ru): `miniapp.tz_search_ph`.
+- `e2e/tests/timezone-picker.e2e.ts` (new): opens the settings sheet,
+  asserts 100+ zones render; "Berlin" narrows to exactly Europe/Berlin
+  (Asia/Tokyo hidden); a no-match query shows the empty state; picking
+  Europe/Berlin persists via PATCH (toast + row value) and restores
+  UTC afterwards.
+
+Verified: full E2E suite 14 passed; `uv run pytest -q` 454 passed;
+`uv run ruff check .` clean; `node --check` on the ESM miniapp OK.
 
 ## V3 — Priority 34: Memory UX (fact statuses in the Mini App)
 

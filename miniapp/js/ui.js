@@ -116,9 +116,11 @@ export function toast(message, kind = "default") {
  * @param {string} [opts.title]
  * @param {Array<{value:string,label:string}>} opts.options
  * @param {string} [opts.value] currently selected value (shows the check)
+ * @param {boolean} [opts.searchable] add a search filter above the list
+ * @param {string} [opts.searchPlaceholder] placeholder/label for the filter
  * @returns {Promise<string|null>} chosen value, or null when closed/cancelled
  */
-export function openSheet({ title, options, value = null }) {
+export function openSheet({ title, options, value = null, searchable = false, searchPlaceholder = null }) {
   return new Promise((resolve) => {
     const root = document.getElementById("sheet-root");
     if (!root) return resolve(null);
@@ -153,10 +155,35 @@ export function openSheet({ title, options, value = null }) {
       )
     );
 
+    // Optional search filter for long lists (e.g. IANA timezones).
+    let searchInput = null;
+    if (searchable) {
+      const optionRows = [...rows]; // option buttons only (no empty row)
+      const emptyRow = el("div", { class: "sheet-empty", hidden: "" }, S("miniapp.search_empty"));
+      searchInput = el("input", {
+        type: "search",
+        class: "field-input sheet-search",
+        placeholder: searchPlaceholder || S("miniapp.search"),
+        "aria-label": searchPlaceholder || S("miniapp.search"),
+      });
+      searchInput.addEventListener("input", () => {
+        const q = searchInput.value.trim().toLowerCase();
+        let visible = 0;
+        for (const row of optionRows) {
+          const show = !q || row.dataset.value.toLowerCase().includes(q);
+          row.hidden = !show;
+          if (show) visible += 1;
+        }
+        emptyRow.hidden = visible > 0;
+      });
+      rows.push(emptyRow);
+    }
+
     const panel = el(
       "div",
       { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": title || "sheet", tabindex: "-1" },
       title ? el("div", { class: "sheet-title" }, title) : null,
+      searchInput,
       el("div", { class: "sheet-options", role: "listbox" }, rows),
       el("div", { class: "sheet-cancel-wrap" },
         btn(S("miniapp.sheet_cancel"), () => close(null), { variant: "ghost" })
@@ -174,7 +201,7 @@ export function openSheet({ title, options, value = null }) {
         close(null);
       } else if (e.key === "Tab") {
         // Keep focus inside the sheet.
-        const focusables = [...panel.querySelectorAll("button:not([disabled])")];
+        const focusables = [...panel.querySelectorAll("button:not([disabled]), input")];
         if (!focusables.length) return;
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
@@ -190,8 +217,12 @@ export function openSheet({ title, options, value = null }) {
     document.addEventListener("keydown", onKey, true);
 
     root.appendChild(scrim);
-    const selected = panel.querySelector(".sheet-row.is-selected") || panel.querySelector(".sheet-row");
-    (selected || panel).focus();
+    if (searchable && searchInput) {
+      searchInput.focus();
+    } else {
+      const selected = panel.querySelector(".sheet-row.is-selected") || panel.querySelector(".sheet-row");
+      (selected || panel).focus();
+    }
   });
 }
 
