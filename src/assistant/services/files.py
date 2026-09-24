@@ -191,16 +191,24 @@ async def register_local_upload(
     file.extra = {**(file.extra or {}), "local_upload": True}
     await session.flush()
 
-    job = await create_job(
-        session,
-        type=FILES_INGEST_JOB_TYPE,
-        payload={"file_id": file.id},
-        user_id=user.id,
-        idempotency_key=f"file:{file.id}",
-        max_attempts=settings.job_max_attempts,
-    )
-    file.job_id = job.id
-    await session.flush()
+    try:
+        job = await create_job(
+            session,
+            type=FILES_INGEST_JOB_TYPE,
+            payload={"file_id": file.id},
+            user_id=user.id,
+            idempotency_key=f"file:{file.id}",
+            max_attempts=settings.job_max_attempts,
+        )
+        file.job_id = job.id
+        await session.flush()
+    except BaseException:
+        # The bytes are on disk but the registration did not survive: this
+        # layer owns the filesystem write, so it must not leave an orphan
+        # behind (SPEC §21 / V4 §30). The caller's transaction rolls back the
+        # row; here we remove the only copy of the bytes.
+        _remove_disk_file(file.storage_key)
+        raise
     return file
 
 

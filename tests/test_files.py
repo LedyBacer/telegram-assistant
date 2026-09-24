@@ -257,6 +257,41 @@ async def test_register_local_upload_rejects_when_embedding_unconfigured(
     assert jobs == []
 
 
+async def test_register_local_upload_cleans_up_when_create_job_fails(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """V4 §30: the service owns the filesystem write — if ``create_job``
+    (or the final flush) fails after the bytes are written, it must remove its
+    own artifact, and the caller's transaction rollback leaves no DB row."""
+    storage = tmp_path / "files"
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(storage))
+    monkeypatch.setattr(get_settings(), "embedding_api_key", "test-key")
+    user = await _user(session)
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("injected create_job failure")
+
+    monkeypatch.setattr(files, "create_job", _boom)
+
+    with pytest.raises(RuntimeError, match="injected create_job failure"):
+        await files.register_local_upload(
+            session,
+            user,
+            original_filename="local.txt",
+            mime_type="text/plain",
+            data=b"hello orphan",
+        )
+
+    # The service removed its own disk artifact (no orphan).
+    assert list(storage.iterdir()) == []
+    # The flushed (uncommitted) row does not survive the rollback.
+    await session.rollback()
+    rows = list((await session.scalars(select(UserFile))).all())
+    assert rows == []
+
+
 # ---------------------------------------------------------------------------
 # Extraction + chunking unit tests
 # ---------------------------------------------------------------------------
