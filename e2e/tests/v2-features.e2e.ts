@@ -231,9 +231,13 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
     has: page.locator(`.fact-value:text-is("${FACT_NEW}")`),
   });
   await expect(newFactValueCard).toHaveCount(1);
-  await expect(newFactValueCard.locator(".item-head .badge")).toHaveText(
+  await expect(newFactValueCard.locator(".item-head .badge").first()).toHaveText(
     "предложен",
   );
+  // V3 P34: a pending replacement is distinguished from a plain proposal.
+  await expect(
+    newFactValueCard.locator(".item-head .badge", { hasText: "замена" }),
+  ).toHaveCount(1);
   // The new card explains which fact it supersedes.
   await expect(newFactValueCard.locator(".fact-replaces")).toContainText(FACT_OLD);
   // The old trusted fact STAYS confirmed while the replacement is pending.
@@ -255,6 +259,8 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
     "подтверждён",
   );
   await expect(supersededCard.locator(".item-head .badge")).toHaveText("заменён");
+  // V3 P34: the superseded fact points at the fact that replaced it.
+  await expect(supersededCard.locator(".fact-replaces")).toContainText(FACT_NEW);
   // The superseded fact lost its replace button.
   await expect(
     supersededCard.locator(".item-actions .btn", { hasText: "Заменить" }),

@@ -1357,11 +1357,21 @@ function factCard(f, byId) {
     }, { variant: "danger" })
   );
 
+  // A pending replacement is a distinct state from a plain proposal:
+  // give it its own badge (SPEC §14: distinguish replacement).
+  const isReplacement = f.status === "proposed" && f.replaces_fact_id != null;
+  // The other side of a completed replacement: what this fact became.
+  const replacedBy =
+    f.status === "superseded" && f.superseded_by != null && byId.has(f.superseded_by)
+      ? byId.get(f.superseded_by).value
+      : null;
+
   return card(
     el("div", { class: "item-head" },
       el("span", { class: "item-icon", "aria-hidden": "true" }, "🧠"),
       el("span", { class: "item-title fact-category" }, f.category),
-      badge(S(FACT_STATE_KEYS[f.status] || f.status), FACT_STATE_TONES[f.status] || "muted")
+      badge(S(FACT_STATE_KEYS[f.status] || f.status), FACT_STATE_TONES[f.status] || "muted"),
+      isReplacement ? badge(S("miniapp.fact_replacement")) : null
     ),
     // The fact value is user content: always rendered as a text node.
     el("p", { class: "fact-value" }, f.value),
@@ -1372,6 +1382,10 @@ function factCard(f, byId) {
           { class: "fact-replaces" },
           S("miniapp.fact_replaces") + ": " + byId.get(f.replaces_fact_id).value,
         )
+      : null,
+    // Superseded link: show the value this fact was replaced by.
+    replacedBy
+      ? el("p", { class: "fact-replaces" }, S("miniapp.fact_replaced_by") + ": " + replacedBy)
       : null,
     supersedingFactId === f.id
       ? replaceForm(f)

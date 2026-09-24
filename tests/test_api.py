@@ -773,14 +773,17 @@ async def test_fact_supersede_flow(client: httpx.AsyncClient) -> None:
     by_id = {f["id"]: f for f in (await client.get("/api/v1/facts", headers=HEADERS)).json()}
     # The referenced fact keeps its state until the replacement is confirmed.
     assert by_id[fact_id]["status"] == "proposed"
+    assert by_id[fact_id]["superseded_by"] is None
     assert by_id[new["id"]]["status"] == "proposed"
     assert by_id[new["id"]]["replaces_fact_id"] == fact_id
 
-    # Confirming the replacement supersedes the old fact atomically.
+    # Confirming the replacement supersedes the old fact atomically and the
+    # list exposes the "replaced by" link (Mini App memory UX, SPEC §14).
     res = await client.post(f"/api/v1/facts/{new['id']}/confirm", headers=HEADERS)
     assert res.json()["status"] == "confirmed"
     by_id = {f["id"]: f for f in (await client.get("/api/v1/facts", headers=HEADERS)).json()}
     assert by_id[fact_id]["status"] == "superseded"
+    assert by_id[fact_id]["superseded_by"] == new["id"]
     assert by_id[new["id"]]["status"] == "confirmed"
 
 

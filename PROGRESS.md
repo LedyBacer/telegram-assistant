@@ -1,13 +1,42 @@
 # Progress
 
-Status: V3 PRIORITY 33 COMPLETE (Mini App action inbox inspection:
-kind icon, typed preview, payload-derived target info, expired reason
-(last_error) on the card, stale-confirm toast carrying the server's
-409 detail + re-render; live propose/confirm/reject flow preserved).
+Status: V3 PRIORITY 34 COMPLETE (Mini App memory UX: a pending
+replacement fact is visually distinguished from a plain proposal with
+a "замена" badge, and a superseded fact points at the fact that
+replaced it via a "Заменено на" line; all four fact statuses remain
+distinct and the confirm/reject/replace/delete flows are unchanged).
 P26 (do-not-redesign constraint) is carried by every change in this
 Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 34 (memory UX — distinguish confirmed/proposed/
-replacement/rejected/superseded facts in the Mini App).
+Next: V3 Priority 35 (searchable IANA timezone picker replacing the
+hardcoded TIMEZONES array).
+
+## V3 — Priority 34: Memory UX (fact statuses in the Mini App)
+
+- `src/assistant/api/schemas.py`: `FactOut` now exposes
+  `superseded_by: int | None`, so a superseded fact can name the fact
+  that replaced it (the column already existed on `UserFact` and is
+  set atomically by `services/facts.confirm_fact`).
+- `miniapp/app.js` `factCard`:
+  - a proposed fact with `replaces_fact_id` gets an extra
+    "замена"/"replacement" badge next to the "предложен" status badge,
+    distinguishing a pending replacement from a plain proposal;
+  - a superseded fact renders a "Заменено на: <value>" line (reusing
+    the `.fact-replaces` style) when the replacing fact is in the
+    current list.
+  - The four status badges (предложен/подтверждён/отклонён/заменён)
+    and all existing buttons/formats are untouched.
+- i18n (en+ru): `miniapp.fact_replacement`, `miniapp.fact_replaced_by`.
+- Tests:
+  - `tests/test_api.py::test_fact_supersede_flow` now asserts
+    `superseded_by is None` before the replacement is confirmed and
+    `superseded_by == <new id>` after.
+  - `e2e/tests/v2-features.e2e.ts` facts section: the proposed
+    replacement card must carry exactly one "замена" badge (status
+    badge asserted via `.first()`), and the superseded card must show
+    the replacing fact's value in its `.fact-replaces` line.
+
+Verified: full E2E suite 13 passed; `uv run pytest -q` 454 passed;
+`uv run ruff check .` clean; `node --check` on the ESM miniapp OK.
 
 ## V3 — Priority 33: Assistant action inbox inspection
 

@@ -250,6 +250,7 @@ class FactOut(ORMModel):
     confidence: float | None
     status: str
     replaces_fact_id: int | None
+    superseded_by: int | None
     created_at: datetime
 
 

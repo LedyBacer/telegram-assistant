@@ -295,6 +295,8 @@
   "miniapp.fact_replace": "Заменить",
   "miniapp.fact_replace_ph": "Новое значение",
   "miniapp.fact_replaces": "Заменяет",
+  "miniapp.fact_replacement": "замена",
+  "miniapp.fact_replaced_by": "Заменено на",
   "miniapp.proactive_title": "Проактивные уведомления",
   "miniapp.proactive_enabled": "Проактивные уведомления",
   "miniapp.proactive_weekly_review": "Еженедельный обзор (понедельник)",
