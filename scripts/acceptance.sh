@@ -286,6 +286,28 @@ step "21. Production auth has no test-auth bypass"
 uv run pytest "tests/test_minapp_shell.py::test_production_app_has_no_test_auth_bypass" -q
 uv run pytest "tests/test_minapp_shell.py::test_package_has_no_test_auth_module" -q
 
+step "21b. Mini App CDN policy (Flatpickr pinned 4.6.13, jsDelivr)"
+# V5 §10: the Mini App loads Flatpickr from the PINNED jsDelivr 4.6.13 assets
+# — exactly the three URLs the Playwright harness intercepts and serves from
+# node_modules/flatpickr (e2e/helpers/flatpickr-cdn.ts). Assert the shell
+# references those exact URLs, that the old vendored copy is gone, and that
+# the devDependency is pinned to the same version so the interception source
+# matches the CDN. Static check: no network, no server needed.
+FP_CSS="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css"
+FP_JS="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"
+FP_RU="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/ru.js"
+for url in "$FP_CSS" "$FP_JS" "$FP_RU"; do
+    grep -qF "$url" miniapp/index.html
+done
+if grep -q "vendor/flatpickr" miniapp/index.html; then
+    echo "FAIL: miniapp/index.html still references the vendored Flatpickr"; exit 1
+fi
+if [ -e miniapp/vendor/flatpickr ]; then
+    echo "FAIL: miniapp/vendor/flatpickr still present (must be removed for the CDN)"; exit 1
+fi
+node -e 'const p=require("./package.json"); if(p.devDependencies.flatpickr!=="4.6.13"){console.error("FAIL: flatpickr devDependency must be pinned to exactly 4.6.13, got "+p.devDependencies.flatpickr);process.exit(1);}'
+echo "OK: shell loads pinned flatpickr@4.6.13 from jsDelivr, vendor removed, devDependency pinned"
+
 step "22. Mini App Playwright E2E (Playwright acceptance stage)"
 # Run the E2E against the SAME throwaway PostgreSQL as steps 4-21 (NOT the
 # dev database) so the whole acceptance is self-contained on an empty

@@ -1,16 +1,19 @@
 import { expect, type Page } from "@playwright/test";
 import { installTelegramStub } from "./telegram-stub";
+import { installFlatpickrCdn } from "./flatpickr-cdn";
 import { createConsoleGuard } from "./console-guard";
 
 /**
- * Open the Mini App in a page: install the deterministic Telegram stub (before
- * any module runs), guard the console, navigate to the root, and wait until
- * the default (Today) view has rendered. Returns the console guard for the
- * caller to assert on at the end of the test.
+ * Open the Mini App in a page: install the deterministic Telegram stub and
+ * the pinned Flatpickr CDN interception (both before any module runs), guard
+ * the console, navigate to the root, and wait until the default (Today) view
+ * has rendered. Returns the console guard for the caller to assert on at the
+ * end of the test.
  */
 export async function openApp(page: Page, base: string) {
   const guard = createConsoleGuard(page, base);
   await installTelegramStub(page);
+  await installFlatpickrCdn(page);
 
   // Root must 307-redirect to /miniapp (the Mini App entry point).
   await page.goto("/", { waitUntil: "domcontentloaded" });

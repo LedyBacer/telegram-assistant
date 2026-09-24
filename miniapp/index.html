@@ -8,10 +8,14 @@
   />
   <meta name="theme-color" content="#ffffff" />
   <title>Ассистент</title>
-  <!-- Flatpickr is self-hosted (V3 P36): the CDN is not a production
-       dependency, so the Mini App works fully offline. MIT license in
-       miniapp/vendor/flatpickr/LICENSE.md. -->
-  <link rel="stylesheet" href="/miniapp/vendor/flatpickr/flatpickr.min.css" />
+  <!-- Flatpickr 4.6.13 from jsDelivr, PINNED (V5 §10 CDN policy): the exact
+       version is pinned in every asset URL so the Mini App never picks up an
+       unpinned/moved build. The three pinned URLs are asserted by the
+       "CDN policy" shell check in scripts/acceptance.sh, and the Playwright
+       E2E harness (e2e/helpers/flatpickr-cdn.ts) intercepts these exact URLs
+       to serve them from node_modules/flatpickr. MIT license:
+       node_modules/flatpickr/LICENSE. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css" />
   <link rel="stylesheet" href="/miniapp/styles.css" />
   <!--
     Telegram WebApp SDK. Inside the real Telegram client this exposes
@@ -22,8 +26,8 @@
     instead of this CDN script (and the CDN request is intercepted).
   -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="/miniapp/vendor/flatpickr/flatpickr.min.js"></script>
-  <script src="/miniapp/vendor/flatpickr/l10n/ru.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/ru.js"></script>
   <script type="module" src="/miniapp/app.js"></script>
 </head>
 <body>

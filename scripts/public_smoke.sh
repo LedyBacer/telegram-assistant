@@ -52,9 +52,8 @@ check "js/api.js" "$BASE_URL/miniapp/js/api.js" "200"
 check "js/ui.js" "$BASE_URL/miniapp/js/ui.js" "200"
 check "js/state.js" "$BASE_URL/miniapp/js/state.js" "200"
 check "js/telegram.js" "$BASE_URL/miniapp/js/telegram.js" "200"
-check "flatpickr.js" "$BASE_URL/miniapp/vendor/flatpickr.min.js" "200"
-check "flatpickr.css" "$BASE_URL/miniapp/vendor/flatpickr.min.css" "200"
-check "flatpickr-ru.js" "$BASE_URL/miniapp/vendor/flatpickr-russian.js" "200"
+# Flatpickr 4.6.13 is loaded from the pinned jsDelivr CDN (V5 §10), not served
+# by the API, so there are no /miniapp/vendor/flatpickr asset checks here.
 
 # 3. Health endpoint (read-only).
 check "health" "$BASE_URL/healthz" "200"
@@ -66,6 +65,21 @@ if printf '%s' "$html" | grep -q 'app.js' && printf '%s' "$html" | grep -q 'styl
   printf '  ok   %-28s shell references app.js + styles.css\n' "page load"
 else
   printf '  FAIL %-28s shell missing app.js/styles.css reference\n' "page load"
+  fail=1
+fi
+
+# 5. CDN policy (V5 §10): the shell must load Flatpickr from the PINNED
+#    jsDelivr 4.6.13 assets — exactly the three URLs the Playwright harness
+#    intercepts (e2e/helpers/flatpickr-cdn.ts). No unpinned/moved build.
+FP_CSS="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css"
+FP_JS="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"
+FP_RU="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/ru.js"
+if printf '%s' "$html" | grep -qF "$FP_CSS" \
+  && printf '%s' "$html" | grep -qF "$FP_JS" \
+  && printf '%s' "$html" | grep -qF "$FP_RU"; then
+  printf '  ok   %-28s shell loads pinned flatpickr@4.6.13 (jsDelivr)\n' "cdn policy"
+else
+  printf '  FAIL %-28s shell missing pinned flatpickr@4.6.13 jsDelivr assets\n' "cdn policy"
   fail=1
 fi
 
