@@ -19,7 +19,7 @@ import uuid
 
 from assistant.config import get_settings
 from assistant.db import dispose_engine, get_session_factory
-from assistant.logging import setup_logging
+from assistant.logging import log_context, setup_logging
 from assistant.models.jobs import BackgroundJob
 from assistant.services import digests as digests_service
 from assistant.services import files as files_service
@@ -112,15 +112,19 @@ class JobWorker:
                     job = await session.get(BackgroundJob, job_id)
                     if job is None:
                         return
-                try:
-                    await handler(session, job)
-                except Exception:
-                    # Release any in-flight handler transaction; the failure
-                    # record is written by _fail in a fresh session, so this
-                    # cleanup cannot disturb it.
-                    if session.in_transaction():
-                        await session.rollback()
-                    raise
+                # Bind job correlation (SPEC §23) so every log the handler
+                # emits — including nested AI/embedding/file-ingestion logs —
+                # carries the job id, type, and owning user for diagnosis.
+                with log_context(job_id=job_id, job_type=job_type, user_id=job.user_id):
+                    try:
+                        await handler(session, job)
+                    except Exception:
+                        # Release any in-flight handler transaction; the
+                        # failure record is written by _fail in a fresh
+                        # session, so this cleanup cannot disturb it.
+                        if session.in_transaction():
+                            await session.rollback()
+                        raise
             await self._complete(job_id, owner_token)
         except asyncio.CancelledError:
             # Leave the job running; lease expiry + recovery re-queue it.

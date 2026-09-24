@@ -1,12 +1,13 @@
 """FastAPI application entry point: ``python -m assistant.api.main``."""
 
 import os
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -14,7 +15,7 @@ from assistant.api.readiness import check_readiness
 from assistant.api.routes import router as api_router
 from assistant.config import get_settings
 from assistant.db import dispose_engine
-from assistant.logging import setup_logging
+from assistant.logging import log_context, setup_logging
 
 
 @asynccontextmanager
@@ -39,6 +40,18 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Smart Personal Assistant", version="0.1.0", lifespan=_lifespan
     )
+
+    # Request/correlation id: reuse an incoming X-Request-Id (so a caller can
+    # trace its request) or mint one; it is bound into the log context for the
+    # whole request and echoed back in the response header (SPEC §23).
+    @app.middleware("http")
+    async def _request_id_middleware(request: Request, call_next) -> JSONResponse:
+        request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+        with log_context(request_id=request_id):
+            response = await call_next(request)
+        response.headers["X-Request-Id"] = request_id
+        return response
+
     app.include_router(api_router)
 
     @app.get("/healthz")

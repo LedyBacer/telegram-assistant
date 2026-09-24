@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Protocol, TypeVar, runtime_checkable
 
 from openai import APIError, APITimeoutError, AsyncOpenAI, Timeout
@@ -214,6 +215,7 @@ class OpenAIChatProvider:
         return {"extra_body": {"chat_template_kwargs": template_kwargs}}
 
     async def chat(self, *, system: str, messages: list[Message]) -> str:
+        started = time.monotonic()
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
@@ -234,6 +236,11 @@ class OpenAIChatProvider:
             ) from exc
         except APIError as exc:
             raise AIProviderError(f"chat completion failed: {exc}") from exc
+        logger.info(
+            "chat ok (model=%s duration_s=%.2f)",
+            self._model,
+            time.monotonic() - started,
+        )
         return response.choices[0].message.content or ""
 
     async def chat_structured(
@@ -248,6 +255,7 @@ class OpenAIChatProvider:
         fences, and trailing prose all tolerated) before Pydantic validation.
         """
         system_with_json = system + JSON_OUTPUT_INSTRUCTION
+        started = time.monotonic()
         last_error: Exception | None = None
         conversation: list[Message] = list(messages)
         for attempt in range(1, self._max_attempts + 1):
@@ -296,7 +304,16 @@ class OpenAIChatProvider:
             content = response.choices[0].message.content or ""
             try:
                 data = extract_json_object(content)
-                return schema.model_validate(data)
+                result = schema.model_validate(data)
+                logger.info(
+                    "structured ok (model=%s schema=%s attempt=%d/%d duration_s=%.2f)",
+                    self._model,
+                    schema.__name__,
+                    attempt,
+                    self._max_attempts,
+                    time.monotonic() - started,
+                )
+                return result
             except (ValueError, ValidationError) as exc:
                 last_error = exc
                 logger.info(
@@ -366,6 +383,7 @@ class OpenAIEmbeddingProvider:
     async def _embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        started = time.monotonic()
         try:
             # Only the OpenAI-compatible request shape (model + input);
             # llama.cpp /v1/embeddings does not support OpenAI-specific
@@ -385,6 +403,12 @@ class OpenAIEmbeddingProvider:
                     f"{self._dimensions}, got {len(vector)}"
                 )
             vectors.append(vector)
+        logger.info(
+            "embed ok (model=%s n=%d duration_s=%.2f)",
+            self._model,
+            len(texts),
+            time.monotonic() - started,
+        )
         return vectors
 
 

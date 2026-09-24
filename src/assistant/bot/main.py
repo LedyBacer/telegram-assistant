@@ -5,7 +5,7 @@ import asyncio
 from aiogram import Bot, Dispatcher
 
 from assistant.bot.handlers import private_guard, router
-from assistant.bot.middlewares import DBSessionMiddleware
+from assistant.bot.middlewares import DBSessionMiddleware, LogContextMiddleware
 from assistant.config import get_settings
 from assistant.db.engine import dispose_engine
 from assistant.logging import setup_logging
@@ -29,7 +29,11 @@ async def _run() -> None:
 
     bot = create_bot()
     dp = Dispatcher()
+    # Log context is registered first so it is the outermost middleware and the
+    # user/chat ids are present for every log in the update.
+    dp.message.outer_middleware(LogContextMiddleware())
     dp.message.outer_middleware(DBSessionMiddleware())
+    dp.callback_query.outer_middleware(LogContextMiddleware())
     dp.callback_query.outer_middleware(DBSessionMiddleware())
     # The private-chats guard must be checked before any bot handler
     # (V3 P25): non-private updates get a localized explanation and stop.

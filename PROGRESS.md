@@ -1,10 +1,81 @@
 # Progress
 
-Status: V3 PRIORITIES 38–45 COMPLETE (P45: `/healthz` + `/readyz` —
-`/readyz` returns 200 only when PostgreSQL is reachable; AI providers are
-reported as ok/degraded components and never gate readiness, so a
-chat-only deployment stays ready; the probe performs no inference).
-Next: V3 Priority 46.
+Status: V3 PRIORITIES 38–46 COMPLETE (P46: structured JSON logging with
+per-unit context — request id (API), job id/type + user id (worker),
+user/chat id (bot) — propagated via `contextvars`; secrets (bot token, API
+keys) are redacted from every message and exception string; AI/embedding
+calls log model + duration + status).
+Next: V3 Priority 47.
+
+## V3 — Priority 46: structured / contextual logging
+
+Logs were previously plain text (`asctime levelname name: message`) with no
+correlation: an operator could not tie a worker failure, an AI call, or an API
+request to the user/job/request that produced them, and there was no guard
+against a credential leaking into a log line. SPEC §23 asks for structured or
+consistently formatted logs with useful context (component, user, job, file,
+request/correlation id, exception details), secrets never logged, and
+diagnosable worker failures.
+
+Design (see `docs/ASSUMPTIONS.md` row 42):
+- **One-line JSON records.** `assistant.logging` emits each record as a JSON
+  object: `ts` (UTC ISO-8601, ms), `level`, `logger` (the **component**, e.g.
+  `assistant.worker`), `msg`, and `exc` (redacted exception trace) when
+  present. Cheap to ship to any log aggregator and greppable by hand.
+- **Per-unit context via `contextvars`.** A single `ContextVar` holds the
+  active correlation fields. `log_context(**fields)` is a context manager that
+  merges fields for a block and restores the previous context on exit (so a
+  job running inside a request keeps both ids). A `ContextFilter` stamps the
+  active context onto every record; the formatter lifts the known fields
+  (`request_id`, `user_id`, `chat_id`, `job_id`, `job_type`, `file_id`) to the
+  top level and passes through any extras.
+- **Request id (API).** A FastAPI HTTP middleware in `create_app()` reuses an
+  incoming `X-Request-Id` (for caller-side tracing) or mints a `uuid4`, binds
+  it into the log context for the whole request, and echoes it back in the
+  response header.
+- **Job context (worker).** `JobWorker._run_job` wraps the handler in
+  `log_context(job_id, job_type, user_id)` **after** loading the job row, so
+  every log the handler emits — including nested AI/embedding/file-ingestion
+  logs — carries the job and owning user. This is what makes worker failures
+  diagnosable.
+- **User context (bot).** A new `LogContextMiddleware` binds `user_id` and
+  `chat_id` from the update and is registered as the outermost middleware
+  (before `DBSessionMiddleware`), so the ids are present for every log in the
+  update, including session-open failures and guard rejections.
+- **Secrets are never logged.** A redaction pass replaces the configured bot
+  token and API keys in every message *and* exception string with
+  `[REDACTED]` (values read live from `Settings`, cached until they change,
+  and guarded so a logging path never raises). The existing AI-provider
+  `_redact_for_log` (which strips `api_key=`/`authorization`/`bearer` from SDK
+  exception text) is kept on top of this.
+- **AI/embedding timing.** Successful `chat`, `chat_structured`, and `embed`
+  calls log `model` + `duration_s` (+ `schema`/`attempt`/`n` where relevant),
+  complementing the existing timeout/error/rejected diagnostics.
+
+Changes:
+- `src/assistant/logging.py` (rewritten): `JsonFormatter`, `ContextFilter`,
+  `current_context`/`bind_context`/`clear_context`/`log_context`, the
+  `_SecretRedactor`, and `setup_logging(level)` wiring a JSON handler onto the
+  root logger (idempotent; app `assistant.*` loggers propagate to it).
+- `src/assistant/api/main.py`: request-id HTTP middleware (bind + echo header)
+  and the `log_context` import.
+- `src/assistant/worker/main.py`: `_run_job` binds job/user context.
+- `src/assistant/bot/middlewares.py`: new `LogContextMiddleware`;
+  `src/assistant/bot/main.py` registers it outermost on `message` and
+  `callback_query`.
+- `src/assistant/ai/provider.py`: duration/status info logs on successful
+  `chat`/`chat_structured`/`embed` (`import time`).
+- `tests/test_logging.py` (new, 7 tests): JSON record shape, context
+  propagation, nested-context restore, secret redaction in message and
+  exception, exception detail capture, and that `setup_logging` wires a JSON
+  handler (with root state saved/restored).
+
+Verified: `tests/test_logging.py` 7 passed; live integration check — a
+request logged `{"...","logger":"assistant.logprobe","msg":"probe inside
+request","request_id":"probe-xyz"}` and the response echoed
+`x-request-id: probe-xyz` (minted when absent, `my-trace-abc` echoed when
+provided); `uv run ruff check .` clean; full `uv run pytest -q` 493 passed
+(486 prior + 7 new); `npm run test:e2e` 14 passed.
 
 ## V3 — Priority 45: liveness and readiness probes
 
