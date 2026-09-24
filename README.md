@@ -120,7 +120,7 @@ the whole application boots and stays fully useful:
 - **Document search degrades to lexical-only**: the vector arm is skipped
   by construction, keyword (full-text) results are returned as before, and
   the embedding provider is never called.
-- **Readiness** reports the `ai_embedding` component as `degraded` (never
+- **Readiness** reports the `ai_embedding` component as `unconfigured` (never
   `not_ready`) — a chat-only deployment is healthy by design.
 - Chat, actions, facts, workouts, calendar, reminders, digests, and every
   other feature are unaffected. (An `files.ingest` job enqueued before a

@@ -233,9 +233,29 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   alembic run) — confirmed via `git diff 4a57308..HEAD --
   .github/workflows/ci.yml`. **Remote CI verification pending** until those
   commits are pushed (a manual/user action).
+- **§39** Readiness AI-provider terminology corrected from `ok`/`degraded` to
+  `configured`/`unconfigured`. The `/readyz` probe performs **no inference**
+  — it only checks Postgres connectivity (`SELECT 1`, 3 s timeout) and reads
+  provider configuration from settings — so the previous `ok`/`degraded`
+  words falsely implied it could see provider *health* it cannot check. The
+  terms now state exactly what is checked: `ai_chat` is `configured`/
+  `unconfigured` on `settings.chat_api_key` and `ai_embedding` on
+  `settings.embedding_configured`; an `unconfigured` component (a chat-only
+  deployment) never makes the service `not_ready` (readiness stays gated
+  solely on Postgres reachability). PostgreSQL keeps its `ok`/`error`
+  wording (that one *is* a live connectivity probe). Updated
+  `src/assistant/api/readiness.py` (docstring + component statuses),
+  `src/assistant/api/main.py` (the `/readyz` comment),
+  `tests/test_readiness.py` (renamed the two AI tests to
+  `test_readyz_ai_unconfigured_is_not_unready` /
+  `test_readyz_ai_configured_when_credentials_present` with matching
+  assertions), the `README.md` chat-only bullet, and `docs/ASSUMPTIONS.md`
+  row 41. Verified: `tests/test_readiness.py` 5 passed; Ruff clean on the
+  touched files.
 
-**Next (in order):** §39 readiness terminology, logging correlation;
-§40-47 named regression tests, docs sync, Definition of Done.
+**Next (in order):** §40 logging correlation + X-Request-Id bounding;
+§4-8 lease safety, §9-11 proactivity, §12-16 turn protocol; §41-47 named
+regression tests, docs sync, Definition of Done.
 
 
 ## V3 — Priority 55: Definition of Done (final verification)

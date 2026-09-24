@@ -1,12 +1,14 @@
-"""Readiness probe: Postgres is a hard dependency; AI providers are degraded.
+"""Readiness probe: Postgres is a hard dependency; AI providers report config.
 
 ``/healthz`` (liveness) is a plain "process is up" answer. ``/readyz``
 (readiness) verifies the one hard dependency — a reachable PostgreSQL — and
-reports each AI provider's availability as a component. An unconfigured AI
-provider is **degraded**, never *unready*: a chat-only deployment (no
-embedding provider) is still ready to serve, and a missing chat key is a
-misconfiguration surfaced as degraded rather than a readiness failure, so an
-operator can see it without taking the service out of rotation.
+reports each AI provider's configuration as a component. Because the probe
+does **no inference**, it can only say whether a provider is *configured*,
+not whether it is reachable: an unconfigured provider is reported as
+**unconfigured**, never *unready*: a chat-only deployment (no embedding
+provider) is still ready to serve, and a missing chat key is a
+misconfiguration surfaced as unconfigured rather than a readiness failure, so
+an operator can see it without taking the service out of rotation.
 
 The probe performs **no inference**: it checks Postgres connectivity
 (``SELECT 1``) and reads provider configuration from settings only. It never
@@ -44,7 +46,8 @@ async def check_readiness(db_probe: DbProbe | None = None) -> tuple[bool, dict]:
     """Return ``(ready, payload)`` for the ``/readyz`` response.
 
     ``ready`` is True only when PostgreSQL is reachable. AI providers are
-    reported as ``ok``/``degraded`` components and do not affect ``ready``.
+    reported as ``configured``/``unconfigured`` components (config-only — the
+    probe performs no inference) and do not affect ``ready``.
     """
     settings = get_settings()
     probe = db_probe if db_probe is not None else _probe_postgres
@@ -59,7 +62,11 @@ async def check_readiness(db_probe: DbProbe | None = None) -> tuple[bool, dict]:
 
     components = {
         "postgres": {"status": postgres_status},
-        "ai_chat": {"status": "ok" if bool(settings.chat_api_key) else "degraded"},
-        "ai_embedding": {"status": "ok" if settings.embedding_configured else "degraded"},
+        "ai_chat": {
+            "status": "configured" if bool(settings.chat_api_key) else "unconfigured"
+        },
+        "ai_embedding": {
+            "status": "configured" if settings.embedding_configured else "unconfigured"
+        },
     }
     return ready, {"status": "ready" if ready else "not_ready", "components": components}

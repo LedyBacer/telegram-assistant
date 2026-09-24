@@ -63,8 +63,8 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     # Readiness: 200 only when PostgreSQL is reachable. AI providers are
-    # reported as ok/degraded components and never gate readiness; the probe
-    # performs no inference (see assistant.api.readiness).
+    # reported as configured/unconfigured components and never gate readiness;
+    # the probe performs no inference (see assistant.api.readiness).
     @app.get("/readyz")
     async def readyz() -> JSONResponse:
         ready, payload = await check_readiness()

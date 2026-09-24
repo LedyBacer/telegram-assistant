@@ -1,8 +1,9 @@
 """P45 health/readiness probes.
 
 ``/healthz`` is liveness (process up). ``/readyz`` is readiness: 200 only when
-PostgreSQL is reachable; AI providers are reported as ok/degraded components
-and never gate readiness. The probe performs no inference.
+PostgreSQL is reachable; AI providers are reported as configured/unconfigured
+components (config-only) and never gate readiness. The probe performs no
+inference.
 """
 
 from __future__ import annotations
@@ -71,9 +72,9 @@ async def test_readyz_not_ready_when_postgres_down() -> None:
     assert payload["components"]["postgres"]["status"] == "error"
 
 
-async def test_readyz_ai_degraded_is_not_unready(monkeypatch) -> None:
-    """An unconfigured AI provider degrades a component but keeps the service
-    ready (a chat-only deployment is fully usable)."""
+async def test_readyz_ai_unconfigured_is_not_unready(monkeypatch) -> None:
+    """An unconfigured AI provider is reported as unconfigured but keeps the
+    service ready (a chat-only deployment is fully usable)."""
     settings = get_settings()
     monkeypatch.setattr(settings, "chat_api_key", None)
     monkeypatch.setattr(settings, "embedding_api_key", None)
@@ -81,12 +82,12 @@ async def test_readyz_ai_degraded_is_not_unready(monkeypatch) -> None:
     ready, payload = await check_readiness()  # real, reachable test Postgres
     assert ready is True
     assert payload["status"] == "ready"
-    assert payload["components"]["ai_chat"]["status"] == "degraded"
-    assert payload["components"]["ai_embedding"]["status"] == "degraded"
+    assert payload["components"]["ai_chat"]["status"] == "unconfigured"
+    assert payload["components"]["ai_embedding"]["status"] == "unconfigured"
 
 
-async def test_readyz_ai_ok_when_configured() -> None:
+async def test_readyz_ai_configured_when_credentials_present() -> None:
     _, payload = await check_readiness()
-    # The test env provides OPENAI_API_KEY, so both providers report ok.
-    assert payload["components"]["ai_chat"]["status"] == "ok"
-    assert payload["components"]["ai_embedding"]["status"] == "ok"
+    # The test env provides OPENAI_API_KEY, so both providers report configured.
+    assert payload["components"]["ai_chat"]["status"] == "configured"
+    assert payload["components"]["ai_embedding"]["status"] == "configured"
