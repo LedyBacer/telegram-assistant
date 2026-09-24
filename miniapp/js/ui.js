@@ -9,7 +9,11 @@
 
 import { localeCode, S } from "./state.js";
 import { haptic } from "./telegram.js";
-import { fmtDT, userWallAsBrowserDate } from "./time.js";
+import {
+  fmtDT,
+  wallStringToBrowserDatePreservingFields,
+  currentUserWallBrowserDate,
+} from "./time.js";
 
 export { fmtDT };
 
@@ -290,10 +294,11 @@ function hasFlatpickr() {
 }
 
 /**
- * Pick a date and time (24h, localized). Resolves ISO string or null.
- * @param {string|null} [initialISO]
+ * Pick a date and time (24h, localized). Resolves a naive user-TZ wall
+ * clock "YYYY-MM-DDTHH:MM" string, or null.
+ * @param {string|null} [initialWall] naive user-TZ wall clock, not an instant
  */
-export function pickDateTime(initialISO = null) {
+export function pickDateTime(initialWall = null) {
   return new Promise((resolve) => {
     const holder = el("div", { class: "picker-holder" });
     const inputNode = el("input", {
@@ -319,11 +324,15 @@ export function pickDateTime(initialISO = null) {
         allowInput: false,
         dateFormat: "Y-m-d H:i",
         locale: flatpickrLocale(),
-        // Seed the (browser-local) picker with the USER-TZ wall clock of
-        // the instant, so a user in a foreign browser zone still sees and
-        // edits their own wall time. The onClose "Y-m-d H:i" string is then
-        // exactly the naive user-TZ wall clock the backend expects.
-        defaultDate: initialISO ? (userWallAsBrowserDate(initialISO) || new Date()) : new Date(),
+        // Seed the (browser-local) picker with the USER-TZ wall clock. The
+        // initial value is a NAIVE wall string, so it is mapped to a browser
+        // Date by preserving its fields — never via an instant conversion,
+        // which would drift it by the browser/user offset (V4 §25). An empty
+        // picker defaults to the user's current wall time, not the browser's.
+        defaultDate: initialWall
+          ? wallStringToBrowserDatePreservingFields(initialWall) ||
+            currentUserWallBrowserDate()
+          : currentUserWallBrowserDate(),
         onClose: (dates, str) => {
           // Defer destroy(): onClose fires from inside flatpickr's own
           // close(), which keeps referencing calendarContainer after we
@@ -379,7 +388,12 @@ export function pickTime(initial = null) {
         allowInput: false,
         dateFormat: "H:i",
         locale: flatpickrLocale(),
-        defaultDate: initial ? new Date(`1970-01-01T${initial}:00`) : new Date(),
+        // `initial` is a naive "HH:MM" wall value; a fixed 1970 anchor keeps
+        // only the H:i fields meaningful for a no-calendar picker. An empty
+        // picker defaults to the user's current wall time (V4 §25).
+        defaultDate: initial
+          ? new Date(`1970-01-01T${initial}:00`)
+          : currentUserWallBrowserDate(),
         onClose: (dates, str) => {
           // Defer destroy(): see pickDateTime — destroying synchronously from
           // inside flatpickr's close() throws on the nulled calendarContainer.

@@ -1,13 +1,21 @@
-/* User-timezone date helpers (V3 P28).
+/* User-timezone date helpers (V3 P28, V4 §25).
  *
  * Every date and time the app shows or queries with is expressed in the
  * USER's configured timezone (`state.me.settings.timezone`), never the
  * browser's: a user with a Moscow account on a device set to Amsterdam
  * must still see Moscow dates, Moscow day boundaries in the calendar, and
- * Moscow times in listings. Datetime *instants* travel as ISO strings with
- * an offset; user-TZ *wall-clock* values are naive "YYYY-MM-DD[THH:MM]"
- * strings — the backend interprets naive datetimes in the user's timezone,
- * so what the user picks in the picker is what gets stored.
+ * Moscow times in listings.
+ *
+ * Two distinct concepts are kept strictly separate:
+ *
+ *   1. an AWARE instant (backend ISO with an offset) — converted to the
+ *      user's wall clock via isoToWall / instantIsoToUserWallBrowserDate;
+ *   2. a NAIVE user-TZ wall-clock form value ("YYYY-MM-DD[THH:MM]") — the
+ *      backend interprets it in the user's timezone. A naive wall value is
+ *      NEVER an absolute instant, so it is never run through `new Date(...)`
+ *      + timezone conversion (that would drift it by the browser/user
+ *      offset); wallStringToBrowserDatePreservingFields builds the picker
+ *      Date from its fields directly.
  */
 
 import { state, localeCode } from "./state.js";
@@ -148,15 +156,62 @@ export function isoToWall(iso) {
 }
 
 /**
- * Browser-local Date whose wall display equals the user-TZ wall clock of
- * the instant — used to seed flatpickr, which renders in browser-local
- * time. The picker's "Y-m-d H:i" output is then exactly user-TZ wall.
+ * Parse a naive user-TZ wall-clock string ("YYYY-MM-DD[THH:MM]") into its
+ * individual date/time fields. Returns null when the value carries no full
+ * date. Time defaults to noon (flatpickr's `defaultHour`).
  */
-export function userWallAsBrowserDate(iso) {
-  const wall = isoToWall(iso);
-  if (!wall) return null;
-  const date = new Date(`${wall.replace(" ", "T")}:00`);
+function wallFields(wall) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(
+    String(wall || "")
+  );
+  if (!match) return null;
+  return {
+    y: Number(match[1]),
+    m: Number(match[2]) - 1, // Date months are 0-based
+    d: Number(match[3]),
+    h: match[4] !== undefined ? Number(match[4]) : 12,
+    mi: match[5] !== undefined ? Number(match[5]) : 0,
+  };
+}
+
+/**
+ * Build a browser-local Date from user-TZ wall-clock fields. flatpickr
+ * renders in the BROWSER's local time, so a picker seeded with a Date whose
+ * local fields equal the user's wall fields will display exactly that wall
+ * clock (and its "Y-m-d H:i" output is exactly the naive user-TZ string the
+ * backend expects).
+ */
+function _wallToBrowserDate(wall) {
+  const f = wallFields(wall);
+  if (!f) return null;
+  const date = new Date(f.y, f.m, f.d, f.h, f.mi, 0, 0);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * AWARE-instant → user-wall browser Date. The only helper that performs an
+ * instant→user-TZ conversion; feed it aware ISO strings from the backend.
+ */
+export function instantIsoToUserWallBrowserDate(instantIso) {
+  return _wallToBrowserDate(isoToWall(instantIso));
+}
+
+/**
+ * NAIVE user-TZ wall string → browser Date, preserving every field exactly.
+ * A wall value is not an absolute instant, so it must NOT be run through
+ * `new Date(wall)` + timezone conversion — that drifts the picker by the
+ * browser/user offset (V4 §25).
+ */
+export function wallStringToBrowserDatePreservingFields(wall) {
+  return _wallToBrowserDate(wall);
+}
+
+/**
+ * The CURRENT instant rendered as a user-TZ wall browser Date — the correct
+ * default for an empty picker (the user's "now", not the browser's).
+ */
+export function currentUserWallBrowserDate(now = new Date()) {
+  return instantIsoToUserWallBrowserDate(now.toISOString());
 }
 
 /**
