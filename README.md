@@ -110,7 +110,7 @@ CHAT_BASE_URL=http://llm-host:18085/v1
 CHAT_API_KEY=replace-me
 CHAT_MODEL=qwen3.5-9b-64k
 CHAT_TIMEOUT_SECONDS=180
-CHAT_THINKING_ENABLED=true
+CHAT_THINKING_ENABLED=false
 
 EMBEDDING_BASE_URL=http://llm-host:18086/v1
 EMBEDDING_API_KEY=replace-me
@@ -141,7 +141,8 @@ shape, so llama.cpp's `/v1/embeddings` is fully supported.
   error message; the timeout is logged with its configured value. The
   setting applies to chat and structured generation only — the embedding
   provider keeps its own (short) timeout.
-- **`CHAT_THINKING_ENABLED`** (default `true`) — Qwen *thinking*
+- **`CHAT_THINKING_ENABLED`** (default `false` — fast/no-think; set `true`
+  for the optional reasoning profile) — Qwen *thinking*
   (reasoning) mode, a llama.cpp/Qwen provider behavior, not a per-user
   preference. The mode is sent **explicitly** with every chat/structured
   completion via the documented llama.cpp OpenAI-compatible request field

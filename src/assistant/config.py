@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     # Core
     database_url: str = Field(description="SQLAlchemy async URL (asyncpg)")
     public_base_url: str = Field(description="Public base URL used in bot replies and the Mini App")
-    app_timezone: str = "UTC"
     log_level: str = "INFO"
 
     # Telegram

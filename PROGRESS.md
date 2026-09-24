@@ -1,11 +1,34 @@
 # Progress
 
-Status: V3 PRIORITIES 38–47 COMPLETE (P47: split `bot/handlers.py` and
-`api/routes.py` into focused per-domain router packages — `bot/handlers/` and
-`api/routes/` — preserving every API path, the exact bot handler order,
-dispatcher wiring, and the private-chat guard; 493 tests / 14 E2E / acceptance
-all green).
-Next: V3 Priority 48.
+Status: V3 PRIORITIES 38–48 COMPLETE (P48: removed the dead `APP_TIMEZONE`
+setting and audited every env var for use, defaults, and README parity —
+`app_timezone` was the only unused field; corrected the README
+`CHAT_THINKING_ENABLED` default `true` → `false`; 493 tests / 14 E2E /
+acceptance all green).
+Next: V3 Priority 49.
+
+## V3 — Priority 48: remove dead config, audit env vars
+
+- **Removed `APP_TIMEZONE` / `app_timezone`.** A full audit of every
+  `Settings` field found it is the only one with zero read sites: every
+  "today" boundary (morning digest, overdue/workout proactivity, workout
+  stats, calendar grouping, chat turn context) resolves the per-user IANA
+  timezone via `_user_tz(user)` and never reads an app-wide timezone. Deleted
+  the field from `src/assistant/config.py` and the `APP_TIMEZONE=UTC` line
+  from `.env.example`. SPEC §3 lists `APP_TIMEZONE` under "at minimum
+  support"; the app never consulted it, so honoring that line would only add
+  a misleading unused knob — `SPEC.md` is left untouched (recorded in
+  `docs/ASSUMPTIONS.md` row 44).
+- **README parity fix.** The README documented `CHAT_THINKING_ENABLED` as
+  default `true` while `config.py` and `.env.example` both default it to
+  `false` (the fast/no-think profile, P41). Corrected the default and the
+  example block to `false`.
+- **Audit result.** Every remaining `Settings` field has at least one usage
+  site and a default (or is a required field: `database_url`,
+  `public_base_url`, `telegram_bot_token`), and all have README/`.env.example`
+  parity.
+- **Verification.** Ruff clean; `FILE_STORAGE_DIR=$(mktemp -d) timeout 560
+  uv run pytest -q` → 493 passed; `npm run test:e2e` → 14 passed.
 
 ## V3 — Priority 47: split the bot handlers and API routes into domain routers
 
