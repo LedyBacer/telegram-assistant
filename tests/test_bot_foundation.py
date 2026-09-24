@@ -278,7 +278,7 @@ async def test_on_text_stores_chat_message(
     # This test asserts a single outgoing message; the thinking status UX
     # is covered in tests/test_thinking_ux.py.
     monkeypatch.setattr(
-        handlers,
+        handlers.common,
         "get_settings",
         lambda: SimpleNamespace(
             chat_thinking_enabled=False, public_base_url="https://app.test"

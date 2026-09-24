@@ -1,11 +1,54 @@
 # Progress
 
-Status: V3 PRIORITIES 38–46 COMPLETE (P46: structured JSON logging with
-per-unit context — request id (API), job id/type + user id (worker),
-user/chat id (bot) — propagated via `contextvars`; secrets (bot token, API
-keys) are redacted from every message and exception string; AI/embedding
-calls log model + duration + status).
-Next: V3 Priority 47.
+Status: V3 PRIORITIES 38–47 COMPLETE (P47: split `bot/handlers.py` and
+`api/routes.py` into focused per-domain router packages — `bot/handlers/` and
+`api/routes/` — preserving every API path, the exact bot handler order,
+dispatcher wiring, and the private-chat guard; 493 tests / 14 E2E / acceptance
+all green).
+Next: V3 Priority 48.
+
+## V3 — Priority 47: split the bot handlers and API routes into domain routers
+
+`bot/handlers.py` (~1053 lines) and `api/routes.py` (759 lines) had grown into
+monoliths: every domain (onboarding, facts, menu, settings, drafts, actions,
+calendar items, files, chat on the bot side; me, calendar, workouts, files,
+reminders, facts, actions, settings, i18n on the API side) lived in one
+module, so an unrelated change touched a thousand-line file and the
+handler/route list was hard to review. SPEC §47 asks for focused modules per
+domain, with the public surface (paths, handler order, dispatcher wiring)
+preserved exactly.
+
+Design (see `docs/ASSUMPTIONS.md` row 43):
+- **API: `api/routes/` package.** Each domain is a module with
+  `router = APIRouter(tags=["miniapp"])` and the verbatim route bodies from the
+  old single router. `common.py` holds the shared helpers (`_not_found`,
+  `_bad_request`, `_user_tz`, `_aware`). The package `__init__.py` builds
+  `router = APIRouter(prefix="/api/v1", ...)` and `include_router`s the nine
+  sub-routers in the original declaration order. `api/main.py`
+  (`from assistant.api.routes import router as api_router`) is unchanged.
+- **Bot: `bot/handlers/` package.** `common.py` holds the `logger`, the
+  `private_guard` router, `TaskDraft`, and every shared helper. Each domain
+  module defines `router = Router(name="<domain>")`. The package `__init__.py`
+  builds `router = Router(name="bot")`, sets the private-chats-only filter on
+  it, `include_router`s the nine sub-routers in the original handler order, and
+  re-exports every name the entrypoint, acceptance script, and tests import.
+  `bot/main.py` (`from assistant.bot.handlers import private_guard, router`) is
+  unchanged.
+- **Behavior preserved.** The API OpenAPI exposes the same 28 `/api/v1` paths;
+  the bot's message-handler order (commands → document → free-text) and
+  callback order match the original one-for-one. The private-only filter set on
+  the composed parent router propagates to every sub-router via aiogram's
+  `check_root_filters`, so group chats are still rejected before any handler.
+
+Splitting the module moved the monkeypatch seams in the bot tests: the suite
+now patches `handlers.common.get_settings` (the `_send_thinking` guard) and
+`handlers.chat.get_ai_provider` (the free-text/draft AI call) at the module
+where each symbol is actually resolved. The acceptance script's step 10 now
+points `FILE_STORAGE_DIR` at a writable temp dir so the file-upload test does
+not depend on `/data` being writable on the host.
+
+Verification: `uv run ruff check .` clean; 493 pytest pass; 14 E2E pass; the
+acceptance script (fresh Postgres) passes all 14 steps.
 
 ## V3 — Priority 46: structured / contextual logging
 

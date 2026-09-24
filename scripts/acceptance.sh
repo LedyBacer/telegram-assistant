@@ -158,7 +158,10 @@ step "9. NL structured task draft (llama.cpp-style responses)"
 uv run pytest tests/test_ai.py -q
 
 step "10. Full test suite (fresh database)"
-timeout 900 uv run pytest -q
+# The full suite includes the file-upload test, which writes to the configured
+# storage dir; point it at a writable temp dir (matching the canonical gate) so
+# the step does not depend on /data being writable in the host environment.
+timeout 900 env FILE_STORAGE_DIR="$(mktemp -d)" uv run pytest -q
 
 step "11. Ruff"
 uv run ruff check .

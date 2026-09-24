@@ -376,8 +376,8 @@ async def test_draft_russian_user_sees_thinking_status(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(True))
-    monkeypatch.setattr(handlers, "get_ai_provider", lambda: _draft_provider())
+    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
+    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: _draft_provider())
     message, sent = _make_message("Сегодня напомни мне позвонить Сергею в 17:00")
     state = _fake_state(DRAFT_STATE)
 
@@ -396,8 +396,8 @@ async def test_draft_english_user_sees_thinking_status(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "en")
-    monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(True))
-    monkeypatch.setattr(handlers, "get_ai_provider", lambda: _draft_provider())
+    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
+    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: _draft_provider())
     message, sent = _make_message("Remind me to call Sergey today at 17:00")
     state = _fake_state(DRAFT_STATE)
 
@@ -412,8 +412,8 @@ async def test_draft_no_status_message_when_thinking_disabled(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(False))
-    monkeypatch.setattr(handlers, "get_ai_provider", lambda: _draft_provider())
+    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(False))
+    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: _draft_provider())
     message, sent = _make_message("Сегодня напомни мне позвонить Сергею в 17:00")
     state = _fake_state(DRAFT_STATE)
 
@@ -429,9 +429,9 @@ async def test_draft_status_deleted_after_provider_error(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(True))
+    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
     monkeypatch.setattr(
-        handlers,
+        handlers.chat,
         "get_ai_provider",
         lambda: _DraftProvider(error=AIProviderError("provider down")),
     )
@@ -451,9 +451,9 @@ async def test_draft_status_deleted_after_timeout(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(True))
+    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
     monkeypatch.setattr(
-        handlers,
+        handlers.chat,
         "get_ai_provider",
         lambda: _DraftProvider(error=AITimeoutError("timed out after 180 s")),
     )
@@ -471,8 +471,8 @@ async def test_draft_delete_failure_does_not_break_the_flow(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(True))
-    monkeypatch.setattr(handlers, "get_ai_provider", lambda: _draft_provider())
+    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
+    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: _draft_provider())
     message, sent = _make_message_with_failing_delete(
         "Сегодня напомни мне позвонить Сергею в 17:00"
     )
@@ -490,7 +490,7 @@ async def test_chat_thinking_status_lifecycle(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "en")
-    monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(True))
+    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
     provider = _ChatProvider(reply="hello back")
     monkeypatch.setattr(turns_service, "get_ai_provider", lambda: provider)
     message, sent = _make_message("what's on my plate today?")
@@ -508,7 +508,7 @@ async def test_chat_no_status_when_thinking_disabled(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(False))
+    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(False))
     monkeypatch.setattr(turns_service, "get_ai_provider", lambda: _ChatProvider())
     message, sent = _make_message("привет")
     state = _fake_state(None)
@@ -523,7 +523,7 @@ async def test_chat_status_deleted_on_provider_error(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers, "get_settings", lambda: _fake_settings(True))
+    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
     monkeypatch.setattr(
         turns_service,
         "get_ai_provider",

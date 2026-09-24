@@ -319,7 +319,7 @@ async def test_task_text_in_digest_state_is_settings_value_not_ai(
     """A task-like message while in the digest-time state is parsed (and
     rejected) as a digest time; the AI provider must never be called."""
     spy = _SpyProvider()
-    monkeypatch.setattr(handlers, "get_ai_provider", lambda: spy)
+    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: spy)
     await upsert_user(session, user_id=41, first_name="Надя")
     await session.commit()
 
@@ -333,7 +333,7 @@ async def test_task_text_in_timezone_state_is_settings_value_not_ai(
     session, monkeypatch
 ) -> None:
     spy = _SpyProvider()
-    monkeypatch.setattr(handlers, "get_ai_provider", lambda: spy)
+    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: spy)
     await upsert_user(session, user_id=41, first_name="Надя")
     await session.commit()
 
@@ -349,7 +349,7 @@ async def test_settings_value_in_task_state_is_treated_as_task(
     """A settings-looking value (HH:MM) sent while in the task-draft state
     goes to the task flow, not to settings."""
     spy = _SpyProvider()
-    monkeypatch.setattr(handlers, "get_ai_provider", lambda: spy)
+    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: spy)
     await upsert_user(session, user_id=41, first_name="Надя")
     await session.commit()
 
@@ -369,7 +369,7 @@ async def test_cancel_in_task_state_clears_state_without_ai(
     session, monkeypatch
 ) -> None:
     spy = _SpyProvider()
-    monkeypatch.setattr(handlers, "get_ai_provider", lambda: spy)
+    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: spy)
     await upsert_user(session, user_id=41, first_name="Надя")
     await session.commit()
 

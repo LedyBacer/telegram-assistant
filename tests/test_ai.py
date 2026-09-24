@@ -678,7 +678,7 @@ async def _truncate_users(session) -> None:
 
 async def test_on_text_natural_language_uses_ai_draft(session, monkeypatch) -> None:
     monkeypatch.setattr(
-        handlers,
+        handlers.chat,
         "get_ai_provider",
         lambda: _FakeProvider(
             draft=AITaskDraft(
@@ -740,14 +740,14 @@ async def test_on_text_ai_failure_shows_help_and_stays_in_flow(
     # This test asserts a single outgoing message; the thinking status UX
     # is covered in tests/test_thinking_ux.py.
     monkeypatch.setattr(
-        handlers,
+        handlers.common,
         "get_settings",
         lambda: SimpleNamespace(
             chat_thinking_enabled=False, public_base_url="https://app.test"
         ),
     )
     monkeypatch.setattr(
-        handlers,
+        handlers.chat,
         "get_ai_provider",
         lambda: _FakeProvider(error=AIProviderError("model down")),
     )
@@ -787,7 +787,7 @@ async def test_on_text_relative_today_resolved_in_user_timezone(
     await session.commit()
 
     monkeypatch.setattr(
-        handlers,
+        handlers.chat,
         "get_ai_provider",
         lambda: _FakeProvider(
             draft=AITaskDraft(
