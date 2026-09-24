@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -38,6 +38,15 @@ REMINDER_SEND_JOB_TYPE = "reminder_send"
 MAX_REMINDERS_PER_ITEM = 5
 MIN_OFFSET_MINUTES = -24 * 60
 MAX_OFFSET_MINUTES = 24 * 60
+
+#: Hard cap on the candidates a free-text entity resolution will load
+#: (V4 §23) — mirrors :data:`assistant.services.calendar._RESOLVE_CANDIDATE_LIMIT`.
+_RESOLVE_CANDIDATE_LIMIT = 25
+
+
+def _escape_like(query: str) -> str:
+    """Escape LIKE metacharacters so a substring match stays a literal search."""
+    return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _idempotency_key(reminder_id: int) -> str:
@@ -250,31 +259,39 @@ async def resolve_reminder(
     reminders only. Returns ``(best, candidates)`` with the same semantics
     as :func:`assistant.services.calendar.resolve_item`: a unique match, an
     ambiguous candidate list (ordered by fire time then id), or no match.
+
+    Candidate selection is bounded at the SQL layer (V4 §23): exact match
+    first, then a bounded substring search, each returning at most
+    :data:`_RESOLVE_CANDIDATE_LIMIT` rows — the resolver never loads an
+    unbounded reminder history into Python.
     """
     query = text.strip().casefold()
     if not query:
         return None, []
-    rows = (
-        (
-            await session.execute(
-                select(Reminder).where(
-                    Reminder.user_id == user.id,
-                    Reminder.status == ReminderStatus.pending.value,
-                )
-            )
+    base = select(Reminder).where(
+        Reminder.user_id == user.id,
+        Reminder.status == ReminderStatus.pending.value,
+    )
+
+    def _candidates(match) -> Select[Reminder]:
+        return (
+            base.where(match)
+            .order_by(Reminder.fire_at, Reminder.id)
+            .limit(_RESOLVE_CANDIDATE_LIMIT)
         )
-        .scalars()
-        .all()
-    )
-    exact = [r for r in rows if r.message.casefold() == query]
-    if not exact:
-        exact = [r for r in rows if query in r.message.casefold()]
-    if len(exact) == 1:
-        return exact[0], exact
-    return (None, sorted(exact, key=lambda r: (r.fire_at, r.id))) if exact else (
-        None,
-        [],
-    )
+
+    message = func.lower(Reminder.message)
+    # Phase 1: exact case-insensitive match.
+    rows = list((await session.execute(_candidates(message == query))).scalars().all())
+    if not rows:
+        # Phase 2: bounded substring match (metachars escaped to stay literal).
+        like = f"%{_escape_like(query)}%"
+        rows = list(
+            (await session.execute(_candidates(message.like(like, escape="\\")))).scalars().all()
+        )
+    if len(rows) == 1:
+        return rows[0], rows
+    return (None, rows) if rows else (None, [])
 
 
 async def cancel_reminder(

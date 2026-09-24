@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.models.calendar_items import (
@@ -22,6 +22,15 @@ from assistant.models.calendar_items import (
 from assistant.models.users import User
 
 _ITEM_LIMIT = 200
+
+#: Hard cap on the candidates a free-text entity resolution will load
+#: (V4 §23) — the resolver must never scan an unbounded history into Python.
+_RESOLVE_CANDIDATE_LIMIT = 25
+
+
+def _escape_like(query: str) -> str:
+    """Escape LIKE metacharacters so a substring match stays a literal search."""
+    return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class _Unset:
@@ -290,41 +299,50 @@ async def resolve_item(
 ) -> tuple[CalendarItem | None, list[CalendarItem]]:
     """Deterministically resolve a free-text reference to a calendar item.
 
-    Matching is case-insensitive: exact title match wins over substring.
-    Only ``scheduled`` items are resolvable — the user no longer acts on
+    Candidate selection is bounded at the SQL layer (V4 §23): a
+    case-insensitive exact title match is tried first, then a bounded
+    case-insensitive substring search. Both return at most
+    :data:`_RESOLVE_CANDIDATE_LIMIT` rows in deterministic order (anchor date,
+    then id), so an unbounded item history is never loaded into Python. Only
+    ``scheduled`` items are resolvable — the user no longer acts on
     completed/cancelled rows. Returns ``(best, candidates)``:
 
     - exactly one match: ``(item, [item])``
-    - several matches: ``(None, candidates)`` — ambiguous, let the user
-      choose; candidates ordered by anchor date then id (deterministic)
+    - several matches: ``(None, candidates)`` — ambiguous, let the user choose
     - no match: ``(None, [])``
     """
     query = text.strip().casefold()
     if not query:
         return None, []
-    rows = (
-        (
-            await session.execute(
-                select(CalendarItem).where(
-                    CalendarItem.user_id == user.id,
-                    CalendarItem.status == ItemStatus.scheduled.value,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    base = select(CalendarItem).where(
+        CalendarItem.user_id == user.id,
+        CalendarItem.status == ItemStatus.scheduled.value,
     )
-    exact = [i for i in rows if i.title.casefold() == query]
-    if not exact:
-        exact = [i for i in rows if query in i.title.casefold()]
-    if len(exact) == 1:
-        return exact[0], exact
+    anchor = func.coalesce(
+        CalendarItem.starts_at,
+        CalendarItem.due_at,
+        datetime.max.replace(tzinfo=UTC),
+    )
 
-    def _anchor(item: CalendarItem) -> tuple[datetime, int]:
-        return (item.starts_at or item.due_at or datetime.max.replace(tzinfo=UTC),
-                item.id)
+    def _candidates(match) -> Select[CalendarItem]:
+        return (
+            base.where(match)
+            .order_by(anchor, CalendarItem.id)
+            .limit(_RESOLVE_CANDIDATE_LIMIT)
+        )
 
-    return (None, sorted(exact, key=_anchor)) if exact else (None, [])
+    title = func.lower(CalendarItem.title)
+    # Phase 1: exact case-insensitive match.
+    rows = list((await session.execute(_candidates(title == query))).scalars().all())
+    if not rows:
+        # Phase 2: bounded substring match (metachars escaped to stay literal).
+        like = f"%{_escape_like(query)}%"
+        rows = list(
+            (await session.execute(_candidates(title.like(like, escape="\\")))).scalars().all()
+        )
+    if len(rows) == 1:
+        return rows[0], rows
+    return (None, rows) if rows else (None, [])
 
 
 async def list_today(

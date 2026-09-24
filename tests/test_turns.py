@@ -454,6 +454,37 @@ async def test_resolve_item_ambiguous_lists_candidates(session: AsyncSession) ->
     assert [c.title for c in candidates] == ["Gym session", "Gym morning"]
 
 
+async def test_resolve_item_is_bounded_at_sql_layer(session: AsyncSession) -> None:
+    """V4 §23: a flood of matching items yields at most the hard candidate cap
+    (never an unbounded history loaded into Python), in deterministic order."""
+    user = await _user(session)
+    cap = calendar_service._RESOLVE_CANDIDATE_LIMIT
+    for i in range(cap + 20):
+        await calendar_service.create_item(session, user, title=f"Gym session {i:03d}")
+    await session.commit()
+
+    best, candidates = await calendar_service.resolve_item(
+        session, user, "gym session"
+    )
+    assert best is None  # ambiguous
+    assert len(candidates) == cap
+    # Same anchor for every item -> id tiebreak, so ordering is deterministic.
+    assert [c.id for c in candidates] == sorted(c.id for c in candidates)
+
+
+async def test_resolve_reminder_is_bounded_at_sql_layer(session: AsyncSession) -> None:
+    """V4 §23: the reminder resolver is bounded identically."""
+    user = await _user(session)
+    cap = reminders_service._RESOLVE_CANDIDATE_LIMIT
+    for i in range(cap + 20):
+        await _reminder(session, user, f"Standup reminder {i:03d}", 60 + i)
+    best, candidates = await reminders_service.resolve_reminder(
+        session, user, "standup reminder"
+    )
+    assert best is None
+    assert len(candidates) == cap
+
+
 async def test_resolve_item_ignores_completed(session: AsyncSession) -> None:
     user = await _user(session)
     item = await calendar_service.create_item(session, user, title="Done task")
