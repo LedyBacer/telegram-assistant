@@ -1,9 +1,58 @@
 # Progress
 
-Status: V3 PRIORITIES 38–52 COMPLETE (P52: all 28 §52 required regression
-tests audited — 25 already covered by the suite, 3 gaps added:
-conversational workout proposals, RU inflection/paraphrase retrieval).
-Next: V3 Priority 53.
+Status: V3 PRIORITIES 38–53 COMPLETE (P53: all 14 listed V2 behaviors
+verified intact — each has live regression coverage; 496 pytest + 14 E2E
+green, no code changes needed).
+Next: V3 Priority 55 (final verification + REPORT.md).
+
+## V3 — Priority 53: preserve successful V2 behavior
+
+Verified each listed V2 behavior is intact with live test coverage (no
+code changes were needed — the suite already pins all of these):
+
+- **Mini App initData HMAC verification** — `tests/test_init_data.py`
+  (17 tests: tampered user/auth_date, missing/malformed hash, duplicate
+  parameters, stale/future auth_date, wrong token, bot users) +
+  `tests/test_api.py` (missing/tampered/stale → 401).
+- **Strict per-user isolation** — user-scoping tests across calendar,
+  reminders, workouts, files/retrieval, actions, facts and chat context
+  (e.g. `test_build_context_excludes_other_users_data`,
+  `test_delete_file_scoped_to_owner`, `test_read_tools_are_user_scoped`).
+- **Shared Docker storage** — `tests/test_storage_shared.py` + the
+  compose `./storage` mount (validated by the Compose config step).
+- **Job leases/heartbeats** — `tests/test_jobs.py` (claim sets lease,
+  no double claim, renew only for owner, completion rejected after lease
+  expiry, abandoned-job recovery with backoff).
+- **No-think primary Qwen path** — `tests/test_thinking_ux.py`
+  (`CHAT_THINKING_ENABLED` default false; explicit llama.cpp
+  `enable_thinking` off; structured completions included).
+- **ru/en i18n** — `tests/test_i18n.py` (locale-key parity, RU fallback,
+  language at execution time, per-user persistence) + onboarding RU/EN
+  tests.
+- **Calendar reminder rescheduling** —
+  `tests/test_calendar.py::test_reschedule_recomputes_linked_reminders`.
+- **Tri-state PATCH** — `tests/test_api.py::test_item_patch_tri_state`,
+  `tests/test_calendar.py::test_update_item_tri_state`, and the
+  `edit-item.e2e.ts` spec.
+- **File retry** — `tests/test_api.py::test_file_retry_flow`,
+  `tests/test_files.py::test_ingest_failure_is_visible_and_retryable`,
+  and the `v2-features.e2e.ts` spec.
+- **Action inbox** — `action-inbox.e2e.ts` + the actions API/service
+  suites.
+- **Automatic memory proposal confirmation** —
+  `tests/test_turns.py` (fact proposals stay `proposed` until confirmed;
+  dedupe; superseded reproposal).
+- **Proactivity settings** — `tests/test_api.py::test_proactive_settings_api`
+  (+ validation), `tests/test_proactivity.py`, and the
+  `v2-features.e2e.ts` defaults/PATCH spec.
+- **Playwright accessibility/touch-target behavior** —
+  `e2e/tests/a11y.e2e.ts`.
+- **Telegram theming** — `e2e/tests/theme.e2e.ts` (light/dark/custom +
+  runtime change via computed styles).
+
+- **Verification.** `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q` →
+  496 passed; `npm run test:e2e` → 14 passed (last green run of the P51
+  acceptance); no regressions introduced by P51/P52.
 
 ## V3 — Priority 52: required regression tests
 
