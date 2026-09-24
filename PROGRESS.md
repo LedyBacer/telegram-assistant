@@ -213,10 +213,29 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   already exists and is run by step 18. Verified: the new step-14 snippet
   passes against the production factory; the TestPlainTextOutput suite is
   8/8.
+- **§37** The CI workflow self-lints with `rsteube/actionlint@v3.5.0` (added
+  in V4 §45 P1, commit `8ab39b1`) — a plain YAML parse would have missed the
+  `runner`-in-job-level-`env` context error that broke V3 CI. Verified
+  locally with a real actionlint v1.7.12 binary: `actionlint
+  .github/workflows/ci.yml` → **0 parse errors, 0 lint errors** (the
+  shellcheck/pyflakes inline sub-rules are not installed locally and are
+  provided by the CI action). No workflow change needed for §37.
+- **§38** A REAL GitHub Actions run is **not possible from this
+  environment** without pushing to `origin` (forbidden by QWEN.md; `gh` is
+  not installed; the run is single-turn/non-interactive), and I will not
+  claim CI green. Read-only check of the remote (no push): the only
+  recorded run is on the pushed baseline `4a57308` (V3) with
+  `conclusion=failure` — that run used the pre-V4 workflow whose
+  `FILE_STORAGE_DIR: ${{ runner.temp }}/ci-files` lived in job-level `env`
+  (where the `runner` context is unavailable). Local HEAD already contains
+  the three fixes that address it (actionlint self-lint, `runner` context
+  moved to step-level `env`, job-level `DATABASE_URL` for the pre-conftest
+  alembic run) — confirmed via `git diff 4a57308..HEAD --
+  .github/workflows/ci.yml`. **Remote CI verification pending** until those
+  commits are pushed (a manual/user action).
 
-**Next (in order):** §37-39 actionlint, real GitHub Actions run, readiness
-terminology, logging correlation; §40-47 named regression tests, docs sync,
-Definition of Done.
+**Next (in order):** §39 readiness terminology, logging correlation;
+§40-47 named regression tests, docs sync, Definition of Done.
 
 
 ## V3 — Priority 55: Definition of Done (final verification)
