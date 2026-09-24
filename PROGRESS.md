@@ -1,14 +1,33 @@
 # Progress
 
-Status: V3 PRIORITY 35 COMPLETE (searchable IANA timezone picker in
-the Mini App Settings: the hardcoded 15-zone TIMEZONES array is
-replaced by the browser's canonical Intl.supportedValuesOf("timeZone")
-list (400+ zones, no network, no new dependency) with a small fallback
-list; the bottom sheet gained a search filter with an empty state).
+Status: V3 PRIORITY 36 COMPLETE (Flatpickr self-hosted: the three
+jsDelivr CDN references in miniapp/index.html now point at
+miniapp/vendor/flatpickr/ — flatpickr.min.css, flatpickr.min.js,
+l10n/ru.js + the MIT LICENSE.md — so the Mini App has no external CDN
+dependency at runtime; the Docker image already copies miniapp/).
 P26 (do-not-redesign constraint) is carried by every change in this
 Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 36 (self-host Flatpickr instead of the jsDelivr CDN
-script in miniapp/index.html).
+Next: V3 Priority 37 (Today dashboard summary).
+
+## V3 — Priority 36: Self-hosted Flatpickr
+
+- `miniapp/vendor/flatpickr/` (new, pinned flatpickr 4.6.13):
+  `flatpickr.min.css`, `flatpickr.min.js`, `l10n/ru.js`,
+  `LICENSE.md` (MIT). Byte-identical to the dist files the CDN was
+  serving, downloaded once at build time — no runtime CDN dependency.
+- `miniapp/index.html`: the three `cdn.jsdelivr.net/flatpickr@4.6.13`
+  references now load `/miniapp/vendor/flatpickr/...` (served by the
+  existing `StaticFiles` mount; the Dockerfile's `COPY miniapp ./miniapp`
+  already includes the vendor dir). The telegram-web-app.js CDN tag
+  stays — it is intentionally client-provided and already mocked/blocked
+  in the E2E harness.
+- No JS/CSS changes: `window.flatpickr` and the `ru` locale are
+  exposed exactly as before, so `js/ui.js` pickers and the theme
+  overrides in styles.css are untouched.
+
+Verified: full E2E suite 14 passed (incl. the workout-scheduling and
+workout-log-time specs that drive the calendar/time pickers);
+`uv run pytest -q` 454 passed; `uv run ruff check .` clean.
 
 ## V3 — Priority 35: Searchable IANA timezone picker
 

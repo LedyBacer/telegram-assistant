@@ -8,7 +8,10 @@
   />
   <meta name="theme-color" content="#ffffff" />
   <title>Ассистент</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css" />
+  <!-- Flatpickr is self-hosted (V3 P36): the CDN is not a production
+       dependency, so the Mini App works fully offline. MIT license in
+       miniapp/vendor/flatpickr/LICENSE.md. -->
+  <link rel="stylesheet" href="/miniapp/vendor/flatpickr/flatpickr.min.css" />
   <link rel="stylesheet" href="/miniapp/styles.css" />
   <!--
     Telegram WebApp SDK. Inside the real Telegram client this exposes
@@ -19,8 +22,8 @@
     instead of this CDN script (and the CDN request is intercepted).
   -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/ru.js"></script>
+  <script src="/miniapp/vendor/flatpickr/flatpickr.min.js"></script>
+  <script src="/miniapp/vendor/flatpickr/l10n/ru.js"></script>
   <script type="module" src="/miniapp/app.js"></script>
 </head>
 <body>
