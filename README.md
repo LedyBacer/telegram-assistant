@@ -54,7 +54,8 @@ On top of the calendar/reminders/workouts/files/facts/chat core:
 ## Quick start (Docker)
 
 ```bash
-cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN, CHAT_*/EMBEDDING_* vars, PUBLIC_BASE_URL
+cp .env.example .env   # fill in TELEGRAM_BOT_TOKEN, CHAT_* vars, PUBLIC_BASE_URL
+                       # (EMBEDDING_* is optional — see "AI providers")
 docker compose up --build
 ```
 
@@ -109,7 +110,23 @@ instances) — the application never assumes one host provides both:
   and `EMBEDDING_DIMENSIONS` (384). Vectors are stored as pgvector
   `vector(384)` with an HNSW cosine index.
 
-Example (two llama.cpp servers):
+Chat is the only **required** AI credential. A deployment without an
+embedding provider (`EMBEDDING_*` left unset) runs in **chat-only** mode —
+the whole application boots and stays fully useful:
+
+- **Document uploads are rejected visibly** at registration (bot and
+  Mini App) with a localized "document search is not available on this
+  deployment" message — nothing is enqueued or written.
+- **Document search degrades to lexical-only**: the vector arm is skipped
+  by construction, keyword (full-text) results are returned as before, and
+  the embedding provider is never called.
+- **Readiness** reports the `ai_embedding` component as `degraded` (never
+  `not_ready`) — a chat-only deployment is healthy by design.
+- Chat, actions, facts, workouts, calendar, reminders, digests, and every
+  other feature are unaffected. (An `files.ingest` job enqueued before a
+  config change to chat-only fast-fails instead of retrying.)
+
+Example (two llama.cpp servers; omit the `EMBEDDING_*` block for chat-only):
 
 ```bash
 CHAT_BASE_URL=http://llm-host:18085/v1

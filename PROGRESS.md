@@ -147,8 +147,23 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   API layer also cleans on commit-failure.
 - **§31** local-upload disk I/O (mkdir/write) is off the event loop via
   `asyncio.to_thread`.
+- **§32** chat-only / embedding-disabled docs consistency. Audited every
+  embedding mention (README, .env.example, docs/RESEARCH.md,
+  docs/ASSUMPTIONS.md, docs/ARCHITECTURE.md) against the code
+  (`config.embedding_configured`): chat credentials are the only required
+  AI credential, and a chat-only deployment boots fully useful. Fixed the
+  two places that presented `EMBEDDING_*` as required: the Quick-start
+  comment now says fill `CHAT_*` and notes `EMBEDDING_*` is optional, and
+  the "AI providers" section gains a chat-only paragraph (uploads rejected
+  visibly at registration with `files.err_embedding_unconfigured`, search
+  degrades to lexical-only with the provider never called, `/readyz`
+  reports `ai_embedding` `degraded` not `not_ready`, everything else
+  unaffected, pre-existing ingest jobs fast-fail). `.env.example` marks the
+  `EMBEDDING_*` block OPTIONAL with the same degradation notes.
+  RESEARCH/ASSUMPTIONS/ARCHITECTURE already matched the behavior (no
+  change). Docs-only.
 
-**Next (in order):** §32-39 CI/acceptance reproducibility (self-contained
+**Next (in order):** §33-39 CI/acceptance reproducibility (self-contained
 acceptance, real bot smoke, actionlint, real GitHub Actions run), readiness
 terminology, logging correlation; §40-47 named regression tests, docs sync,
 Definition of Done.
