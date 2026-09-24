@@ -1,12 +1,64 @@
 # Progress
 
-Status: V3 PRIORITIES 38–44 COMPLETE (P44: test-auth backdoor removed from
-production — `Settings` has no test-auth fields and the production
-`create_app()` authenticates only with signed initData; the deterministic
-test user is installed only by the test-only entry point
-`assistant.api.testing`, which Playwright runs; a test proves the
-production app 401s without initData even when `ASSISTANT_TEST_AUTH=1`).
-Next: V3 Priority 45.
+Status: V3 PRIORITIES 38–45 COMPLETE (P45: `/healthz` + `/readyz` —
+`/readyz` returns 200 only when PostgreSQL is reachable; AI providers are
+reported as ok/degraded components and never gate readiness, so a
+chat-only deployment stays ready; the probe performs no inference).
+Next: V3 Priority 46.
+
+## V3 — Priority 45: liveness and readiness probes
+
+The API previously only had a plain `/health` liveness answer. An
+orchestrator (or operator) could not distinguish "the process is up" from
+"the process is up and can serve traffic" — specifically, it could not tell
+whether the one hard dependency (PostgreSQL) was reachable, and it had no
+non-invasive way to see whether the AI providers were configured.
+
+Design (see `docs/ASSUMPTIONS.md` row 41):
+- **`/healthz`** = liveness. Answers `{"status":"ok"}` as soon as the app
+  is up. No dependency checks. (The legacy `/health` path is kept.)
+- **`/readyz`** = readiness. Returns **200 only when PostgreSQL is
+  reachable** (`SELECT 1` through the app's own `get_engine()`, bounded by
+  a 3-second `asyncio.timeout` so a wedged database cannot hang the probe);
+  anything else is **503**.
+- **AI providers are components, not gates.** `ai_chat` is `ok` when
+  `settings.chat_api_key` is set, `degraded` otherwise; `ai_embedding` is
+  `ok` when `settings.embedding_configured`, `degraded` otherwise. A
+  degraded component never makes the service `not_ready` — a chat-only
+  deployment (no embedding provider) is fully usable, and a missing chat
+  key is surfaced as `degraded` so an operator can see it without taking
+  the service out of rotation.
+- **No inference.** The probe checks Postgres connectivity and reads
+  provider *configuration* from settings only. It never calls a chat or
+  embedding endpoint, so it is cheap and safe to run on a schedule.
+
+Changes:
+- `src/assistant/api/readiness.py` (new): `check_readiness(db_probe=None)`
+  returns `(ready, payload)`. `db_probe` is an injectable
+  `async () -> None` check (default `SELECT 1` via `get_engine()`); tests
+  inject a probe that raises to exercise the `not_ready` path without
+  dropping the database.
+- `src/assistant/api/main.py`: adds the `/readyz` route (200/503 via
+  `JSONResponse`) and the `/healthz` liveness route; the existing `/health`
+  liveness path is preserved.
+- `scripts/acceptance.sh` step 3: now also curls `/readyz` and asserts
+  `"status":"ready"` against the fresh database, proving the probe is
+  wired end-to-end.
+- `tests/test_readiness.py` (new, 5 tests):
+  - `test_healthz_is_liveness` — 200 `{"status":"ok"}`.
+  - `test_readyz_ready_when_postgres_reachable` — 200, `ready`, postgres `ok`.
+  - `test_readyz_not_ready_when_postgres_down` — injected probe raises →
+    `not_ready`, postgres `error`.
+  - `test_readyz_ai_degraded_is_not_unready` — unconfigured chat+embedding
+    → `ready` with both components `degraded`.
+  - `test_readyz_ai_ok_when_configured` — configured key → both `ok`.
+
+Verified: `tests/test_readiness.py` 5 passed; live `uvicorn` smoke test —
+`/healthz` → `{"status":"ok"}`, `/readyz` →
+`{"status":"ready","components":{"postgres":{"status":"ok"},
+"ai_chat":{"status":"ok"},"ai_embedding":{"status":"ok"}}}`;
+`uv run ruff check .` clean; full `uv run pytest -q` 486 passed
+(481 prior + 5 new); `npm run test:e2e` 14 passed.
 
 ## V3 — Priority 44: remove the production test-auth backdoor
 

@@ -7,9 +7,10 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from assistant.api.readiness import check_readiness
 from assistant.api.routes import router as api_router
 from assistant.config import get_settings
 from assistant.db import dispose_engine
@@ -47,6 +48,14 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    # Readiness: 200 only when PostgreSQL is reachable. AI providers are
+    # reported as ok/degraded components and never gate readiness; the probe
+    # performs no inference (see assistant.api.readiness).
+    @app.get("/readyz")
+    async def readyz() -> JSONResponse:
+        ready, payload = await check_readiness()
+        return JSONResponse(content=payload, status_code=200 if ready else 503)
 
     # Root URL: redirect to the Mini App entry point so a reverse proxy no
     # longer needs its own `/` → `/miniapp` workaround (SPEC: production URL).

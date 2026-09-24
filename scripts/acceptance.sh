@@ -80,9 +80,13 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 curl -fsS "http://127.0.0.1:${API_PORT}/healthz" | grep -q '"status":"ok"'
+# Readiness: 200 only when Postgres is reachable (the API is up against a
+# fresh database at this point); AI providers are reported as components and
+# never gate readiness. The probe performs no inference.
+curl -fsS "http://127.0.0.1:${API_PORT}/readyz" | grep -q '"status":"ready"'
 kill "$API_PID" 2>/dev/null || true
 wait "$API_PID" 2>/dev/null || true
-echo "OK: /healthz answered"
+echo "OK: /healthz (liveness) and /readyz (Postgres reachable) answered"
 
 step "Seed users (one WITH settings, one WITHOUT)"
 uv run python - <<'PY'
