@@ -227,13 +227,20 @@ Tests require a reachable PostgreSQL 17 with pgvector (see `DATABASE_URL` /
 `TEST_DATABASE_URL`). No real Telegram or OpenAI credentials are needed —
 external AI/Telegram HTTP calls are mocked, and initData is signed locally.
 
-`scripts/acceptance.sh` is a production-like verification run: a **fresh**
-Docker PostgreSQL, `alembic upgrade head`, API start + `/healthz` check,
-worker start with several digest-scheduling iterations (users with and
-without settings rows — no `MissingGreenlet`), bot dispatcher wiring with
+`scripts/acceptance.sh` is a production-like verification run (22 steps):
+`docker compose config`, the loopback-only port-exposure audit, a
+**production image build from the frozen lock** (plus an import smoke of the
+built image), a **fresh** Docker PostgreSQL, `alembic upgrade head`, API
+start + `/healthz` + `/readyz` checks, worker digest-scheduling iterations
+(users with and without settings rows — no `MissingGreenlet`, digests
+persisted), targeted real-PostgreSQL steps (real `files.ingest` through
+`JobWorker._run_job`, job lease/heartbeat, PendingAction confirmation +
+concurrent-execution protection, bounded conversational flow with the fake
+provider, chat with embeddings unavailable), bot dispatcher wiring with
 Telegram mocked, RU/EN onboarding and NL task-draft tests, the full pytest
-suite against the fresh database, Ruff, `docker compose config` validation,
-and the loopback-only port-exposure audit.
+suite against the fresh database, Ruff, `uv lock --check` (lockfile
+integrity), the production-auth no-test-bypass test, and the Mini App
+Playwright E2E stage.
 
 ## Mini App development
 

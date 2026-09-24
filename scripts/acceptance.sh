@@ -1,24 +1,47 @@
 #!/usr/bin/env bash
 # Production-like acceptance run for the Telegram Assistant (see REPORT.md).
 #
-# Steps:
-#   1.  Fresh Docker PostgreSQL (throwaway container, own volume)
-#   2.  Alembic `upgrade head` on the fresh database
-#   3.  API starts (loopback only) and answers /healthz
-#   4.  Worker starts and stays alive
-#   5.  Worker completes several digest-scheduling iterations with users
-#       WITH and WITHOUT UserSettings rows — no MissingGreenlet
-#   6.  Bot imports and wires its dispatcher with Telegram mocked (no API calls)
-#   7.  Russian onboarding strings (pytest: tests/test_onboarding_i18n.py)
-#   8.  English onboarding strings (same file)
-#   9.  NL structured task draft with realistic llama.cpp-style responses
-#       (pytest: tests/test_ai.py)
-#   10. Complete pytest suite (against the fresh database)
-#   11. Ruff
-#   12. Docker Compose validation
-#   13. No public (non-loopback) port exposure for API/Postgres
+# Steps (V3 P51 — the full §51 check list):
+#    1. Docker Compose validation
+#    2. Port exposure audit (no public API/Postgres bind)
+#    3. Production image build from the frozen lock (Dockerfile: uv sync --frozen)
+#    4. Fresh Docker PostgreSQL (throwaway container, own port)
+#    5. Alembic `upgrade head` on the fresh database
+#    6. API starts (loopback only) and answers /healthz + /readyz
+#    7. Seed users (one WITH settings, one WITHOUT)
+#    8. Worker stays alive and completes digest-scheduling iterations —
+#       no MissingGreenlet
+#    9. Worker REAL job execution: files.ingest through JobWorker._run_job
+#      (pytest: tests/test_worker_ingest.py) — intermediate commits, lease/
+#      owner-token completion, cancellation commits no chunks
+#   10. Job lease/heartbeat semantics (pytest: tests/test_jobs.py)
+#   11. PendingAction confirmation + concurrent-execution protection
+#       (pytest: tests/test_actions.py -k confirm — includes the two-session
+#       concurrent-confirm test)
+#   12. Representative bounded conversational flow with the fake provider
+#       (pytest: tests/test_turns.py)
+#   13. Ordinary chat with embeddings unavailable (pytest: targeted
+#       chat-only / no-embedding tests)
+#   14. Bot imports and wires its dispatcher with Telegram mocked
+#   15. Russian onboarding strings
+#   16. English onboarding strings
+#   17. NL structured task draft with realistic llama.cpp-style responses
+#   18. Complete pytest suite (against the fresh database)
+#   19. Ruff
+#   20. Lockfile integrity (uv.lock in sync with pyproject.toml)
+#   21. Production auth: the normal app has no test-auth bypass
+#       (pytest: tests/test_minapp_shell.py::test_production_app_has_no_test_auth_bypass)
+#   22. Mini App Playwright E2E (Playwright acceptance stage; isolated
+#       assistant_e2e database + test-only assistant.api.testing entrypoint)
 #
-# Requires: docker, curl, uv. Usage: bash scripts/acceptance.sh
+# Reminder/digest delivery smoke: step 8 runs the real worker against the
+# fresh database with Telegram mocked (fake bot token) and asserts the
+# digest rows persist.
+#
+# Requires: docker, curl, uv, node + npm (step 22, against the dev
+# PostgreSQL on localhost:5432 which the E2E config uses for its own
+# assistant_e2e database). No real AI or Telegram credentials are needed
+# anywhere. Usage: bash scripts/acceptance.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -26,16 +49,17 @@ cd "$(dirname "$0")/.."
 PG_CONTAINER="ta-acceptance-pg"
 PG_PORT="${PG_PORT:-5433}"
 API_PORT="${API_PORT:-8100}"
+IMAGE_TAG="telegram-assistant:acceptance"
 WORKER_LOG="$(mktemp)"
 API_LOG="$(mktemp)"
 trap 'docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true; rm -f "$WORKER_LOG" "$API_LOG"' EXIT
 
 step() { printf '\n=== %s ===\n' "$*"; }
 
-step "12. Docker Compose validation"
+step "1. Docker Compose validation"
 docker compose config -q
 
-step "13. Port exposure audit (no public API/Postgres bind)"
+step "2. Port exposure audit (no public API/Postgres bind)"
 published=$(awk '
     /ports:[[:space:]]*$/ { p = 1; next }
     p && /^[[:space:]]+-[[:space:]]/ { print; next }
@@ -49,7 +73,25 @@ if [ -n "$published" ] && \
 fi
 echo "OK: every published port is loopback-only (Postgres publishes none)"
 
-step "1. Fresh Docker PostgreSQL"
+step "3. Production image build (frozen lock)"
+# The Dockerfile installs with `uv sync --frozen`: the build fails if
+# uv.lock is missing, and step 20 verifies the lock matches pyproject.toml,
+# so the image always contains the exact tested dependency versions.
+docker build -t "$IMAGE_TAG" . >/dev/null
+# Smoke the built artifact: the API entrypoint must import and the app must
+# boot far enough to serve /healthz (process liveness, no DB needed).
+# Settings validate provider credentials at import (chat required,
+# embeddings optional since P42) — fake values, no network call happens.
+docker run --rm \
+    -e TELEGRAM_BOT_TOKEN="123456789:TEST-acceptance" \
+    -e DATABASE_URL="postgresql+asyncpg://assistant:assistant@127.0.0.1:5432/assistant" \
+    -e PUBLIC_BASE_URL="http://127.0.0.1:8000" \
+    -e CHAT_API_KEY="fake-acceptance" -e CHAT_BASE_URL="http://127.0.0.1:9/v1" \
+    "$IMAGE_TAG" \
+    python -c "from assistant.api.main import app; from assistant.bot.main import main; print('imports OK')"
+echo "OK: image built from uv.lock and API/bot entrypoints import"
+
+step "4. Fresh Docker PostgreSQL"
 docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
 docker run -d --name "$PG_CONTAINER" \
     -p "127.0.0.1:${PG_PORT}:5432" \
@@ -67,10 +109,10 @@ export DATABASE_URL="postgresql+asyncpg://assistant:assistant@127.0.0.1:${PG_POR
 export TEST_DATABASE_URL="$DATABASE_URL"
 export TELEGRAM_BOT_TOKEN="123456789:TEST-acceptance"
 
-step "2. Alembic upgrade head"
+step "5. Alembic upgrade head"
 uv run alembic upgrade head
 
-step "3. API starts and answers /healthz (loopback only)"
+step "6. API starts and answers /healthz + /readyz (loopback only)"
 uv run uvicorn assistant.api.main:app --host 127.0.0.1 --port "$API_PORT" >"$API_LOG" 2>&1 &
 API_PID=$!
 for _ in $(seq 1 30); do
@@ -88,7 +130,7 @@ kill "$API_PID" 2>/dev/null || true
 wait "$API_PID" 2>/dev/null || true
 echo "OK: /healthz (liveness) and /readyz (Postgres reachable) answered"
 
-step "Seed users (one WITH settings, one WITHOUT)"
+step "7. Seed users (one WITH settings, one WITHOUT)"
 uv run python - <<'PY'
 import asyncio
 from datetime import time
@@ -113,7 +155,7 @@ async def main():
 asyncio.run(main())
 PY
 
-step "4+5. Worker: several digest-scheduling iterations, no MissingGreenlet"
+step "8. Worker: real execution — digest scheduling iterations, no MissingGreenlet"
 WORKER_POLL_INTERVAL_SECONDS=0.5 DIGEST_SCHEDULE_INTERVAL_SECONDS=2 \
     uv run python -m assistant.worker.main >"$WORKER_LOG" 2>&1 &
 WORKER_PID=$!
@@ -132,7 +174,30 @@ docker exec "$PG_CONTAINER" psql -U assistant -d assistant -tAc \
     "SELECT count(*) FROM digests" | grep -qx 2
 echo "OK: 2 digest deliveries persisted"
 
-step "6. Bot imports and wires dispatcher (Telegram mocked, no API calls)"
+step "9. Real files.ingest through JobWorker._run_job (not the handler directly)"
+# Proves the worker transaction-ownership contract on a real cross-layer
+# path: intermediate commits inside ingestion, lease/owner-token completion,
+# and a cancelled run committing no chunks.
+uv run pytest tests/test_worker_ingest.py -q
+
+step "10. Job lease/heartbeat semantics"
+uv run pytest tests/test_jobs.py -q
+
+step "11. PendingAction confirmation + concurrent-execution protection"
+# Includes the two independent sessions confirming one action concurrently
+# (real PostgreSQL row lock) and the TTL/expiry/replay matrix.
+uv run pytest tests/test_actions.py -k confirm -q
+
+step "12. Bounded conversational flow (fake provider)"
+uv run pytest tests/test_turns.py -q
+
+step "13. Ordinary chat with embeddings unavailable"
+uv run pytest \
+    "tests/test_ai.py::test_settings_allow_chat_only_without_embedding" \
+    "tests/test_turns.py::test_ordinary_turn_makes_no_embedding_calls" \
+    -q
+
+step "14. Bot imports and wires dispatcher (Telegram mocked, no API calls)"
 uv run python - <<'PY'
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -151,27 +216,42 @@ assert router.name
 print("OK: bot dispatcher wired (router=%r)" % router.name)
 PY
 
-step "7+8. RU and EN onboarding strings"
-uv run pytest tests/test_onboarding_i18n.py -q
+step "15. RU onboarding strings"
+uv run pytest tests/test_onboarding_i18n.py -k ru -q
 
-step "9. NL structured task draft (llama.cpp-style responses)"
+step "16. EN onboarding strings"
+uv run pytest tests/test_onboarding_i18n.py -k en -q
+
+step "17. NL structured task draft (llama.cpp-style responses)"
 uv run pytest tests/test_ai.py -q
 
-step "10. Full test suite (fresh database)"
+step "18. Full test suite (fresh database)"
 # The full suite includes the file-upload test, which writes to the configured
 # storage dir; point it at a writable temp dir (matching the canonical gate) so
 # the step does not depend on /data being writable in the host environment.
 timeout 900 env FILE_STORAGE_DIR="$(mktemp -d)" uv run pytest -q
 
-step "11. Ruff"
+step "19. Ruff"
 uv run ruff check .
 
-step "14. Lockfile integrity (production must build from uv.lock, not pyproject ranges)"
+step "20. Lockfile integrity (production must build from uv.lock, not pyproject ranges)"
 # `uv lock --check` exits non-zero if uv.lock is missing or would be changed
 # to match pyproject.toml — i.e. a dependency added/edited without a matching
 # `uv lock`. This is what keeps `uv sync --frozen` in the Dockerfile from
 # silently installing a drifted (bypassed) set of pins.
 uv lock --check
 echo "OK: uv.lock is in sync with pyproject.toml"
+
+step "21. Production auth has no test-auth bypass"
+# The production create_app() never consults any environment flag for the
+# test-auth override; the bypass exists only in assistant.api.testing.
+uv run pytest "tests/test_minapp_shell.py::test_production_app_has_no_test_auth_bypass" -q
+
+step "22. Mini App Playwright E2E (Playwright acceptance stage)"
+# Isolated assistant_e2e database on the dev PostgreSQL (created + migrated +
+# truncated by e2e/global-setup.ts) served by the test-only entrypoint; the
+# real telegram.org script is blocked and initData is a deterministic stub.
+npm ci
+npm run test:e2e
 
 step "All acceptance checks passed"

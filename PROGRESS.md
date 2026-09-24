@@ -1,10 +1,60 @@
 # Progress
 
-Status: V3 PRIORITIES 38–50 COMPLETE (P50: credential-free CI workflow —
-lock sync + Ruff, pytest against a fresh PG 17 + pgvector service with
-migration from empty DB, Playwright E2E, Compose validation; no credentials
-needed).
-Next: V3 Priority 51.
+Status: V3 PRIORITIES 38–51 COMPLETE (P51: acceptance script expanded from
+14 to 22 steps covering all 18 §51 checks; full end-to-end run verified
+green, no real AI/Telegram credentials used).
+Next: V3 Priority 52.
+
+## V3 — Priority 51: expand acceptance verification to the full §51 check list
+
+`scripts/acceptance.sh` was rewritten from 14 to 22 steps so every check the
+priority names is exercised in one production-like run (no real AI or
+Telegram credentials anywhere — the worker runs with a fake bot token and
+the conversational steps use the fake provider):
+
+1. Docker Compose validation.
+2. Port exposure audit — fails if any published port is not
+   `127.0.0.1`-bound (Postgres publishes none).
+3. Production image build from the frozen lock (`uv sync --frozen` in the
+   Dockerfile) + import smoke of the built image (`assistant.api.main` and
+   `assistant.bot.main` entrypoints; fake `CHAT_API_KEY` satisfies the
+   import-time credential validation, no network call).
+4. Fresh Docker PostgreSQL (`ta-acceptance-pg`, own port 5433, torn down by
+   the EXIT trap).
+5. `alembic upgrade head` on the fresh database.
+6. API start (loopback only) + `/healthz` (liveness) + `/readyz`
+   (Postgres reachable) answered.
+7. Seed users — one WITH settings, one WITHOUT (exercises both worker
+   branches).
+8. Worker real execution — digest-scheduling iterations stay alive, no
+   `MissingGreenlet`, and 2 digest deliveries persist in Postgres (the
+   reminder/digest job smoke with Telegram mocked).
+9. Real `files.ingest` through `JobWorker._run_job` (`tests/test_worker_ingest.py`).
+10. Job lease/heartbeat semantics (`tests/test_jobs.py`).
+11. PendingAction confirmation + two-session concurrent-execution
+    protection (`tests/test_actions.py -k confirm`).
+12. Bounded conversational flow with the fake provider
+    (`tests/test_turns.py`).
+13. Ordinary chat with embeddings unavailable (targeted chat-only /
+    no-embedding-call tests).
+14. Bot imports and wires its dispatcher with Telegram mocked.
+15. RU onboarding strings; 16. EN onboarding strings.
+17. NL structured task draft (llama.cpp-style responses, `tests/test_ai.py`).
+18. Complete pytest suite against the fresh database
+    (`FILE_STORAGE_DIR` pointed at a writable temp dir).
+19. Ruff. 20. `uv lock --check` (lockfile integrity — the
+    `--frozen` build's maintenance-side half).
+21. Production auth has no test-auth bypass
+    (`test_production_app_has_no_test_auth_bypass`).
+22. Mini App Playwright E2E stage (isolated `assistant_e2e` database,
+    test-only `assistant.api.testing` entrypoint, stubbed initData).
+
+`README.md` acceptance description updated to the 22-step summary.
+
+- **Verification.** `bash scripts/acceptance.sh` completed end-to-end: all
+  22 steps, `493 passed` (full suite, 47 s), Ruff clean, `uv lock --check`
+  clean, `14 passed` (Playwright, 41.8 s), final line "All acceptance checks
+  passed".
 
 ## V3 — Priority 50: credential-free CI
 
