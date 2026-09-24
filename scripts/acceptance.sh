@@ -202,23 +202,34 @@ uv run pytest \
     "tests/test_turns.py::test_ordinary_turn_makes_no_embedding_calls" \
     -q
 
-step "14. Bot imports and wires dispatcher (Telegram mocked, no API calls)"
+step "14. Production create_bot(): plain-text bot (parse_mode None) + dispatcher"
+# Build the bot through the production factory — exactly what
+# `python -m assistant.bot.main` runs — and assert the P23 plain-text
+# invariant: no parse_mode is configured, so user content (filenames, task
+# titles, AI replies) is never misrendered as markup or rejected as bad HTML.
+# Telegram is not contacted (no start_polling), so no token round-trip happens.
 uv run python - <<'PY'
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram import Dispatcher
 
-from assistant.bot.handlers import router
-from assistant.bot.middlewares import DBSessionMiddleware
+from assistant.bot.handlers import private_guard, router
+from assistant.bot.main import create_bot
+from assistant.bot.middlewares import DBSessionMiddleware, LogContextMiddleware
 
-bot = Bot(token="123456789:TEST-acceptance",
-          default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = create_bot()
+assert bot.default is not None
+assert bot.default.parse_mode is None, (
+    "the production bot must not set parse_mode (plain text, P23): "
+    f"got {bot.default.parse_mode!r}"
+)
 dp = Dispatcher()
+dp.message.outer_middleware(LogContextMiddleware())
 dp.message.outer_middleware(DBSessionMiddleware())
+dp.callback_query.outer_middleware(LogContextMiddleware())
 dp.callback_query.outer_middleware(DBSessionMiddleware())
+dp.include_router(private_guard)
 dp.include_router(router)
 assert router.name
-print("OK: bot dispatcher wired (router=%r)" % router.name)
+print("OK: production create_bot() has parse_mode None; dispatcher wired (router=%r)" % router.name)
 PY
 
 step "15. RU onboarding strings"

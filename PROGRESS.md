@@ -202,10 +202,21 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   an empty machine. Verified: on a fresh `pgvector/pgvector:pg17`
   container (no pre-existing `assistant_e2e`), the suite created +
   migrated + truncated the DB and passed 18/18.
+- **§36** Acceptance step 14 now builds the bot through the **production**
+  `create_bot()` (exactly what `python -m assistant.bot.main` runs) instead
+  of a hand-rolled `Bot(token=..., parse_mode=HTML)`, and asserts the P23
+  plain-text invariant `bot.default.parse_mode is None`. The old step
+  hand-built a bot with `parse_mode=HTML`, so it never exercised the real
+  factory and would have stayed green even if `create_bot()` had regressed
+  to a markup mode. The matching pytest regression
+  (`tests/test_bot_foundation.py::TestPlainTextOutput::test_bot_process_bot_has_no_parse_mode`)
+  already exists and is run by step 18. Verified: the new step-14 snippet
+  passes against the production factory; the TestPlainTextOutput suite is
+  8/8.
 
-**Next (in order):** §36-39 real bot smoke, actionlint, real GitHub
-Actions run, readiness terminology, logging correlation; §40-47 named
-regression tests, docs sync, Definition of Done.
+**Next (in order):** §37-39 actionlint, real GitHub Actions run, readiness
+terminology, logging correlation; §40-47 named regression tests, docs sync,
+Definition of Done.
 
 
 ## V3 — Priority 55: Definition of Done (final verification)
