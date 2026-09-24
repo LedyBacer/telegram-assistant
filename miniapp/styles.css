@@ -221,6 +221,13 @@ body {
   color: var(--hint);
 }
 
+/* Today dashboard summary (V3 P37): a row of stat badges */
+.summary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 /* Item cards (tasks, files, facts, workouts) */
 
 .item-head {

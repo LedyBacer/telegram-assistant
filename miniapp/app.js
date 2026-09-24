@@ -269,6 +269,34 @@ const pad2 = (n) => String(n).padStart(2, "0");
 // works in the user's local calendar, so keys are "YYYY-MM-DD" strings.
 const dayKey = (y, m, d) => `${y}-${pad2(m + 1)}-${pad2(d)}`;
 
+// V3 P37: compact at-a-glance summary of the selected day, computed from
+// the month items already fetched by viewToday (no extra request).
+function daySummary(dayItems) {
+  if (!dayItems.length) return null;
+  const now = Date.now();
+  let scheduled = 0;
+  let completed = 0;
+  let overdue = 0;
+  for (const item of dayItems) {
+    if (item.status === "scheduled") {
+      scheduled += 1;
+      const anchor = item.due_at || item.starts_at;
+      if (anchor && new Date(anchor).getTime() < now) overdue += 1;
+    } else if (item.status === "completed") {
+      completed += 1;
+    }
+  }
+  return card(
+    el("h2", { class: "view-subtitle" }, S("miniapp.today_summary")),
+    el("div", { class: "summary-chips" },
+      badge(S("miniapp.summary_total", { n: dayItems.length })),
+      badge(S("miniapp.summary_left", { n: scheduled }), scheduled ? "high" : "muted"),
+      badge(S("miniapp.summary_done", { n: completed }), "ok"),
+      overdue ? badge(S("miniapp.summary_overdue", { n: overdue }), "error") : null
+    )
+  );
+}
+
 function ensureCalendarState() {
   if (!state.month) {
     const now = wallParts(new Date());
@@ -314,6 +342,7 @@ async function viewToday(view, gen, signal) {
   );
 
   view.replaceChildren(
+    daySummary(dayItems),
     grid,
     dayHeader,
     dayItems.length

@@ -1,13 +1,35 @@
 # Progress
 
-Status: V3 PRIORITY 36 COMPLETE (Flatpickr self-hosted: the three
-jsDelivr CDN references in miniapp/index.html now point at
-miniapp/vendor/flatpickr/ — flatpickr.min.css, flatpickr.min.js,
-l10n/ru.js + the MIT LICENSE.md — so the Mini App has no external CDN
-dependency at runtime; the Docker image already copies miniapp/).
+Status: V3 PRIORITY 37 COMPLETE (Today dashboard summary: the Today
+view now shows an at-a-glance stat card — Всего/Осталось/Готово/
+Просрочено badges — for the selected day, computed client-side from
+the month items already fetched; hidden on empty days).
 P26 (do-not-redesign constraint) is carried by every change in this
 Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 37 (Today dashboard summary).
+Next: V3 Priority 38.
+
+## V3 — Priority 37: Today dashboard summary
+
+- `miniapp/app.js`: new `daySummary(dayItems)` helper (calendar
+  section). Returns `null` for days without items; otherwise a
+  `card` with the "Итоги дня" subtitle and a `.summary-chips` row of
+  `badge`s: total items on the day, scheduled ("Осталось", `high`
+  tone when > 0), completed ("ok" tone), and overdue (`error` tone,
+  only when > 0 — a scheduled item is overdue when its due_at or
+  starts_at is in the past). All counts are derived from the month
+  items `viewToday` already fetched — no extra API call. Inserted as
+  the first child in `viewToday`'s `view.replaceChildren(...)`,
+  above the month grid.
+- `miniapp/styles.css`: `.summary-chips` (flex row, wrap, 6px gap).
+- i18n (ru + en, parity kept): `miniapp.today_summary`,
+  `miniapp.summary_total`, `miniapp.summary_left`,
+  `miniapp.summary_done`, `miniapp.summary_overdue` (all `{n}`-param).
+- `e2e/tests/miniapp.e2e.ts`: step 11b asserts the summary renders
+  after creating today's task (Всего: 1 / Осталось: 1 / Готово: 0);
+  step 12b asserts it disappears when an empty day is selected.
+
+Verified: full E2E suite 14 passed; `uv run pytest -q` 454 passed;
+`uv run ruff check .` clean; ESM `node --check` clean.
 
 ## V3 — Priority 36: Self-hosted Flatpickr
 

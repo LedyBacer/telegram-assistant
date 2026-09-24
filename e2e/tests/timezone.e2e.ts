@@ -66,7 +66,9 @@ test("dates and times follow the user timezone, not the browser timezone", async
   expect(meta).not.toContain("23:30");
 
   // The day header shows the user's date (25), not the browser's (24).
-  const header = (await page.locator("#view .view-subtitle").first().innerText()).trim();
+  // `.last()`: V3 P37 inserts the "Итоги дня" summary card (also a
+  // .view-subtitle) above the calendar; the day header is the last one.
+  const header = (await page.locator("#view .view-subtitle").last().innerText()).trim();
   expect(header).toContain("25");
   expect(header).not.toMatch(/^24\b/);
 

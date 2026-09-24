@@ -95,6 +95,17 @@ test("Mini App end-to-end scenario", async ({ page }) => {
   // 11. Task saved: we are back on Today and the task is listed for today.
   await expect(page.locator("#view .item-title").first()).toContainText(taskTitle);
 
+  // 11b. Today dashboard summary (V3 P37): the selected day with one
+  //      scheduled task shows the at-a-glance stat badges.
+  await expect(
+    page.locator("#view .view-subtitle", { hasText: "Итоги дня" }),
+  ).toBeVisible();
+  const summaryChips = page.locator("#view .summary-chips");
+  await expect(summaryChips).toBeVisible();
+  await expect(summaryChips).toContainText("Всего: 1");
+  await expect(summaryChips).toContainText("Осталось: 1");
+  await expect(summaryChips).toContainText("Готово: 0");
+
   // 12. Calendar: tapping a day cell changes the selected day, and the
   //     "today" control returns to the current day (so the task is visible).
   // Out-of-month padding cells have no data-date, so scope to real days.
@@ -105,6 +116,8 @@ test("Mini App end-to-end scenario", async ({ page }) => {
   await anyDay.click();
   await expect(page.locator(`#view .cal-day[data-date="${tappedDate}"]`))
     .toHaveClass(/is-selected/);
+  // 12b. The summary is per selected day: a day with no items hides it.
+  await expect(page.locator("#view .summary-chips")).toHaveCount(0);
   // cal-header buttons: 0=prev, 1=next, 2=today.
   await page.locator("#view .cal-header .btn").nth(2).click();
   await expect(page.locator("#view .cal-day.is-today")).toBeVisible();
