@@ -1,12 +1,78 @@
 # Progress
 
-Status: V3 COMPLETE — all priorities P1–P53 implemented (P54 is the
-implementation-order directive, satisfied), P55 Definition of Done met.
-Final state: 496 pytest + 14 Playwright E2E green, 22-step acceptance
-run fully green on 2026-09-24 (fresh Docker PostgreSQL, full migration
-chain, Compose build, Ruff, lock drift), `REPORT.md` rewritten as the
-evidence-based V3 final report. Working tree clean; nothing pushed.
-Next: nothing — V3 milestone is finished.
+Status: V4 IN PROGRESS — closing the correctness gaps found by the
+independent post-V3 audit (see the audit below). V3 code is the baseline
+(`4a57308...`); V4 makes targeted correctness fixes and does NOT rewrite
+the product. Working tree is committed at each meaningful boundary.
+
+## V4 — Audit findings (post-V3, recorded before implementation)
+
+The independent post-V3 audit found the V3 milestone was architecturally
+sound but had real correctness gaps. Most importantly, **the V3 CI claim
+was not true**: the first (and only) GitHub Actions run for the V3 final
+commit `4a57308...` completed with `conclusion=failure` and **no jobs
+scheduled** — the workflow was syntactically valid YAML but used the
+`runner` context in job-level `env` (not a valid context there), so GitHub
+rejected the whole workflow. V3 must not be claimed CI-green; the REPORT
+is corrected in V4 P44.
+
+Defects found, grouped by the eight V4 primary goals:
+
+1. **Leases don't protect domain side effects** (P0).
+   `JobWorker._run_job` starts a detached heartbeat; if the heartbeat can't
+   renew ownership (returns `False`) it just exits and the handler keeps
+   committing domain state. Only the *final* complete/fail re-checks
+   ownership. File ingestion's final check only rejects
+   `job.status == cancelled` — it does not detect a job recovered by
+   another worker, a changed owner token, an expired lease, or a non-running
+   job. A stale owner can also `_record_failure()` over a newer owner's
+   successful work.
+
+2. **Proactivity cross-kind anti-spam is violated** (P0/P1).
+   The pass reads the daily count and the latest-nudge time **once** at the
+   start, then may commit/send several *different* nudge kinds without
+   re-checking `max_nudges_per_day` / `min_interval_minutes` / quiet hours.
+   Several existing tests encode the bug (they assert two messages are sent
+   when `max_nudges_per_day = 1`).
+
+3. **The Qwen turn protocol can contradict itself** (P0/P1).
+   `AssistantTurn` is a broad permissive schema: `need_data` + `actions`,
+   `reply` + `data_requests`, and a fold that re-requests `data_requests`
+   are all representable. The "reply wins" behavior silently discards a
+   tool request. There is no separate fold schema and no strict mode
+   discriminator.
+
+4. **DB/network transaction gaps** (P0/P1).
+   The NL task-draft FSM path (`TaskDraftStates.waiting_for_text`) opens a
+   DB transaction, then runs the Qwen structured inference with it still
+   open for up to `CHAT_TIMEOUT_SECONDS`. Free chat does it right; the
+   draft path does not.
+
+5. **Mini App wall-clock handling** (P0).
+   A naive user-timezone wall-clock form value is run through
+   `new Date(...)` + timezone conversion as if it were an absolute instant,
+   so the picker drifts by the browser/user timezone offset. No dedicated
+   instant↔wall helpers, and the New Item surface has no `ends_at`.
+
+6. **CI/acceptance not reproducible from an empty machine** (P0/P1).
+   V3 CI failed (see above); Alembic required the full app `Settings`
+   (Telegram + AI credentials) even though it only needs `DATABASE_URL`;
+   E2E hardcodes `assistant:assistant@localhost:5432`; acceptance used a
+   separate developer Postgres for the Playwright stage.
+
+7. **Domain/UX inconsistencies** (P1).
+   Deterministic action previews are not localized (RU users see English
+   previews); scheduled workouts encode duration only in `extra` with a
+   hard-coded English `Workout:` title prefix and no `ends_at`; action
+   payload schemas silently ignore unknown fields (a `{"item_id": 42}`
+   no-op update is a valid proposal); `GET /actions?status=` does not
+   filter by the *effective* (TTL-aware) status; local-upload failures can
+   leave a filesystem orphan; the test-auth server lives in `src/assistant`.
+
+8. **Remote CI never verified green** (P0). V4 must end with a real green
+   GitHub Actions run (or explicitly state "Remote CI verification
+   pending" if the run is unreachable).
+
 
 ## V3 — Priority 55: Definition of Done (final verification)
 

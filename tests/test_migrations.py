@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -35,6 +37,24 @@ from assistant.db.base import Base  # noqa: E402  (registers all models)
 
 ROOT = Path(__file__).resolve().parent.parent
 MIGRATION_DB = "ta_migration_test"
+
+# V4 P2: a migration must run with ONLY a database connection. These are the
+# application-credential / deployment variables that the old
+# ``get_settings()``-based env.py transitively required; the regression test
+# below proves none of them are needed.
+ALEMBIC_DB = "ta_alembic_dbonly"
+_CREDENTIAL_ENV_VARS = frozenset(
+    {
+        "TELEGRAM_BOT_TOKEN",
+        "PUBLIC_BASE_URL",
+        "CHAT_API_KEY",
+        "CHAT_BASE_URL",
+        "EMBEDDING_API_KEY",
+        "EMBEDDING_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+    }
+)
 
 EXPECTED_TABLES = {
     "users",
@@ -143,3 +163,65 @@ def test_alembic_upgrade_head_on_fresh_database() -> None:
 def test_migrations_match_orm_metadata() -> None:
     """The table list tested against the migrations must match the ORM models."""
     assert set(Base.metadata.tables) == EXPECTED_TABLES
+
+
+def test_alembic_needs_only_database_url() -> None:
+    """V4 P2: ``alembic upgrade head`` succeeds with ONLY ``DATABASE_URL``.
+
+    Runs the real Alembic CLI in a fresh subprocess whose environment has
+    every application credential (Telegram token, AI provider keys,
+    ``PUBLIC_BASE_URL``) removed. This proves the migration tooling is
+    decoupled from the full application ``Settings`` model: a fresh
+    PostgreSQL can be migrated without any other configuration.
+    """
+    base_db = urlparse(os.environ["DATABASE_URL"]).path.lstrip("/")
+
+    async def _prepare() -> None:
+        conn = await asyncpg.connect(_pg_url(base_db))
+        try:
+            await conn.execute(f'DROP DATABASE IF EXISTS "{ALEMBIC_DB}" WITH (FORCE)')
+            await conn.execute(f'CREATE DATABASE "{ALEMBIC_DB}"')
+        finally:
+            await conn.close()
+
+    asyncio.run(_prepare())
+    try:
+        # A genuinely clean environment: only DATABASE_URL is present. Every
+        # credential the old get_settings()-based env.py required is gone.
+        env = {
+            k: v for k, v in os.environ.items() if k not in _CREDENTIAL_ENV_VARS
+        }
+        env["DATABASE_URL"] = _db_url(ALEMBIC_DB)
+
+        proc = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, (
+            "alembic upgrade head failed without application credentials "
+            f"(it must need only DATABASE_URL):\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+
+        async def _verify() -> None:
+            conn = await asyncpg.connect(_pg_url(ALEMBIC_DB))
+            try:
+                stamped = await conn.fetchval("SELECT version_num FROM alembic_version")
+                assert stamped is not None
+            finally:
+                await conn.close()
+
+        asyncio.run(_verify())
+    finally:
+        async def _drop() -> None:
+            conn = await asyncpg.connect(_pg_url(base_db))
+            try:
+                await conn.execute(f'DROP DATABASE IF EXISTS "{ALEMBIC_DB}" WITH (FORCE)')
+            finally:
+                await conn.close()
+
+        asyncio.run(_drop())

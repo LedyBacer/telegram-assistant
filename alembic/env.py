@@ -1,10 +1,15 @@
 """Async Alembic migration environment.
 
-The database URL comes from ``assistant.config`` so migrations always run
-against the same configuration as the application.
+Migrations depend only on a database connection. The database URL is read
+directly from the ``DATABASE_URL`` environment variable, so running
+``alembic upgrade head`` never requires the full application configuration
+(Telegram bot token, AI provider keys, ``PUBLIC_BASE_URL``, ...). This
+decouples the migration tooling from unrelated application credentials (V4):
+a fresh PostgreSQL can be migrated with ``DATABASE_URL`` and nothing else.
 """
 
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -14,7 +19,6 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import all models so Base.metadata is fully populated for autogenerate.
 from assistant import models  # noqa: F401
-from assistant.config import get_settings
 from assistant.db.base import Base
 
 config = context.config
@@ -22,7 +26,26 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+
+def _database_url() -> str:
+    """Resolve the migration database URL directly from the environment.
+
+    Reads ``DATABASE_URL`` in isolation — it does NOT construct the full
+    application ``Settings`` model, so migrations never require the Telegram
+    bot token, AI provider keys, or ``PUBLIC_BASE_URL``.
+    """
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. Migrations require only a database "
+            "connection: set DATABASE_URL to a SQLAlchemy async URL "
+            "(e.g. postgresql+asyncpg://user:pass@host:5432/db) and nothing "
+            "else."
+        )
+    return url
+
+
+config.set_main_option("sqlalchemy.url", _database_url())
 
 target_metadata = Base.metadata
 

@@ -21,10 +21,16 @@ env:
 
 jobs:
   lint:
-    name: Lock sync + Ruff
+    name: Lock sync + Ruff + workflow lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Semantic lint of the GitHub Actions workflow itself (V4 P37). A plain
+      # YAML parse misses context-availability errors like `runner` used in
+      # job-level `env` (the V3 CI failure); actionlint catches those. Pinned
+      # to a concrete version for reproducibility.
+      - name: Lint the CI workflow (actionlint)
+        uses: rsteube/actionlint@v3.5.0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -58,8 +64,13 @@ jobs:
     env:
       # conftest.py pins DATABASE_URL to TEST_DATABASE_URL, so one value
       # covers both the fixtures and app-side session factories.
+      #
+      # DATABASE_URL is also set at job level (a plain literal — valid here)
+      # because `uv run alembic upgrade head` runs in its own process, before
+      # conftest can pin it: since V4 Alembic reads DATABASE_URL directly and
+      # needs no other application credentials.
       TEST_DATABASE_URL: postgresql+asyncpg://assistant:assistant@127.0.0.1:5432/assistant
-      FILE_STORAGE_DIR: ${{ runner.temp }}/ci-files
+      DATABASE_URL: postgresql+asyncpg://assistant:assistant@127.0.0.1:5432/assistant
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,7 +83,12 @@ jobs:
         run: uv sync --frozen
       - name: Migrate the empty database to head
         run: uv run alembic upgrade head
+      # `runner` context is NOT available in job-level `env` (that is what
+      # silently broke V3 CI before any job scheduled). It IS available in
+      # step-level `env`, so FILE_STORAGE_DIR lives on the step that needs it.
       - name: Full test suite (includes ru/en locale parity test)
+        env:
+          FILE_STORAGE_DIR: ${{ runner.temp }}/ci-files
         run: uv run pytest -q
 
   e2e:
