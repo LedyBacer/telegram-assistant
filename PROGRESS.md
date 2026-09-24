@@ -108,14 +108,28 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   user's time. A second spec freezes an instant where Moscow is just past
   midnight and Amsterdam is still the previous day, proving the picker's
   DATE follows the user's zone.
+- **§27** (`6fb0c29`) The Mini App New-create surface now offers an "end"
+  date control (reusing the existing `pickerBtn` + flatpickr visual language),
+  so an event can be created with BOTH a start and an end in a single pass —
+  no second edit. `app.js viewNew` adds `formState.endsAt`, an `endBtn`,
+  `ends_at` in the save payload, and reflows the rows (start+end share a row,
+  due on its own). `en`/`ru` add `miniapp.new_end`. The `end >= start` rule is
+  the SHARED backend invariant already in `calendar.create_item` (surfaced as
+  a 400 at the API) — no new backend logic. API test asserts an event created
+  with start+end in one pass (201, end after start) and an inverted pair ->
+  400. E2E spec `create-event-start-end.e2e.ts` drives start+end in one pass,
+  asserts both times round-trip after reload, and asserts an inverted end is
+  rejected (400); it is self-cleaning (deletes created items, restores UTC in
+  a `finally`) so it does not pollute the shared sequential suite. The New view
+  gained a picker field, so `miniapp.e2e.ts` / `screens-audit.e2e.ts` move the
+  due picker from index 3 to 4 and the field count 4 -> 5.
 - **§29** TTL-aware effective status filter on `GET /actions`.
 - **§30** service owns local-upload artifact cleanup on write-failure; the
   API layer also cleans on commit-failure.
 - **§31** local-upload disk I/O (mkdir/write) is off the event loop via
   `asyncio.to_thread`.
 
-**Next (in order):** §27 `ends_at` on the Mini App New-create surface +
-end≥start invariant; §28 reuse the reminder picker in Edit Item; §32-39
+**Next (in order):** §28 reuse the reminder picker in Edit Item; §32-39
 CI/acceptance reproducibility (self-contained acceptance, real bot smoke,
 actionlint, real GitHub Actions run), readiness terminology, logging
 correlation; §40-47 named regression tests, docs sync, Definition of Done.
