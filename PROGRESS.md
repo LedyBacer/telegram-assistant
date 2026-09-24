@@ -1,9 +1,80 @@
 # Progress
 
-Status: V3 PRIORITIES 38–51 COMPLETE (P51: acceptance script expanded from
-14 to 22 steps covering all 18 §51 checks; full end-to-end run verified
-green, no real AI/Telegram credentials used).
-Next: V3 Priority 52.
+Status: V3 PRIORITIES 38–52 COMPLETE (P52: all 28 §52 required regression
+tests audited — 25 already covered by the suite, 3 gaps added:
+conversational workout proposals, RU inflection/paraphrase retrieval).
+Next: V3 Priority 53.
+
+## V3 — Priority 52: required regression tests
+
+Audited every one of the 28 scenarios named in the priority against the
+current suite; 25 were already covered (real PostgreSQL where
+transaction/locking semantics matter). The three gaps were added:
+
+- **Workout conversational mutation** (`tests/test_turns.py`):
+  - `test_workout_log_conversational_proposal` — "I just ran for 40 minutes,
+    effort 7/10" produces a `log_workout` PendingAction (proposed, not
+    executed); no second workout row is created before confirmation.
+  - `test_workout_schedule_conversational_proposal` — "Schedule gym Friday
+    at 20:00 for one hour" produces a `schedule_workout` proposal; no
+    calendar item exists until confirm.
+- **Russian inflection/paraphrase retrieval** (`tests/test_files.py`):
+  `test_russian_inflection_paraphrase_retrieval` — "как сварить кофе"
+  (zero word overlap with the stored "рецепт эспрессо для дома") is
+  recalled by the vector arm while an unrelated RU chunk stays out.
+
+Already-covered scenarios (where they live):
+- worker `_run_job(files.ingest)` + handler intermediate commits +
+  cancelled-ingest commits nothing — `tests/test_worker_ingest.py`
+- two concurrent confirms execute once (real PG row lock) —
+  `tests/test_actions.py::test_concurrent_confirm_executes_once`
+- TTL expiry persistence / reads don't mutate overdue —
+  `tests/test_actions.py` (expired confirm, read-no-mutate, bulk-expire) +
+  `tests/test_api.py::test_action_overdue_reports_expired_without_write`
+- stale version conflict — `tests/test_actions.py::test_drifted_entity_expires_action`
+  (+ `test_api.py::test_action_confirm_stale_target_is_409`)
+- helper conflict doesn't roll back caller transaction —
+  `tests/test_digests.py::test_conflict_does_not_rollback_caller_transaction`,
+  `tests/test_jobs.py::test_on_conflict_do_nothing_does_not_abort_caller_tx`
+- replacement rejected → old stays confirmed; confirmed → atomic supersede —
+  `tests/test_facts.py` (reject/delete/confirm) + `tests/test_api.py::test_fact_supersede_flow`
+- conflicting automatic memory proposal linked as replacement —
+  `tests/test_facts.py::test_propose_if_absent_links_valid_replaces_fact`
+- `reply + data_requests` handled safely (reply wins, one call) —
+  `tests/test_turns.py::test_reply_wins_over_data_requests_end_to_end`
+- `clarification + actions` rejected —
+  `tests/test_ai.py::test_turn_schema_rejects_clarification_with_actions`
+  (+ repair/repair-exhausted fixtures)
+- lookup → second structured call → action proposal with tool-revealed id —
+  `tests/test_turns.py::test_lookup_then_mutation_in_two_calls`
+- recent-entity "move it" outside the 7-day window —
+  `tests/test_chat.py::test_recent_entities_in_context` (30-day item)
+- ambiguous reference → clarification, no mutation —
+  `tests/test_turns.py::test_fixture_ambiguous_reference_yields_clarification_no_mutation`
+- semantic result with zero lexical overlap —
+  `tests/test_files.py::test_no_lexical_overlap_still_runs_vector_arm`
+- irrelevant vector result rejected by distance bound —
+  `tests/test_files.py::test_offtopic_vector_candidate_dropped_by_distance_bound`
+- HTML-like user data delivered safely —
+  `tests/test_bot_foundation.py::TestPlainTextOutput` (both bots plain text,
+  parametrized `<`/`>`/`&`/quote payloads forwarded verbatim, no parse_mode)
+- >4096 character output — `tests/test_tg_text.py::TestSendLong`
+- browser timezone ≠ user timezone — `e2e/tests/timezone.e2e.ts`
+- Mini App historical workout timestamp — `e2e/tests/workout-log-time.e2e.ts`
+- rapid tab navigation with delayed request — `e2e/tests/stale-render.e2e.ts`
+- Mini App document search — `e2e/tests/file-search.e2e.ts`
+- Mini App item edit with `ends_at` — `e2e/tests/edit-item.e2e.ts`
+- reminder offset max/dedupe — `tests/test_reminders.py` (validate +
+  dedupe + bounded)
+- oversized/decompression-heavy file safety —
+  `tests/test_files.py` (DOCX bomb bound, extracted-text/chunk limits,
+  oversize upload rejection)
+- concurrent proactive evaluation —
+  `tests/test_proactivity.py::test_concurrent_sessions_nudge_exactly_once`
+
+- **Verification.** `uv run ruff check .` clean;
+  `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q` → 496 passed
+  (493 prior + 3 new).
 
 ## V3 — Priority 51: expand acceptance verification to the full §51 check list
 

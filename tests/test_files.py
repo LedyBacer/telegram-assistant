@@ -755,6 +755,52 @@ async def test_cross_language_relevance_via_vector_arm(session) -> None:
         assert r.distance == pytest.approx(0.0)
 
 
+class _RussianParaphraseEmbedder:
+    """Treats RU inflections/paraphrases of one concept as a shared marker:
+    "сварить кофе" and "рецепт эспрессо" share no words, so the chunk is
+    reachable only through the vector arm."""
+
+    _CONCEPT = {"кофе", "сварить", "рецепт", "эспрессо"}
+
+    async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
+        return [_marker_vector(self._marker(t)) for t in texts]
+
+    async def embed_query(self, *, query: str) -> list[float]:
+        return _marker_vector(self._marker(query))
+
+    @classmethod
+    def _marker(cls, text: str) -> int:
+        return 1 if set(text.lower().split()) & cls._CONCEPT else 2
+
+
+async def test_russian_inflection_paraphrase_retrieval(session) -> None:
+    """Russian inflection/paraphrase (SPEC §13, §18): a query with zero
+    word-level overlap with the stored chunk is recalled by the vector arm,
+    and an unrelated RU chunk stays out."""
+    user = await _user(session)
+    await _indexed_file(
+        session,
+        user,
+        filename="espresso.md",
+        texts=["рецепт эспрессо для дома"],
+        marker_fn=_RussianParaphraseEmbedder._marker,
+    )
+    await _indexed_file(
+        session,
+        user,
+        filename="meeting-notes.md",
+        texts=["план совещания на неделю"],
+        marker_fn=_RussianParaphraseEmbedder._marker,
+    )
+
+    # No word overlap with "рецепт эспрессо для дома" (inflection/paraphrase).
+    results = await files.retrieve_chunks(
+        session, user, "как сварить кофе", provider=_RussianParaphraseEmbedder()
+    )
+    assert [r.file_name for r in results] == ["espresso.md"]
+    assert results[0].distance == pytest.approx(0.0)
+
+
 async def test_no_match_on_either_arm_returns_empty(session) -> None:
     """Empty only when BOTH arms are empty (SPEC §17)."""
     user = await _user(session)

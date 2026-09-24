@@ -31,6 +31,7 @@ from assistant.models.facts import FactStatus, UserFact
 from assistant.models.files import EMBEDDING_DIMENSIONS
 from assistant.models.pending_actions import ActionStatus, PendingAction
 from assistant.models.users import User
+from assistant.models.workout_logs import WorkoutLog
 from assistant.services import actions as actions_service
 from assistant.services import calendar as calendar_service
 from assistant.services import facts as facts_service
@@ -251,6 +252,76 @@ async def test_unknown_kind_is_skipped(session: AsyncSession) -> None:
     await session.commit()
     assert result.proposed_actions == []
     assert len(result.skipped_actions) == 1
+
+
+async def test_workout_log_conversational_proposal(session: AsyncSession) -> None:
+    """SPEC §12: 'I just ran 40 minutes' proposes log_workout — never logs
+    directly; the workout row appears only after confirmation."""
+    user = await _user(session)
+    await _seed(session, user)
+    turn = AssistantTurn(
+        reply="Log a 40-minute run at effort 7/10?",
+        actions=[
+            ActionProposal(
+                kind="log_workout",
+                payload={
+                    "name": "Run",
+                    "duration_minutes": 40,
+                    "perceived_effort": 7,
+                },
+                summary="Log workout: Run — 40 min — effort 7/10",
+            )
+        ],
+    )
+    provider = _FakeProvider(turn)
+
+    result = await turns_service.run_turn(
+        session, user, "I just ran for 40 minutes, effort 7/10", provider=provider
+    )
+    await session.commit()
+
+    assert len(result.proposed_actions) == 1
+    action = result.proposed_actions[0]
+    assert action.status == ActionStatus.proposed.value
+    assert action.payload["duration_minutes"] == 40
+    # The seed logged one workout; the proposal must not have added a second.
+    logs = (await session.scalars(select(WorkoutLog))).all()
+    assert len(logs) == 1
+
+
+async def test_workout_schedule_conversational_proposal(session: AsyncSession) -> None:
+    """SPEC §12: 'Schedule gym Friday at 20:00' proposes schedule_workout —
+    no calendar item exists until the user confirms."""
+    user = await _user(session)
+    await _seed(session, user)
+    turn = AssistantTurn(
+        reply="Schedule gym on Friday 20:00 for one hour?",
+        actions=[
+            ActionProposal(
+                kind="schedule_workout",
+                payload={
+                    "name": "Gym",
+                    "starts_at": "2026-09-25 20:00",
+                    "duration_minutes": 60,
+                },
+                summary="Schedule workout: Gym — 2026-09-25 20:00",
+            )
+        ],
+    )
+    provider = _FakeProvider(turn)
+
+    result = await turns_service.run_turn(
+        session, user, "Schedule gym Friday at 20:00 for one hour", provider=provider
+    )
+    await session.commit()
+
+    assert len(result.proposed_actions) == 1
+    action = result.proposed_actions[0]
+    assert action.status == ActionStatus.proposed.value
+    assert action.payload["name"] == "Gym"
+    # Only the seeded item exists; the proposal created no calendar item.
+    items = (await session.scalars(select(CalendarItem))).all()
+    assert [i.title for i in items] == ["Standup"]
 
 
 # ---------------------------------------------------------------------------
