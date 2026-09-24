@@ -1,15 +1,61 @@
 # Progress
 
-Status: V3 PRIORITIES 38–40 COMPLETE (Proactivity V3: the Monday weekly
-review is now a deterministic summary of the user's real state — overdue
-count, items completed this week, upcoming high-priority items, workout
-totals — silent when the week is empty; a new default-on daily overdue
-nudge; workout nudges are context-aware (suppressed while a workout is
-already scheduled for today or later); concurrent worker passes are
-serialized with a FOR UPDATE settings-row lock plus an atomic
-ON CONFLICT DO NOTHING nudge reservation, so a nudge is sent exactly
-once across sessions).
-Next: V3 Priority 41.
+Status: V3 PRIORITIES 38–41 COMPLETE (9B fast/no-think runtime: the
+normal turn stays bounded to 1–2 structured calls with a hard cap on
+read tools; the turn-mode invariant — a clarification never co-occurs
+with proposed actions — is enforced in the Pydantic schema, not prompt
+prose, with the bounded repair loop as the only recovery; action/tool
+docs in the prompt are registry-derived and concrete (types, enum value
+sets, datetime format) so a small model never parses JSON schemas; 10
+realistic Qwen-output fixture tests cover valid JSON, fences,
+preamble, malformed-then-repair, contradiction, invalid enum/type, and
+unknown tool).
+Next: V3 Priority 42.
+
+## V3 — Priority 41: 9B fast/no-think runtime (bounded cost, concrete docs, fixtures)
+
+- `src/assistant/ai/schemas.py`: `AssistantTurn` gains an
+  `after`-mode `model_validator` enforcing the SPEC §8 invariant — a
+  non-blank `clarification` plus any `actions` fails validation. This is
+  the authoritative guard: `chat_structured`'s bounded repair loop
+  (max 2 attempts, corrective feedback appended) is the only recovery
+  path, and two contradictory responses surface as
+  `AIOutputValidationError` instead of executing half of a
+  contradictory turn.
+- `src/assistant/actions/calendar.py`: `expected_updated_at` in the four
+  item-mutation payloads is `Field(default=None, exclude=True)` — the
+  internal optimistic-drift guard is engine-filled at proposal time and
+  is now excluded from `model_dump()` and from the generated prompt
+  docs, so the model can never set it.
+- `src/assistant/services/turns.py`:
+  - `TOOL_DESCRIPTIONS` carries short query hints ("query=<the item the
+    user named> resolves it"), and `_tools_doc()` documents the request
+    shape (`{tool, query?, limit 1..20}`) — no schema dump.
+  - New `_field_type()` renders a compact type descriptor from a field
+    annotation: enum value sets (`low|normal|high`), `datetime` as
+    `"YYYY-MM-DD HH:MM"`, `list[T]` → `T[]`, unions, `Literal`, and
+    unwrapping of `Annotated`/`conint`.
+  - `_actions_doc()` renders `kind(field:type?, ...)` per registered
+    kind from the registry (single source of truth; internal fields
+    skipped via `FieldInfo.exclude`) — the action catalog is compact,
+    concrete, and cannot drift from the schemas.
+- `tests/test_ai.py`: 6 fixture tests through the full `chat_structured`
+  path with a faked client — bare JSON single call (cost stays at 1),
+  contradictory clarification+actions repairs on the 2nd attempt,
+  unrepairable contradiction fails with `AIOutputValidationError`,
+  schema validator unit check (blank clarification + actions allowed),
+  unknown tool name fails on both attempts, invalid enum/bounds value
+  (`limit: 99`) repairs on the 2nd attempt.
+- `tests/test_turns.py`: 4 engine-level fixture tests through
+  `run_turn` — invalid enum payload (`priority="urgent"`) lands in
+  `skipped_actions` and stores no `PendingAction`; ambiguous reference
+  (two "Dentist" items) ends in `TOOL_FOLD` clarification with no
+  mutation; `_actions_doc()` content assertions (types, enums, date
+  format, no `expected_updated_at`); turn prompts carry the action/tool
+  docs.
+
+Verified: `uv run pytest -q` 473 passed (was 463);
+`uv run ruff check .` clean; full E2E suite 14 passed.
 
 ## V3 — Priorities 38–40: Proactivity hardening (deterministic summary, context, concurrency)
 

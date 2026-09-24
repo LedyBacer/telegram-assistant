@@ -1150,3 +1150,87 @@ async def test_no_transaction_spans_provider_calls(session: AsyncSession) -> Non
     }
     assert result.model_calls == 2
     assert len(result.retrieved_chunks) == 1
+
+
+# ---------------------------------------------------------------------------
+# V3 P41: realistic malformed/ambiguous Qwen fixtures at the engine level
+# ---------------------------------------------------------------------------
+
+
+async def test_fixture_invalid_enum_payload_skipped_not_stored(
+    session: AsyncSession,
+) -> None:
+    """A 9B model may emit an enum value outside the schema (e.g.
+    priority "urgent"); the engine must skip the proposal, store nothing,
+    and still deliver the reply."""
+    user = await _user(session)
+    turn = AssistantTurn(
+        reply="Sure, I'll set it as urgent.",
+        actions=[
+            ActionProposal(
+                kind="create_item",
+                payload={"title": "Gym", "priority": "urgent"},
+                summary="Create task: Gym (urgent)",
+            )
+        ],
+    )
+    result = await turns_service.run_turn(
+        session, user, "gym, urgent", provider=_FakeProvider(turn)
+    )
+    await session.commit()
+    assert result.reply == "Sure, I'll set it as urgent."
+    assert result.proposed_actions == []
+    assert len(result.skipped_actions) == 1
+    assert (await session.scalars(select(PendingAction))).all() == []
+
+
+async def test_fixture_ambiguous_reference_yields_clarification_no_mutation(
+    session: AsyncSession,
+) -> None:
+    """Two similar items: the read tool reports 'ambiguous: ...' and the
+    fold asks for clarification instead of guessing — no mutation is
+    proposed (V3 §8)."""
+    user = await _user(session)
+    at = datetime.combine(datetime.now(tz=UTC).date(), datetime.min.time(), tzinfo=UTC)
+    at = at + timedelta(hours=12)
+    await calendar_service.create_item(
+        session, user, title="Dentist", starts_at=at
+    )
+    await calendar_service.create_item(
+        session, user, title="Dentist (checkup)", starts_at=at
+    )
+    await session.commit()
+
+    turn = AssistantTurn(
+        data_requests=[ReadToolRequest(tool="calendar", query="dentist")]
+    )
+    fold = AssistantTurn(clarification="Which dentist item — the visit or the checkup?")
+    provider = _FakeProvider(turn, fold_turn=fold)
+    result = await turns_service.run_turn(
+        session, user, "cancel the dentist", provider=provider
+    )
+    await session.commit()
+    assert result.state is TurnState.TOOL_FOLD
+    assert result.reply == "Which dentist item — the visit or the checkup?"
+    assert result.proposed_actions == []
+    assert (await session.scalars(select(PendingAction))).all() == []
+
+
+def test_actions_doc_lists_types_enums_and_dates() -> None:
+    doc = turns_service._actions_doc()
+    assert "priority:low|normal|high" in doc
+    assert "item_id:int" in doc
+    assert '"YYYY-MM-DD HH:MM"' in doc
+    assert "remind_offsets_minutes:int[]?" in doc
+    # Internal engine fields are never offered to the model.
+    assert "expected_updated_at" not in doc
+
+
+async def test_turn_prompts_carry_action_and_tool_docs(session: AsyncSession) -> None:
+    user = await _user(session)
+    provider = _FakeProvider(AssistantTurn(reply="ok"))
+    await turns_service.run_turn(session, user, "hi", provider=provider)
+    await session.commit()
+    assert "- create_item(title:str" in provider.system
+    assert "query=<the item the user named> resolves it" in provider.system
+    assert "Each request: {tool, query" in provider.system

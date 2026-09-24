@@ -38,6 +38,7 @@ from assistant.ai import (
     build_ai_provider,
     extract_json_object,
 )
+from assistant.ai.schemas import ActionProposal, AssistantTurn
 from assistant.bot import handlers
 from assistant.bot.handlers import on_draft, on_text
 from assistant.bot.states import TaskDraftStates
@@ -262,6 +263,160 @@ def test_chat_structured_handles_qwen_preamble_in_single_call() -> None:
     )
     assert out.title == "Позвонить Сергею"
     assert out.start == datetime(2026, 9, 22, 17, 0)
+    assert create.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Realistic Qwen-output fixtures through the full chat_structured path
+# (V3 P41): the 9B model's malformed-but-recoverable shapes must be handled
+# by extraction + validation + the bounded repair loop, and unrecoverable
+# contradictions must fail safely (AIOutputValidationError), never pass.
+# ---------------------------------------------------------------------------
+
+
+def test_fixture_contradictory_turn_clarification_with_actions_repairs() -> None:
+    """A 9B model that asks for clarification AND proposes a mutation in the
+    same turn is contradictory (V3 §8). The first response is rejected by
+    the schema; the corrective retry lets the model self-repair."""
+    provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
+    create.side_effect = [
+        _fake_completion(
+            "Нужно уточнить, какой именно пункт, но я подготовлю перенос.\n"
+            "```json\n"
+            '{"clarification": "Какой пункт перенести — утренний или вечерний?", '
+            '"actions": [{"kind": "update_item", '
+            '"payload": {"item_id": 12, "starts_at": "2026-09-25 18:00"}, '
+            '"summary": "Перенести на 18:00"}]}\n'
+            "```"
+        ),
+        _fake_completion(
+            "```json\n"
+            '{"clarification": "Какой пункт перенести — утренний или вечерний?"}\n'
+            "```"
+        ),
+    ]
+
+    out = asyncio.run(
+        provider.chat_structured(
+            system="S",
+            messages=[{"role": "user", "content": "перенеси встречу на 18:00"}],
+            schema=AssistantTurn,
+        )
+    )
+    assert isinstance(out, AssistantTurn)
+    assert out.clarification == "Какой пункт перенести — утренний или вечерний?"
+    assert out.actions == []
+    assert create.await_count == 2
+
+
+def test_fixture_contradictory_turn_fails_safely_when_unrepaired() -> None:
+    provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
+    contradictory = (
+        '{"clarification": "Which item do you mean?", '
+        '"actions": [{"kind": "complete_item", "payload": {"item_id": 1}, '
+        '"summary": "Complete it"}]}'
+    )
+    create.side_effect = [
+        _fake_completion(f"Sure:\n```json\n{contradictory}\n```"),
+        _fake_completion(contradictory),
+    ]
+
+    with pytest.raises(AIOutputValidationError, match="schema validation"):
+        asyncio.run(
+            provider.chat_structured(
+                system="S",
+                messages=[{"role": "user", "content": "move it"}],
+                schema=AssistantTurn,
+            )
+        )
+    assert create.await_count == 2
+
+
+def test_turn_schema_rejects_clarification_with_actions() -> None:
+    with pytest.raises(ValidationError, match="must not propose actions"):
+        AssistantTurn(
+            clarification="Which one?",
+            actions=[
+                ActionProposal(
+                    kind="complete_item", payload={"item_id": 1}, summary="s"
+                )
+            ],
+        )
+    # A blank clarification is not a mode: actions alone stay valid.
+    turn = AssistantTurn(
+        clarification="   ",
+        actions=[
+            ActionProposal(
+                kind="complete_item", payload={"item_id": 1}, summary="s"
+            )
+        ],
+    )
+    assert len(turn.actions) == 1
+
+
+def test_fixture_unknown_tool_name_fails_validation() -> None:
+    """A tool name outside the Literal fails schema validation; the repair
+    prompt offers no new vocabulary, so an un-repaired model fails safely."""
+    provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
+    unknown_tool = (
+        '{"data_requests": [{"tool": "delete_calendar", "query": "gym"}]}'
+    )
+    create.side_effect = [
+        _fake_completion(f"Let me check.\n{unknown_tool}"),
+        _fake_completion(unknown_tool),
+    ]
+
+    with pytest.raises(AIOutputValidationError, match="schema validation"):
+        asyncio.run(
+            provider.chat_structured(
+                system="S",
+                messages=[{"role": "user", "content": "cancel the gym"}],
+                schema=AssistantTurn,
+            )
+        )
+    assert create.await_count == 2
+
+
+def test_fixture_invalid_enum_type_value_repairs() -> None:
+    """An out-of-bounds scalar (limit > 20) fails the conint bound on the
+    first response; the corrected second response validates."""
+    provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
+    create.side_effect = [
+        _fake_completion('{"data_requests": [{"tool": "calendar", "limit": 99}]}'),
+        _fake_completion('{"data_requests": [{"tool": "calendar", "limit": 5}]}'),
+    ]
+
+    out = asyncio.run(
+        provider.chat_structured(
+            system="S",
+            messages=[{"role": "user", "content": "show my calendar"}],
+            schema=AssistantTurn,
+        )
+    )
+    assert len(out.data_requests) == 1
+    assert out.data_requests[0].limit == 5
+    assert create.await_count == 2
+
+
+def test_fixture_valid_turn_bare_json_single_call() -> None:
+    """The common happy path: a bare object, no fences, no preamble — one
+    structured call, no repair (cost stays at the 9B budget)."""
+    provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
+    create.return_value = _fake_completion(
+        '{"reply": "Your standup is at 12:00.", '
+        '"actions": [{"kind": "complete_item", "payload": {"item_id": 7}, '
+        '"summary": "Complete standup"}]}'
+    )
+
+    out = asyncio.run(
+        provider.chat_structured(
+            system="S",
+            messages=[{"role": "user", "content": "done with standup"}],
+            schema=AssistantTurn,
+        )
+    )
+    assert out.reply == "Your standup is at 12:00."
+    assert out.actions[0].kind == "complete_item"
     assert create.await_count == 1
 
 

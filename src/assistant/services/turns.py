@@ -56,7 +56,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum, StrEnum
+from types import UnionType
+from typing import Annotated, Literal, Union, get_args, get_origin
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import ValidationError
@@ -94,8 +96,10 @@ MAX_DATA_TOOLS = 3
 DOCUMENTS_TOOL_LIMIT = 5
 
 TOOL_DESCRIPTIONS: dict[str, str] = {
-    "calendar": "today's and upcoming calendar items (with ids)",
-    "reminders": "pending reminders (with ids)",
+    "calendar": "today's and upcoming calendar items (with ids); "
+    "query=<the item the user named> resolves it",
+    "reminders": "pending reminders (with ids); "
+    "query=<the reminder the user named> resolves it",
     "workouts": "recent workout logs",
     "files": "stored files (name, state, size)",
     "documents": "search the text of stored documents for relevant excerpts",
@@ -297,20 +301,69 @@ async def run_read_tool(
 
 
 def _tools_doc() -> str:
-    return "\n".join(f"- {name}: {desc}" for name, desc in TOOL_DESCRIPTIONS.items())
+    lines = [f"- {name}: {desc}" for name, desc in TOOL_DESCRIPTIONS.items()]
+    lines.append(
+        "Each request: {tool, query (optional short text, default none), "
+        "limit (1..20, default 5)}."
+    )
+    return "\n".join(lines)
+
+
+def _field_type(annotation: object) -> str:
+    """Compact type descriptor for prompt docs: ``str``, ``int``, ``bool``,
+    ``float``, ``datetime`` (rendered as the expected format), ``a|b|c`` for
+    Literal/Enum members, and ``X[]`` for lists. None unions are unwrapped —
+    optionality is conveyed by the ``?`` suffix the caller adds."""
+    if annotation is type(None):
+        return "any"
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    origin = get_origin(annotation)
+    if origin in (Union, UnionType):
+        parts = [
+            _field_type(arg)
+            for arg in get_args(annotation)
+            if arg is not type(None)
+        ]
+        return "|".join(parts) if parts else "any"
+    if origin is Literal:
+        return "|".join(str(value) for value in get_args(annotation))
+    if origin is list:
+        return f"{_field_type(get_args(annotation)[0])}[]"
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return "|".join(str(member.value) for member in annotation)
+    if annotation is datetime:
+        return '"YYYY-MM-DD HH:MM"'
+    if isinstance(annotation, type):
+        # issubclass (not identity) so constrained types like conint render.
+        if issubclass(annotation, bool):
+            return "bool"
+        if issubclass(annotation, int):
+            return "int"
+        if issubclass(annotation, float):
+            return "float"
+        if issubclass(annotation, str):
+            return "str"
+    return "any"
 
 
 def _actions_doc() -> str:
     """Render the registered action kinds from the registry (single source
-    of truth) so the prompt can never drift from the payload schemas."""
+    of truth) so the prompt can never drift from the payload schemas.
+
+    Field types, enum values, and the datetime format are rendered compactly
+    (V3 §41) so a 9B model sees the payload contract without a full JSON
+    schema dump. Fields marked ``exclude=True`` are internal to the engine
+    and never offered to the model."""
     lines = []
     for kind in registered_kinds():
         spec = get_action_kind(kind)
         if spec is None:  # pragma: no cover — registry is self-consistent
             continue
         fields = ", ".join(
-            name + ("" if f.is_required() else "?")
+            f"{name}:{_field_type(f.annotation)}" + ("" if f.is_required() else "?")
             for name, f in spec.payload_schema.model_fields.items()
+            if not f.exclude
         )
         lines.append(f"- {kind}({fields})")
     return "\n".join(lines)

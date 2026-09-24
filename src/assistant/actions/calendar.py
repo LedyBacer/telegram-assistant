@@ -77,7 +77,9 @@ class UpdateItemPayload(BaseModel):
 
     ``expected_updated_at`` is internal: it is captured at proposal time
     (the kind's baseline) and re-checked at execution to reject a mutation
-    whose target drifted since the preview (optimistic guard, SPEC §3)."""
+    whose target drifted since the preview (optimistic guard, SPEC §3).
+    ``exclude=True`` keeps the internal field out of the generated prompt
+    docs — the model must never set it."""
 
     item_id: int
     title: str | None = None
@@ -86,22 +88,22 @@ class UpdateItemPayload(BaseModel):
     ends_at: datetime | None = None
     due_at: datetime | None = None
     priority: ItemPriority | None = None
-    expected_updated_at: datetime | None = None
+    expected_updated_at: datetime | None = Field(default=None, exclude=True)
 
 
 class CompleteItemPayload(BaseModel):
     item_id: int
-    expected_updated_at: datetime | None = None
+    expected_updated_at: datetime | None = Field(default=None, exclude=True)
 
 
 class CancelItemPayload(BaseModel):
     item_id: int
-    expected_updated_at: datetime | None = None
+    expected_updated_at: datetime | None = Field(default=None, exclude=True)
 
 
 class DeleteItemPayload(BaseModel):
     item_id: int
-    expected_updated_at: datetime | None = None
+    expected_updated_at: datetime | None = Field(default=None, exclude=True)
 
 
 class CreateReminderPayload(BaseModel):

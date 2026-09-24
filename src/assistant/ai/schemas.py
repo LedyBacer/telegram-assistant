@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, conint
+from pydantic import BaseModel, ConfigDict, Field, conint, model_validator
 
 from assistant.services.reminders import (
     MAX_OFFSET_MINUTES,
@@ -101,6 +101,11 @@ class AssistantTurn(BaseModel):
     the request is ambiguous. At most one extra model call is made (to fold
     tool results into a final reply), so the turn is bounded and never runs
     an unbounded ReAct loop (SPEC §2).
+
+    Mutually exclusive modes are enforced in Python, not left to the prompt
+    (V3 §8): a turn that asks for clarification must not also propose
+    mutations — such contradictory output fails validation, giving the
+    provider's repair loop one chance to self-correct.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -110,3 +115,15 @@ class AssistantTurn(BaseModel):
     actions: list[ActionProposal] = Field(default_factory=list, max_length=3)
     facts: list[FactProposal] = Field(default_factory=list, max_length=3)
     clarification: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def _modes_are_consistent(self) -> AssistantTurn:
+        if (
+            self.clarification
+            and self.clarification.strip()
+            and self.actions
+        ):
+            raise ValueError(
+                "a clarification must not propose actions simultaneously"
+            )
+        return self
