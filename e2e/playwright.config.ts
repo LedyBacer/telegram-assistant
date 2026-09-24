@@ -4,6 +4,14 @@ import { defineConfig, devices } from "@playwright/test";
 // developer's local API or touches the real `assistant` database.
 const E2E_PORT = Number(process.env.E2E_PORT ?? 8123);
 const E2E_DB = process.env.E2E_DATABASE ?? "assistant_e2e";
+// Must match e2e/global-setup.ts (same env vars, same defaults): the API
+// server and the DB prep must always agree on the isolated database.
+// Accept `postgresql://` or `postgresql+asyncpg://`; the app needs the
+// SQLAlchemy asyncpg form.
+const E2E_DB_URL = (
+  process.env.E2E_DATABASE_URL ??
+  `postgresql+asyncpg://assistant:assistant@localhost:5432/${E2E_DB}`
+).replace(/^postgresql:\/\//, "postgresql+asyncpg://");
 const BASE = `http://127.0.0.1:${E2E_PORT}`;
 
 export default defineConfig({
@@ -49,7 +57,7 @@ export default defineConfig({
     env: {
       ...process.env,
       ASSISTANT_API_PORT: String(E2E_PORT),
-      DATABASE_URL: `postgresql+asyncpg://assistant:assistant@localhost:5432/${E2E_DB}`,
+      DATABASE_URL: E2E_DB_URL,
       PUBLIC_BASE_URL: BASE,
       TELEGRAM_BOT_TOKEN: "e2e-test-token",
       OPENAI_API_KEY: "e2e-key",

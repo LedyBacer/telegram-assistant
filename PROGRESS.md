@@ -177,11 +177,25 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   the new absence test. README + ASSUMPTIONS 40 updated to the new location
   and the "absent from the image" guarantee. Verified: Ruff clean, full
   pytest 526 passed, E2E 18/18 (webServer now runs the new script).
+- **§34** E2E database is now fully parameterized by `E2E_DATABASE_URL`
+  (asyncpg form accepted; `postgresql+asyncpg://` also accepted and
+  normalized) with optional `E2E_DATABASE_ADMIN_URL` for the
+  CREATE DATABASE connection (default: `postgres` DB of the same server).
+  Every hardcoded `assistant:assistant@localhost:5432` in `e2e/` is gone —
+  `global-setup.ts` (URLs now passed to the Python script via env, no
+  interpolation), `playwright.config.ts` webServer `DATABASE_URL`,
+  `helpers/seed.ts` (new `e2eDbUrl` export), and the `v2-features` seed
+  script all derive from the same env var + default. global-setup order is
+  now create-DB → alembic → TRUNCATE (TRUNCATE previously ran before the
+  tables existed, which only worked on a pre-existing DB). Verified: full
+  E2E 18/18 on a FRESH database via `E2E_DATABASE_URL` (dropped first,
+  created+migrated+truncated by the suite) and 18/18 on the default
+  `assistant_e2e`.
 
-**Next (in order):** §34-39 CI/acceptance reproducibility (E2E_DATABASE_URL,
-self-contained acceptance, real bot smoke, actionlint, real GitHub Actions
-run), readiness terminology, logging correlation; §40-47 named regression
-tests, docs sync, Definition of Done.
+**Next (in order):** §35-39 CI/acceptance reproducibility (self-contained
+acceptance, real bot smoke, actionlint, real GitHub Actions run), readiness
+terminology, logging correlation; §40-47 named regression tests, docs sync,
+Definition of Done.
 
 
 ## V3 — Priority 55: Definition of Done (final verification)

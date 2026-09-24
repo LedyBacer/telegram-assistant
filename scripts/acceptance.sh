@@ -254,9 +254,10 @@ uv run pytest "tests/test_minapp_shell.py::test_production_app_has_no_test_auth_
 uv run pytest "tests/test_minapp_shell.py::test_package_has_no_test_auth_module" -q
 
 step "22. Mini App Playwright E2E (Playwright acceptance stage)"
-# Isolated assistant_e2e database on the dev PostgreSQL (created + migrated +
-# truncated by e2e/global-setup.ts) served by the test-only entrypoint; the
-# real telegram.org script is blocked and initData is a deterministic stub.
+# Isolated E2E database (E2E_DATABASE_URL, default assistant_e2e on the
+# dev PostgreSQL; created + migrated + truncated by e2e/global-setup.ts)
+# served by the test-only entrypoint; the real telegram.org script is
+# blocked and initData is a deterministic stub.
 npm ci
 npm run test:e2e
 

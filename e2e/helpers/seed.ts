@@ -9,6 +9,16 @@ const db = process.env.E2E_DATABASE ?? "assistant_e2e";
 export const e2eDbName = db;
 
 /**
+ * Asyncpg-form URL of the isolated E2E database — the same env var and
+ * default as e2e/global-setup.ts, so seed scripts always hit the database
+ * globalSetup prepared.
+ */
+export const e2eDbUrl = (
+  process.env.E2E_DATABASE_URL ??
+  `postgresql://assistant:assistant@localhost:5432/${db}`
+).replace(/^postgresql\+asyncpg:\/\//, "postgresql://");
+
+/**
  * Run a complete Python script (asyncpg available) from the repo root against
  * the isolated E2E database. Used to seed state that no UI flow can create
  * (e.g. proposed pending actions, a `failed` file row).

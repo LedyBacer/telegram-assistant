@@ -313,9 +313,11 @@ npm run smoke               # read-only public smoke test (post-deploy)
 ```
 
 The suite runs against an isolated stack on port 8123 (`e2e/playwright.config.ts`):
-a dedicated `assistant_e2e` database that `e2e/global-setup.ts` creates,
-migrates, and `TRUNCATE ... CASCADE`s before every run, and an API process
-started by Playwright itself. Viewport is 390x844 (ru-RU, UTC).
+a dedicated E2E database (default `assistant_e2e`, overridable with
+`E2E_DATABASE_URL` — plus optional `E2E_DATABASE_ADMIN_URL` for the
+`CREATE DATABASE` connection) that `e2e/global-setup.ts` creates, migrates,
+and `TRUNCATE ... CASCADE`s before every run, and an API process started by
+Playwright itself. Viewport is 390x844 (ru-RU, UTC).
 
 **Authenticated tests without a production bypass:** the production app
 (`assistant.api.main`) authenticates every Mini App request with a signed

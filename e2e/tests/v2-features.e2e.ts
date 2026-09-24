@@ -4,7 +4,7 @@ import {
   assertNoHorizontalOverflow,
   assertNoLeakedDom,
 } from "../helpers/app";
-import { runDbScript, e2eDbName } from "../helpers/seed";
+import { runDbScript, e2eDbUrl } from "../helpers/seed";
 
 const base = "http://127.0.0.1:" + (process.env.E2E_PORT ?? 8123);
 
@@ -46,9 +46,7 @@ FILE_NAME = "${FILE_NAME}"
 FILE_KEY = "${FILE_KEY}"
 
 async def main():
-    conn = await asyncpg.connect(
-        "postgresql://assistant:assistant@localhost:5432/${e2eDbName}"
-    )
+    conn = await asyncpg.connect("${e2eDbUrl}")
     try:
         today = datetime.now(timezone.utc).date().isoformat()
         await conn.execute(
