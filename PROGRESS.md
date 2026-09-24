@@ -123,16 +123,35 @@ tree clean at each boundary (full suite + Ruff green before each commit).
   a `finally`) so it does not pollute the shared sequential suite. The New view
   gained a picker field, so `miniapp.e2e.ts` / `screens-audit.e2e.ts` move the
   due picker from index 3 to 4 and the field count 4 -> 5.
+- **§28** The New-view reminder-offset picker (presets + custom, SPEC §14.2
+  UX bounds) is extracted into a shared `reminderPicker()` helper in
+  `miniapp/app.js` (returns `{ node, get, clear }`); the Edit view reuses it
+  below the existing pending-reminder list so the user can inspect pending
+  reminders, cancel one, and ADD a new offset. New endpoint
+  `POST /api/v1/items/{item_id}/reminders` (`ItemReminderCreate.offsets_minutes`)
+  calls the shared `reminders.create_item_reminders`, so max/bounds/dedupe
+  stay in the service — no duplicated validation in JS beyond the UX
+  constants. The service now enforces the cap over the item's TOTAL pending
+  `item_linked` reminders (a second create cannot push an item past 5;
+  400 when exceeded). Items without `starts_at` create nothing (201 +
+  `[]`; the UI toasts `miniapp.reminder_needs_start` first). New keys
+  `miniapp.reminder_save` / `reminder_added` / `reminder_needs_start`
+  (en+ru). `ui.js field()` now accepts multiple controls. API tests cover
+  add/dedupe/fire-time, total-cap (exactly 5 ok, 6th -> 400), schema 422s,
+  no-starts_at, and cross-user 404. `edit-item.e2e.ts` extends the edit
+  flow: adds a "10 min" reminder via the shared picker, then cancels both
+  pending reminders; self-cleaning (item delete cascades). Verified: full
+  pytest 525 passed, Ruff clean, E2E 18/18 passed.
 - **§29** TTL-aware effective status filter on `GET /actions`.
 - **§30** service owns local-upload artifact cleanup on write-failure; the
   API layer also cleans on commit-failure.
 - **§31** local-upload disk I/O (mkdir/write) is off the event loop via
   `asyncio.to_thread`.
 
-**Next (in order):** §28 reuse the reminder picker in Edit Item; §32-39
-CI/acceptance reproducibility (self-contained acceptance, real bot smoke,
-actionlint, real GitHub Actions run), readiness terminology, logging
-correlation; §40-47 named regression tests, docs sync, Definition of Done.
+**Next (in order):** §32-39 CI/acceptance reproducibility (self-contained
+acceptance, real bot smoke, actionlint, real GitHub Actions run), readiness
+terminology, logging correlation; §40-47 named regression tests, docs sync,
+Definition of Done.
 
 
 ## V3 — Priority 55: Definition of Done (final verification)
