@@ -12,19 +12,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.ai import AIProviderError
 from assistant.ai.schemas import (
     ActionProposal,
+    AssistantFold,
     AssistantTurn,
     FactProposal,
     ReadToolRequest,
 )
 from assistant.bot import callbacks
 from assistant.bot.handlers import on_action
-from assistant.i18n import LocalizableError
 from assistant.models.calendar_items import CalendarItem, ItemKind
 from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.facts import FactStatus, UserFact
@@ -59,7 +60,7 @@ class _FakeProvider:
         self,
         turn: AssistantTurn,
         reply: str = "folded-reply",
-        fold_turn: AssistantTurn | None = None,
+        fold_turn: AssistantFold | None = None,
     ) -> None:
         self.turn = turn
         self.reply = reply
@@ -88,7 +89,7 @@ class _FakeProvider:
             return self.turn
         if self.fold_turn is not None:
             return self.fold_turn
-        return AssistantTurn(reply=self.reply)
+        return AssistantFold(mode="answer", reply=self.reply)
 
     async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
         self.embed_calls += 1
@@ -149,7 +150,7 @@ async def test_direct_reply_persists_both_messages(
 ) -> None:
     user = await _user(session)
     await _seed(session, user)
-    provider = _FakeProvider(AssistantTurn(reply="You have standup."))
+    provider = _FakeProvider(AssistantTurn(mode="answer", reply="You have standup."))
 
     result = await turns_service.run_turn(
         session, user, "what do I have today?", provider=provider
@@ -168,7 +169,7 @@ async def test_direct_reply_persists_both_messages(
 async def test_direct_reply_context_includes_item_ids(session: AsyncSession) -> None:
     user = await _user(session)
     item = await _seed(session, user)
-    provider = _FakeProvider(AssistantTurn(reply="ok"))
+    provider = _FakeProvider(AssistantTurn(mode="answer", reply="ok"))
     await turns_service.run_turn(session, user, "move standup", provider=provider)
     await session.commit()
     # The id is rendered so follow-up references can resolve (SPEC §3).
@@ -186,6 +187,7 @@ async def test_proposal_creates_pending_action_not_executed(
     user = await _user(session)
     await _seed(session, user)
     turn = AssistantTurn(
+        mode="proposal",
         reply="Shall I add that?",
         actions=[
             ActionProposal(
@@ -214,6 +216,7 @@ async def test_proposal_creates_pending_action_not_executed(
 async def test_invalid_payload_is_skipped_not_stored(session: AsyncSession) -> None:
     user = await _user(session)
     turn = AssistantTurn(
+        mode="proposal",
         reply="Sure.",
         actions=[
             ActionProposal(
@@ -238,6 +241,7 @@ async def test_invalid_payload_is_skipped_not_stored(session: AsyncSession) -> N
 async def test_unknown_kind_is_skipped(session: AsyncSession) -> None:
     user = await _user(session)
     turn = AssistantTurn(
+        mode="proposal",
         reply="Sure.",
         actions=[
             ActionProposal(
@@ -260,6 +264,7 @@ async def test_workout_log_conversational_proposal(session: AsyncSession) -> Non
     user = await _user(session)
     await _seed(session, user)
     turn = AssistantTurn(
+        mode="proposal",
         reply="Log a 40-minute run at effort 7/10?",
         actions=[
             ActionProposal(
@@ -295,6 +300,7 @@ async def test_workout_schedule_conversational_proposal(session: AsyncSession) -
     user = await _user(session)
     await _seed(session, user)
     turn = AssistantTurn(
+        mode="proposal",
         reply="Schedule gym on Friday 20:00 for one hour?",
         actions=[
             ActionProposal(
@@ -333,6 +339,7 @@ async def test_data_request_makes_second_model_call(session: AsyncSession) -> No
     user = await _user(session)
     item = await _seed(session, user)
     turn = AssistantTurn(
+        mode="need_data",
         data_requests=[ReadToolRequest(tool="calendar", limit=5)]
     )
     provider = _FakeProvider(turn, reply="Standup is your only item.")
@@ -355,6 +362,7 @@ async def test_data_request_dedupes_and_bounds_tools(session: AsyncSession) -> N
     await _seed(session, user)
     # Duplicate calendar requests + an unknown tool + one valid -> bounded.
     turn = AssistantTurn(
+        mode="need_data",
         data_requests=[
             ReadToolRequest(tool="calendar"),
             ReadToolRequest(tool="calendar"),
@@ -530,7 +538,7 @@ async def test_read_tools_render_resolution_line(session: AsyncSession) -> None:
 async def test_clarification_used_when_no_reply(session: AsyncSession) -> None:
     user = await _user(session)
     provider = _FakeProvider(
-        AssistantTurn(clarification="Which item do you mean?")
+        AssistantTurn(mode="clarification", clarification="Which item do you mean?")
     )
     result = await turns_service.run_turn(
         session, user, "move it to 20:00", provider=provider
@@ -541,22 +549,18 @@ async def test_clarification_used_when_no_reply(session: AsyncSession) -> None:
     assert roles == [ChatRole.user.value, ChatRole.assistant.value]
 
 
-async def test_empty_turn_raises_localizable(session: AsyncSession) -> None:
-    user = await _user(session)
-    provider = _FakeProvider(AssistantTurn())
-    with pytest.raises(LocalizableError) as exc:
-        await turns_service.run_turn(session, user, "hello", provider=provider)
-    assert exc.value.key == "chat.empty_turn"
-    await session.commit()
-    # Nothing persisted for a turn that produced no output.
-    assert (await session.scalars(select(ChatMessage))).all() == []
+def test_empty_turn_is_rejected_by_schema() -> None:
+    """A turn with no mode (an empty model object) cannot even be
+    constructed: the schema requires the mode discriminator (V4 §12-13)."""
+    with pytest.raises(ValidationError):
+        AssistantTurn()
 
 
 async def test_blank_text_rejected(session: AsyncSession) -> None:
     user = await _user(session)
     with pytest.raises(ValueError, match="required"):
         await turns_service.run_turn(
-            session, user, "   ", provider=_FakeProvider(AssistantTurn(reply="x"))
+            session, user, "   ", provider=_FakeProvider(AssistantTurn(mode="answer", reply="x"))
         )
 
 
@@ -576,7 +580,7 @@ async def test_provider_failure_re_raises(session: AsyncSession) -> None:
 
 async def test_state_direct_reply(session: AsyncSession) -> None:
     user = await _user(session)
-    provider = _FakeProvider(AssistantTurn(reply="ok"))
+    provider = _FakeProvider(AssistantTurn(mode="answer", reply="ok"))
     result = await turns_service.run_turn(
         session, user, "hi", provider=provider
     )
@@ -590,7 +594,7 @@ async def test_state_direct_reply(session: AsyncSession) -> None:
 async def test_state_tool_fold(session: AsyncSession) -> None:
     user = await _user(session)
     await _seed(session, user)
-    turn = AssistantTurn(data_requests=[ReadToolRequest(tool="calendar")])
+    turn = AssistantTurn(mode="need_data", data_requests=[ReadToolRequest(tool="calendar")])
     provider = _FakeProvider(turn, reply="folded")
     result = await turns_service.run_turn(
         session, user, "what's on my calendar?", provider=provider
@@ -605,7 +609,7 @@ async def test_state_tool_fold(session: AsyncSession) -> None:
 
 async def test_state_clarification(session: AsyncSession) -> None:
     user = await _user(session)
-    provider = _FakeProvider(AssistantTurn(clarification="Which one?"))
+    provider = _FakeProvider(AssistantTurn(mode="clarification", clarification="Which one?"))
     result = await turns_service.run_turn(
         session, user, "move it", provider=provider
     )
@@ -615,9 +619,10 @@ async def test_state_clarification(session: AsyncSession) -> None:
     assert result.reply == "Which one?"
 
 
-async def test_state_empty_with_proposal_succeeds(session: AsyncSession) -> None:
+async def test_state_proposal_only_no_assistant_message(session: AsyncSession) -> None:
     user = await _user(session)
     turn = AssistantTurn(
+        mode="proposal",
         actions=[
             ActionProposal(
                 kind="create_item",
@@ -630,7 +635,7 @@ async def test_state_empty_with_proposal_succeeds(session: AsyncSession) -> None
         session, user, "gym tomorrow", provider=_FakeProvider(turn)
     )
     await session.commit()
-    assert result.state is TurnState.EMPTY
+    assert result.state is TurnState.PROPOSAL
     assert result.reply == ""
     assert len(result.proposed_actions) == 1
     # No assistant message is persisted for a proposals-only turn.
@@ -638,86 +643,74 @@ async def test_state_empty_with_proposal_succeeds(session: AsyncSession) -> None
     assert roles == [ChatRole.user.value]
 
 
-async def test_classification_priority() -> None:
-    # Fixed, total priority: tool fold > reply > clarification > empty.
+def test_classification_is_direct_mode_mapping() -> None:
+    """Classification is a pure mode->state map (no priority order): each
+    mode maps to exactly one state (V4 §13)."""
     assert (
         turns_service._classify_turn(
-            AssistantTurn(
-                reply="answered", data_requests=[ReadToolRequest(tool="facts")]
-            )
+            AssistantTurn(mode="answer", reply="answered")
         )
         is TurnState.DIRECT_REPLY
     )
     assert (
         turns_service._classify_turn(
             AssistantTurn(
-                reply="", data_requests=[ReadToolRequest(tool="facts")]
+                mode="need_data", data_requests=[ReadToolRequest(tool="facts")]
             )
         )
         is TurnState.TOOL_FOLD
     )
-    # A blank (whitespace-only) reply counts as no reply -> the model's
-    # data requests are honoured with the one fold call.
     assert (
         turns_service._classify_turn(
             AssistantTurn(
-                reply="   ", data_requests=[ReadToolRequest(tool="facts")]
+                mode="proposal",
+                actions=[
+                    ActionProposal(
+                        kind="create_item",
+                        payload={"title": "x"},
+                        summary="s",
+                    )
+                ],
             )
         )
-        is TurnState.TOOL_FOLD
+        is TurnState.PROPOSAL
     )
     assert (
         turns_service._classify_turn(
-            AssistantTurn(clarification="Which?")
+            AssistantTurn(mode="clarification", clarification="Which?")
         )
         is TurnState.CLARIFICATION
     )
-    assert (
-        turns_service._classify_turn(AssistantTurn(clarification="  "))
-        is TurnState.EMPTY
-    )
-    assert turns_service._classify_turn(AssistantTurn()) is TurnState.EMPTY
 
 
-async def test_reply_wins_over_data_requests_end_to_end(
-    session: AsyncSession,
-) -> None:
-    """DIRECT_REPLY is terminal: a reply ignores any data_requests — no
-    read tools run and no second model call is made."""
-    user = await _user(session)
-    await _seed(session, user)
-    turn = AssistantTurn(
-        reply="I already know your calendar.",
-        data_requests=[ReadToolRequest(tool="calendar")],
-    )
-    provider = _FakeProvider(turn)
-    result = await turns_service.run_turn(
-        session, user, "calendar?", provider=provider
-    )
-    await session.commit()
-    assert result.state is TurnState.DIRECT_REPLY
-    assert result.model_calls == 1
-    assert provider.structured_calls == 1
-    assert provider.chat_calls == 0
-    assert result.reply == "I already know your calendar."
-    assert result.retrieved_chunks == []
+def test_reply_and_data_requests_are_mutually_exclusive() -> None:
+    """The old 'reply wins over data_requests' priority no longer exists:
+    the schema rejects the contradictory combination outright, so it can
+    never reach the engine (V4 §12-13)."""
+    with pytest.raises(ValidationError):
+        AssistantTurn(
+            mode="answer",
+            reply="I already know your calendar.",
+            data_requests=[ReadToolRequest(tool="calendar")],
+        )
+    with pytest.raises(ValidationError):
+        AssistantTurn(
+            mode="need_data",
+            reply="I already know your calendar.",
+            data_requests=[ReadToolRequest(tool="calendar")],
+        )
 
 
-async def test_tool_fold_blank_fold_without_clarification_raises(
-    session: AsyncSession,
-) -> None:
-    """TOOL_FOLD whose fold comes back blank (and no clarification)
-    degrades to the EMPTY failure path: nothing is persisted."""
-    user = await _user(session)
-    turn = AssistantTurn(data_requests=[ReadToolRequest(tool="facts")])
-    provider = _FakeProvider(turn, reply="   ")
-    with pytest.raises(LocalizableError) as exc:
-        await turns_service.run_turn(session, user, "what do you know?", provider=provider)
-    assert exc.value.key == "chat.empty_turn"
-    await session.commit()
-    assert provider.structured_calls == 2
-    assert provider.chat_calls == 0
-    assert (await session.scalars(select(ChatMessage))).all() == []
+def test_blank_fold_fails_validation() -> None:
+    """The fold is the last model call; its schema (AssistantFold) rejects
+    a blank answer/clarification in the provider's validation step, so a
+    blank fold can never reach the engine (V4 §14-15)."""
+    with pytest.raises(ValidationError):
+        AssistantFold(mode="answer", reply="   ")
+    with pytest.raises(ValidationError):
+        AssistantFold(mode="clarification", clarification="  ")
+    with pytest.raises(ValidationError):
+        AssistantFold(mode="answer")  # missing required reply
 
 
 # ---------------------------------------------------------------------------
@@ -732,8 +725,9 @@ async def test_lookup_then_mutation_in_two_calls(
     proposes the mutation with the real id revealed by the tool results."""
     user = await _user(session)
     item = await _seed(session, user)
-    turn1 = AssistantTurn(data_requests=[ReadToolRequest(tool="calendar")])
-    fold = AssistantTurn(
+    turn1 = AssistantTurn(mode="need_data", data_requests=[ReadToolRequest(tool="calendar")])
+    fold = AssistantFold(
+        mode="proposal",
         reply="Shall I move Standup to 20:00?",
         actions=[
             ActionProposal(
@@ -768,26 +762,16 @@ async def test_lookup_then_mutation_in_two_calls(
     assert refreshed.status == "scheduled"
 
 
-async def test_fold_data_requests_are_ignored(session: AsyncSession) -> None:
-    """The fold is the last call: stray data_requests in it cannot start a
-    third call (no ReAct loop)."""
-    user = await _user(session)
-    turn1 = AssistantTurn(data_requests=[ReadToolRequest(tool="facts")])
-    fold = AssistantTurn(
-        reply="ok",
-        data_requests=[ReadToolRequest(tool="calendar")],
-    )
-    provider = _FakeProvider(turn1, fold_turn=fold)
-
-    result = await turns_service.run_turn(
-        session, user, "what do you know?", provider=provider
-    )
-    await session.commit()
-
-    assert result.state is TurnState.TOOL_FOLD
-    assert result.model_calls == 2
-    assert provider.structured_calls == 2
-    assert result.reply == "ok"
+def test_fold_cannot_request_data() -> None:
+    """The fold is the last call: its schema has no ``data_requests`` field
+    at all (extra="forbid"), so it structurally cannot start a third call —
+    no ReAct loop (V4 §14-15)."""
+    with pytest.raises(ValidationError):
+        AssistantFold(
+            mode="answer",
+            reply="ok",
+            data_requests=[ReadToolRequest(tool="calendar")],
+        )
 
 
 async def test_fold_clarification_used_when_reply_blank(
@@ -796,8 +780,8 @@ async def test_fold_clarification_used_when_reply_blank(
     """When the tool results leave the request ambiguous, the fold's
     clarification becomes the assistant message."""
     user = await _user(session)
-    turn1 = AssistantTurn(data_requests=[ReadToolRequest(tool="calendar")])
-    fold = AssistantTurn(clarification="Which standup do you mean?")
+    turn1 = AssistantTurn(mode="need_data", data_requests=[ReadToolRequest(tool="calendar")])
+    fold = AssistantFold(mode="clarification", clarification="Which standup do you mean?")
     provider = _FakeProvider(turn1, fold_turn=fold)
 
     result = await turns_service.run_turn(
@@ -951,6 +935,7 @@ async def test_fact_proposal_creates_proposed_not_confirmed(
 ) -> None:
     user = await _user(session)
     turn = AssistantTurn(
+        mode="answer",
         reply="Noted.",
         facts=[FactProposal(value="I prefer tea over coffee")],
     )
@@ -969,7 +954,7 @@ async def test_fact_proposal_creates_proposed_not_confirmed(
 
 async def test_fact_dedupes_when_already_live(session: AsyncSession) -> None:
     user = await _user(session)
-    turn = AssistantTurn(reply="ok", facts=[FactProposal(value="I am an engineer")])
+    turn = AssistantTurn(mode="answer", reply="ok", facts=[FactProposal(value="I am an engineer")])
     provider = _FakeProvider(turn)
 
     first = await turns_service.run_turn(
@@ -1001,7 +986,7 @@ async def test_fact_dedupes_rejected(session: AsyncSession) -> None:
         user,
         "I live in Berlin",
         provider=_FakeProvider(
-            AssistantTurn(reply="ok", facts=[FactProposal(value="I live in Berlin")])
+            AssistantTurn(mode="answer", reply="ok", facts=[FactProposal(value="I live in Berlin")])
         ),
     )
     await session.commit()
@@ -1028,23 +1013,21 @@ async def test_fact_superseded_allows_reproposal(session: AsyncSession) -> None:
         user,
         "update: I drink tea",
         provider=_FakeProvider(
-            AssistantTurn(reply="ok", facts=[FactProposal(value="I drink tea")])
+            AssistantTurn(mode="answer", reply="ok", facts=[FactProposal(value="I drink tea")])
         ),
     )
     await session.commit()
     assert len(result.proposed_facts) == 1
 
 
-async def test_facts_only_turn_does_not_raise(session: AsyncSession) -> None:
-    user = await _user(session)
-    turn = AssistantTurn(facts=[FactProposal(value="I like running")])
-    result = await turns_service.run_turn(
-        session, user, "I like running", provider=_FakeProvider(turn)
-    )
-    await session.commit()
-    # No reply text, but a fact was proposed -> no empty-turn error.
-    assert result.reply == ""
-    assert len(result.proposed_facts) == 1
+def test_facts_only_turn_is_rejected_by_schema() -> None:
+    """Facts must ride on an answer (reply) or a proposal (action): a
+    facts-only object with no reply and no action is invalid in every
+    mode, so it cannot reach the engine (V4 §12-13)."""
+    with pytest.raises(ValidationError):
+        AssistantTurn(mode="answer", facts=[FactProposal(value="I like running")])
+    with pytest.raises(ValidationError):
+        AssistantTurn(mode="proposal", facts=[FactProposal(value="I like running")])
 
 
 # ---------------------------------------------------------------------------
@@ -1062,7 +1045,7 @@ async def test_ordinary_turn_makes_no_embedding_calls(
         session, user, filename="quantum-notes.md",
         texts=["quantum entanglement basics"],
     )
-    provider = _FakeProvider(AssistantTurn(reply="Hello!"))
+    provider = _FakeProvider(AssistantTurn(mode="answer", reply="Hello!"))
 
     result = await turns_service.run_turn(
         session, user, "hello", provider=provider
@@ -1087,6 +1070,7 @@ async def test_documents_tool_retrieves_with_deterministic_citations(
         texts=["the warranty covers repairs for two years"],
     )
     turn = AssistantTurn(
+        mode="need_data",
         data_requests=[
             ReadToolRequest(tool="documents", query="warranty repairs", limit=5)
         ]
@@ -1184,6 +1168,7 @@ async def test_no_transaction_spans_provider_calls(session: AsyncSession) -> Non
     )
     provider = _FakeProvider(
         AssistantTurn(
+            mode="need_data",
             data_requests=[
                 ReadToolRequest(tool="documents", query="warranty repairs")
             ]
@@ -1236,6 +1221,7 @@ async def test_fixture_invalid_enum_payload_skipped_not_stored(
     and still deliver the reply."""
     user = await _user(session)
     turn = AssistantTurn(
+        mode="proposal",
         reply="Sure, I'll set it as urgent.",
         actions=[
             ActionProposal(
@@ -1273,9 +1259,10 @@ async def test_fixture_ambiguous_reference_yields_clarification_no_mutation(
     await session.commit()
 
     turn = AssistantTurn(
+        mode="need_data",
         data_requests=[ReadToolRequest(tool="calendar", query="dentist")]
     )
-    fold = AssistantTurn(clarification="Which dentist item — the visit or the checkup?")
+    fold = AssistantFold(mode="clarification", clarification="Which dentist item — the visit or the checkup?")
     provider = _FakeProvider(turn, fold_turn=fold)
     result = await turns_service.run_turn(
         session, user, "cancel the dentist", provider=provider
@@ -1299,7 +1286,7 @@ def test_actions_doc_lists_types_enums_and_dates() -> None:
 
 async def test_turn_prompts_carry_action_and_tool_docs(session: AsyncSession) -> None:
     user = await _user(session)
-    provider = _FakeProvider(AssistantTurn(reply="ok"))
+    provider = _FakeProvider(AssistantTurn(mode="answer", reply="ok"))
     await turns_service.run_turn(session, user, "hi", provider=provider)
     await session.commit()
     assert "- create_item(title:str" in provider.system

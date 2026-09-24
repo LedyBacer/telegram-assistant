@@ -25,21 +25,24 @@ Lifecycle::
 
     START
       -> CONTEXT (Phase A: bounded context, short read tx)
-      -> STRUCTURED (Phase B: one structured call -> typed AssistantTurn)
-      -> state classified by :func:`_classify_turn`, exactly one of:
+      -> STRUCTURED (Phase B: one structured call -> typed AssistantTurn,
+                     which declares exactly one of the modes
+                     answer / need_data / proposal / clarification)
+      -> state classified by :func:`_classify_turn` from ``turn.mode``,
+         exactly one of:
 
-         TOOL_FOLD     run the bounded read tools, then exactly ONE
-                       structured fold call returning the final reply and
-                       any mutation proposals resolved from the tool
-                       results. Terminal: the folded reply is the
-                       assistant message.
-         DIRECT_REPLY  non-blank reply already present. Terminal: the
-                       reply is the assistant message.
-         CLARIFICATION no reply, non-blank clarification question.
-                       Terminal: the question is the assistant message.
-         EMPTY         no usable text. Raises ``chat.empty_turn`` unless
-                       the turn proposed actions/facts (then no assistant
-                       message is persisted).
+         DIRECT_REPLY    mode "answer": the reply is the assistant message.
+                         Terminal.
+         TOOL_FOLD       mode "need_data": run the bounded read tools,
+                         then exactly ONE structured fold call (typed
+                         AssistantFold) returning the final reply and any
+                         mutation proposals resolved from the tool results.
+                         Terminal: the folded reply is the assistant message.
+         PROPOSAL        mode "proposal": the (optional) reply is the
+                         assistant message; proposals-only turns persist no
+                         message. Terminal.
+         CLARIFICATION   mode "clarification": the question is the assistant
+                         message. Terminal.
 
       -> PERSIST (Phase C: proposals, facts, messages, short write tx)
       -> DONE
@@ -70,11 +73,12 @@ from assistant.ai import AIProvider, get_ai_provider
 from assistant.ai.prompts import TURN_FOLD_SYSTEM, TURN_SYSTEM
 from assistant.ai.schemas import (
     ActionProposal,
+    AssistantFold,
     AssistantTurn,
     FactProposal,
     ReadToolRequest,
 )
-from assistant.i18n import DEFAULT_LANGUAGE, LocalizableError, language_name
+from assistant.i18n import DEFAULT_LANGUAGE, language_name
 from assistant.models.calendar_items import CalendarItem
 from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.facts import UserFact
@@ -115,32 +119,28 @@ class TurnState(StrEnum):
     another model call except the single TOOL_FOLD fold.
     """
 
-    TOOL_FOLD = "tool_fold"
     DIRECT_REPLY = "direct_reply"
+    TOOL_FOLD = "tool_fold"
+    PROPOSAL = "proposal"
     CLARIFICATION = "clarification"
-    EMPTY = "empty"
+
+
+_TURN_STATE_BY_MODE: dict[str, TurnState] = {
+    "answer": TurnState.DIRECT_REPLY,
+    "need_data": TurnState.TOOL_FOLD,
+    "proposal": TurnState.PROPOSAL,
+    "clarification": TurnState.CLARIFICATION,
+}
 
 
 def _classify_turn(turn: AssistantTurn) -> TurnState:
     """Classify a typed turn into exactly one state (deterministic).
 
-    Priority is fixed and total:
-
-    1. ``TOOL_FOLD`` — the model asked for app data it lacks: it has
-       ``data_requests`` and no non-blank ``reply``.
-    2. ``DIRECT_REPLY`` — a non-blank ``reply`` is present (it wins over
-       any ``data_requests``: a reply means the model answered from the
-       context it already had; the data requests are ignored).
-    3. ``CLARIFICATION`` — no reply, but a non-blank clarification.
-    4. ``EMPTY`` — none of the above.
+    The ``mode`` field is the single source of truth (V4 §12-13): the schema
+    already guarantees each mode carries exactly its own fields, so this is a
+    direct mapping — there is no priority order to get wrong.
     """
-    if turn.data_requests and not (turn.reply and turn.reply.strip()):
-        return TurnState.TOOL_FOLD
-    if turn.reply and turn.reply.strip():
-        return TurnState.DIRECT_REPLY
-    if turn.clarification and turn.clarification.strip():
-        return TurnState.CLARIFICATION
-    return TurnState.EMPTY
+    return _TURN_STATE_BY_MODE[turn.mode]
 
 
 @dataclass(slots=True)
@@ -406,16 +406,17 @@ async def run_turn(
 
     The turn follows the formal state machine in the module docstring: the
     single structured call is classified into exactly one terminal
-    :class:`TurnState` (``TOOL_FOLD`` / ``DIRECT_REPLY`` / ``CLARIFICATION``
-    / ``EMPTY``); only ``TOOL_FOLD`` triggers the one bounded second model
-    call, and the settled state is exposed on the returned
-    :class:`TurnResult`.
+    :class:`TurnState` (``DIRECT_REPLY`` / ``TOOL_FOLD`` / ``PROPOSAL`` /
+    ``CLARIFICATION``) from the turn's declared ``mode``; only ``TOOL_FOLD``
+    triggers the one bounded second model call (typed
+    :class:`~assistant.ai.schemas.AssistantFold`), and the settled state is
+    exposed on the returned :class:`TurnResult`.
 
-    Persists the user message and the assistant reply. Raises
-    :class:`LocalizableError` (``chat.empty_turn``) when the model produced
-    no usable output, and re-raises ``AIProviderError`` so the caller can
-    apply its fallback; on both failure paths nothing from Phase C is
-    committed, leaving the caller's session clean for its own writes.
+    Persists the user message and the assistant reply. A structurally blank
+    model output is impossible (the mode validator rejects it inside the
+    provider's structured call), so this function re-raises
+    ``AIProviderError`` for the caller to apply its fallback; on that path
+    nothing from Phase C is committed, leaving the caller's session clean.
     """
     text = (text or "").strip()
     if not text:
@@ -489,11 +490,11 @@ async def run_turn(
                 now=datetime.now(tz).isoformat(),
             ),
             messages=history,
-            schema=AssistantTurn,
+            schema=AssistantFold,
         )
-        # The fold is the last word: no further data requests are
-        # possible (the schema is not offered), and any stray
-        # data_requests it produced are ignored — the turn never loops.
+        # The fold is the last word: its schema (AssistantFold) has no
+        # need_data mode, so it structurally cannot request more data and
+        # the turn never loops (V4 §14-15).
         reply = fold.reply
         clarification = fold.clarification or turn.clarification
         fold_actions = list(fold.actions)
@@ -535,16 +536,16 @@ async def run_turn(
         if created is not None:
             proposed_facts.append(created)
 
-    # EMPTY state (and a TOOL_FOLD fold that came back blank with no
-    # clarification) degrades safely: proposals/facts alone are a valid
-    # turn, otherwise a localized empty-turn error (Phase C is aborted
-    # before any write).
-    final = reply if reply and reply.strip() else clarification
+    # The final assistant message is the mode's own text (V4 §12-13): an
+    # answer's reply, a proposal's reply (proposals-only turns persist no
+    # message), or a clarification's question. A valid turn always names a
+    # mode with its field populated, so there is no blank-turn path.
+    if state in (TurnState.DIRECT_REPLY, TurnState.PROPOSAL):
+        final = reply
+    else:  # TOOL_FOLD (fold already set reply) and CLARIFICATION
+        final = reply if reply and reply.strip() else clarification
     if final is None:
-        if proposed_facts or proposed:
-            final = ""
-        else:
-            raise LocalizableError("chat.empty_turn")
+        final = ""
 
     session.add(
         ChatMessage(

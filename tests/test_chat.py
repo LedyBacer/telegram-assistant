@@ -43,7 +43,7 @@ class _FakeProvider:
         turn: AssistantTurn | None = None,
     ) -> None:
         self.reply = reply
-        self.turn = turn or AssistantTurn(reply=reply)
+        self.turn = turn or AssistantTurn(mode="answer", reply=reply)
         self.system: str | None = None
         self.messages: list[dict[str, str]] | None = None
         self.embed_calls = 0

@@ -317,7 +317,7 @@ class _ChatProvider:
         self.calls += 1
         if self.error is not None:
             raise self.error
-        return AssistantTurn(reply=self.reply)
+        return AssistantTurn(mode="answer", reply=self.reply)
 
     # Context assembly embeds the query even when the user has no files.
     async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:

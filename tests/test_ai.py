@@ -283,7 +283,8 @@ def test_fixture_contradictory_turn_clarification_with_actions_repairs() -> None
         _fake_completion(
             "Нужно уточнить, какой именно пункт, но я подготовлю перенос.\n"
             "```json\n"
-            '{"clarification": "Какой пункт перенести — утренний или вечерний?", '
+            '{"mode": "clarification", '
+            '"clarification": "Какой пункт перенести — утренний или вечерний?", '
             '"actions": [{"kind": "update_item", '
             '"payload": {"item_id": 12, "starts_at": "2026-09-25 18:00"}, '
             '"summary": "Перенести на 18:00"}]}\n'
@@ -291,7 +292,8 @@ def test_fixture_contradictory_turn_clarification_with_actions_repairs() -> None
         ),
         _fake_completion(
             "```json\n"
-            '{"clarification": "Какой пункт перенести — утренний или вечерний?"}\n'
+            '{"mode": "clarification", '
+            '"clarification": "Какой пункт перенести — утренний или вечерний?"}\n'
             "```"
         ),
     ]
@@ -312,7 +314,8 @@ def test_fixture_contradictory_turn_clarification_with_actions_repairs() -> None
 def test_fixture_contradictory_turn_fails_safely_when_unrepaired() -> None:
     provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
     contradictory = (
-        '{"clarification": "Which item do you mean?", '
+        '{"mode": "clarification", '
+        '"clarification": "Which item do you mean?", '
         '"actions": [{"kind": "complete_item", "payload": {"item_id": 1}, '
         '"summary": "Complete it"}]}'
     )
@@ -333,8 +336,9 @@ def test_fixture_contradictory_turn_fails_safely_when_unrepaired() -> None:
 
 
 def test_turn_schema_rejects_clarification_with_actions() -> None:
-    with pytest.raises(ValidationError, match="must not propose actions"):
+    with pytest.raises(ValidationError, match="must not carry other fields"):
         AssistantTurn(
+            mode="clarification",
             clarification="Which one?",
             actions=[
                 ActionProposal(
@@ -342,8 +346,10 @@ def test_turn_schema_rejects_clarification_with_actions() -> None:
                 )
             ],
         )
-    # A blank clarification is not a mode: actions alone stay valid.
+    # A blank clarification is not a real clarification: a proposal with a
+    # blank clarification field and actions is still valid.
     turn = AssistantTurn(
+        mode="proposal",
         clarification="   ",
         actions=[
             ActionProposal(
@@ -359,7 +365,8 @@ def test_fixture_unknown_tool_name_fails_validation() -> None:
     prompt offers no new vocabulary, so an un-repaired model fails safely."""
     provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
     unknown_tool = (
-        '{"data_requests": [{"tool": "delete_calendar", "query": "gym"}]}'
+        '{"mode": "need_data", '
+        '"data_requests": [{"tool": "delete_calendar", "query": "gym"}]}'
     )
     create.side_effect = [
         _fake_completion(f"Let me check.\n{unknown_tool}"),
@@ -382,8 +389,14 @@ def test_fixture_invalid_enum_type_value_repairs() -> None:
     first response; the corrected second response validates."""
     provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
     create.side_effect = [
-        _fake_completion('{"data_requests": [{"tool": "calendar", "limit": 99}]}'),
-        _fake_completion('{"data_requests": [{"tool": "calendar", "limit": 5}]}'),
+        _fake_completion(
+            '{"mode": "need_data", "data_requests": '
+            '[{"tool": "calendar", "limit": 99}]}'
+        ),
+        _fake_completion(
+            '{"mode": "need_data", "data_requests": '
+            '[{"tool": "calendar", "limit": 5}]}'
+        ),
     ]
 
     out = asyncio.run(
@@ -403,7 +416,8 @@ def test_fixture_valid_turn_bare_json_single_call() -> None:
     structured call, no repair (cost stays at the 9B budget)."""
     provider, create = _chat_provider_with_fake_client(model="qwen3.5-9b-64k")
     create.return_value = _fake_completion(
-        '{"reply": "Your standup is at 12:00.", '
+        '{"mode": "proposal", '
+        '"reply": "Your standup is at 12:00.", '
         '"actions": [{"kind": "complete_item", "payload": {"item_id": 7}, '
         '"summary": "Complete standup"}]}'
     )
