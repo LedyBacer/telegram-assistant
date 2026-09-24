@@ -39,6 +39,7 @@ import {
   dateKeyTZ,
   todayKey,
   monthStartUTC,
+  isoToWall,
   fmtDT,
   fmtWall,
 } from "./js/time.js";
@@ -99,6 +100,7 @@ function buildNav() {
           "data-tab": key,
           onclick: () => {
             if (state.tab === key) return;
+            if (state.tab === "edit") state.editId = null;
             state.tab = key;
             haptic();
             render();
@@ -133,6 +135,7 @@ const VIEWS = {
   actions: viewActions,
   upcoming: viewUpcoming,
   new: viewNew,
+  edit: viewEdit,
   workouts: viewWorkouts,
   files: viewFiles,
   facts: viewFacts,
@@ -174,6 +177,15 @@ function itemCard(item) {
   const actions = [];
   if (item.status === "scheduled") {
     actions.push(
+      btn(S("miniapp.btn_edit"), () => {
+        state.editReturn = state.tab === "edit" ? "today" : state.tab;
+        state.editId = item.id;
+        state.tab = "edit";
+        haptic();
+        render();
+      })
+    );
+    actions.push(
       btn(S("miniapp.btn_done"), async () => {
         try {
           await api(`/api/v1/items/${item.id}/complete`, "POST");
@@ -212,6 +224,7 @@ function itemCard(item) {
 
   const meta = [];
   if (item.starts_at) meta.push(el("span", {}, S("miniapp.item_starts", { when: fmtDT(item.starts_at) })));
+  if (item.ends_at) meta.push(el("span", {}, S("miniapp.item_ends", { when: fmtDT(item.ends_at) })));
   if (item.due_at) meta.push(el("span", {}, S("miniapp.item_due", { when: fmtDT(item.due_at) })));
   if (item.status !== "scheduled") {
     meta.push(badge(S(`miniapp.status_${item.status}`), item.status === "completed" ? "ok" : "muted"));
@@ -578,6 +591,188 @@ async function viewNew(view) {
       el("div", { class: "form-row" }, field(S("miniapp.new_kind"), kindBtn), field(S("miniapp.new_priority"), priorityBtn)),
       el("div", { class: "form-row" }, field(S("miniapp.new_starts"), startsBtn), field(S("miniapp.new_due"), dueBtn)),
       field(S("miniapp.new_reminders"), remindInput),
+      saveBtn
+    )
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Edit item (V3 P30)                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Datetime form row: tap-to-pick plus an inline clear button (V3 P30).
+ * Values are naive user-TZ wall clocks (the backend reads naive == user TZ).
+ */
+function whenField(labelKey, get, set) {
+  const rowEl = el("div", { class: "field when-field" });
+  const refresh = () => {
+    const value = get();
+    rowEl.replaceChildren(
+      el("span", { class: "field-label" }, S(labelKey)),
+      el("div", { class: "when-row" },
+        pickerBtn(S(labelKey), value ? fmtWall(value) : S("miniapp.not_set"), async () => {
+          const wall = await pickDateTime(value);
+          if (wall) {
+            set(wall);
+            refresh();
+          }
+        }),
+        value
+          ? el("button", {
+              type: "button",
+              class: "btn btn-ghost when-clear",
+              "aria-label": S("miniapp.clear"),
+              onclick: () => {
+                haptic();
+                set(null);
+                refresh();
+              },
+            }, "✕")
+          : null
+      )
+    );
+  };
+  refresh();
+  return rowEl;
+}
+
+async function viewEdit(view, gen, signal) {
+  const id = state.editId;
+  if (id == null) {
+    state.tab = state.editReturn || "today";
+    render();
+    return;
+  }
+  let item;
+  let reminders;
+  try {
+    [item, reminders] = await Promise.all([
+      api(`/api/v1/items/${id}`, "GET", undefined, signal),
+      api(`/api/v1/reminders?item_id=${id}&status=pending`, "GET", undefined, signal),
+    ]);
+  } catch (e) {
+    if (isStale(gen)) return;
+    if (e && e.status === 404) {
+      state.editId = null;
+      view.replaceChildren(empty(S("miniapp.item_not_found")));
+      return;
+    }
+    throw e;
+  }
+  if (isStale(gen)) return;
+
+  const formState = {
+    priority: item.priority,
+    startsAt: item.starts_at ? isoToWall(item.starts_at) : null,
+    endsAt: item.ends_at ? isoToWall(item.ends_at) : null,
+    dueAt: item.due_at ? isoToWall(item.due_at) : null,
+  };
+  const original = { ...formState, description: item.description || "" };
+
+  const titleInput = input({
+    value: item.title,
+    "aria-label": S("miniapp.new_title"),
+    placeholder: S("miniapp.new_title_ph"),
+  });
+  const descInput = input({
+    value: original.description,
+    "aria-label": S("miniapp.new_description"),
+    placeholder: S("miniapp.new_description_ph"),
+  });
+
+  const priorityBtn = pickerBtn(
+    S("miniapp.new_priority"),
+    S(PRIORITY_LABELS[item.priority] || PRIORITY_LABELS.normal),
+    async () => {
+      const chosen = await openSheet({
+        title: S("miniapp.new_priority"),
+        value: formState.priority,
+        options: [
+          { value: "low", label: S("miniapp.new_low") },
+          { value: "normal", label: S("miniapp.new_normal") },
+          { value: "high", label: S("miniapp.new_high") },
+        ],
+      });
+      if (chosen) {
+        formState.priority = chosen;
+        priorityBtn.querySelector(".picker-value").textContent = S(PRIORITY_LABELS[chosen]);
+      }
+    }
+  );
+
+  // kind is display-only: PATCH /items has no kind field (SPEC §4.3).
+  const kindValue = el("span", { class: "picker-value" },
+    item.kind === "event" ? S("miniapp.new_event") : S("miniapp.new_task"));
+
+  const reminderList = el("div", { class: "reminder-list" });
+  const renderReminders = () => {
+    reminderList.replaceChildren(
+      ...(reminders.length
+        ? reminders.map((r) =>
+            el("div", { class: "reminder-row" },
+              el("span", { class: "reminder-when" }, fmtDT(r.fire_at)),
+              el("span", { class: "reminder-offset" },
+                r.offset_minutes
+                  ? S("miniapp.reminder_offset", { n: r.offset_minutes })
+                  : S("miniapp.reminder_at_start")),
+              btn(S("miniapp.btn_cancel"), async () => {
+                try {
+                  await api(`/api/v1/reminders/${r.id}/cancel`, "POST");
+                  toast(S("miniapp.reminder_cancelled"));
+                  reminders = reminders.filter((x) => x.id !== r.id);
+                  renderReminders();
+                } catch {
+                  toast(S("miniapp.error_generic"), "error");
+                }
+              })
+            ))
+        : [el("p", { class: "reminder-none" }, S("miniapp.reminders_empty"))])
+    );
+  };
+  renderReminders();
+
+  const saveBtn = btn(S("miniapp.save"), async () => {
+    const title = titleInput.value.trim();
+    const description = descInput.value.trim();
+    if (!title) {
+      toast(S("miniapp.new_title_required"), "error");
+      titleInput.focus();
+      return;
+    }
+    // PATCH tri-state (SPEC §4.3): send only the changed keys; an explicit
+    // null clears, an omitted key is left as-is.
+    const body = {};
+    if (title !== item.title) body.title = title;
+    if (description !== original.description) body.description = description || null;
+    if (formState.startsAt !== original.startsAt) body.starts_at = formState.startsAt;
+    if (formState.endsAt !== original.endsAt) body.ends_at = formState.endsAt;
+    if (formState.dueAt !== original.dueAt) body.due_at = formState.dueAt;
+    if (formState.priority !== original.priority) body.priority = formState.priority;
+    saveBtn.disabled = true;
+    try {
+      await api(`/api/v1/items/${id}`, "PATCH", body, signal);
+      toast(S("miniapp.saved"));
+      state.editId = null;
+      state.tab = state.editReturn || "today";
+      render();
+    } catch (e) {
+      if (isStale(gen)) return;
+      toast(e && e.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
+      saveBtn.disabled = false;
+    }
+  }, { variant: "primary" });
+
+  view.replaceChildren(
+    card(
+      el("h2", { class: "view-title" }, S("miniapp.edit_title")),
+      field(S("miniapp.new_title"), titleInput),
+      field(S("miniapp.new_description"), descInput),
+      el("div", { class: "form-row" }, field(S("miniapp.new_kind"), kindValue), field(S("miniapp.new_priority"), priorityBtn)),
+      whenField("miniapp.new_starts", () => formState.startsAt, (v) => { formState.startsAt = v; }),
+      whenField("miniapp.new_ends", () => formState.endsAt, (v) => { formState.endsAt = v; }),
+      whenField("miniapp.new_due", () => formState.dueAt, (v) => { formState.dueAt = v; }),
+      field(S("miniapp.new_reminders"), reminderList),
       saveBtn
     )
   );
@@ -1238,7 +1433,12 @@ async function boot() {
     // Theme changes re-style the app through CSS variables automatically.
   });
   backButtonOn(() => {
-    state.tab = "today";
+    if (state.tab === "edit") {
+      state.tab = state.editReturn || "today";
+      state.editId = null;
+    } else {
+      state.tab = "today";
+    }
     render();
   });
   try {

@@ -425,6 +425,54 @@ textarea.field-input {
   flex: 1 1 0;
 }
 
+/* Edit view: datetime row = picker + inline clear button. */
+.when-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.when-row .picker-field {
+  flex: 1 1 auto;
+}
+
+.when-clear {
+  flex: 0 0 auto;
+  align-self: center;
+  min-width: 36px;
+}
+
+/* Edit view: pending item reminders. */
+.reminder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reminder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 0;
+}
+
+.reminder-when {
+  flex: 0 0 auto;
+}
+
+.reminder-offset {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--hint);
+  font-size: 13px;
+}
+
+.reminder-none {
+  color: var(--hint);
+  font-size: 14px;
+}
+
 /* ------------------------------------------------------------------ */
 /* Settings rows + switch                                              */
 /* ------------------------------------------------------------------ */

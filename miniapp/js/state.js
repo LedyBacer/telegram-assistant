@@ -11,6 +11,8 @@ export const state = {
   tab: "today",
   month: null, // { y, m } cursor for the calendar (m is 0-based)
   selectedDate: null, // "YYYY-MM-DD" local date for the calendar
+  editId: null, // item id open in the edit view (tab === "edit")
+  editReturn: "today", // tab to go back to when leaving the edit view
 };
 
 /** Flat locale dictionary for the active language, loaded from the API. */

@@ -1,11 +1,58 @@
 # Progress
 
-Status: V3 PRIORITY 29 COMPLETE (workout-log form submits the picked
-datetime as started_at; Playwright cross-zone regression test).
+Status: V3 PRIORITY 30 COMPLETE (task/event edit flow — detail/edit
+existing items via tri-state PATCH /items, ends_at on cards, pending
+reminders with inline cancel; E2E isolation hardened).
 P26 (do-not-redesign constraint) is carried by every change in this
 Mini App block: styles/components/navigation preserved, no framework.
-Next: V3 Priority 30 (task/event edit flow — detail/edit existing items
-via PATCH /items; display ends_at).
+Next: V3 Priority 31 (reminder-offset controls — replace comma-separated
+int text with presets; first add the shared max-reminders bound to
+`create_item_reminders`, SPEC §14.2).
+
+## V3 — Priority 30: Task/event edit flow in the Mini App
+
+- `src/assistant/api/schemas.py`: `ReminderOut` gains
+  `calendar_item_id` + `offset_minutes` (the Mini App needs them to show
+  "за N мин до начала" and filter by item). `ItemUpdate`/`ItemOut` already
+  carried the tri-state fields.
+- `src/assistant/services/reminders.py`: `list_reminders(...)` accepts an
+  `item_id` filter.
+- `src/assistant/api/routes.py`: `GET /reminders` accepts `?item_id=`.
+- `miniapp/app.js`: item cards show `ends_at` in the meta line and an
+  "Изменить" action (first, before Done) for scheduled items; new
+  `viewEdit` view (tab "edit", `state.editId`/`state.editReturn`) fetches
+  the item + its pending reminders, prefills title/description/priority
+  and start/end/due (naive user-TZ wall via `isoToWall`), renders kind
+  read-only, lists each pending reminder with fire time + offset and an
+  inline cancel (`POST /reminders/{id}/cancel`), and saves via
+  `PATCH /items/{id}` sending ONLY changed keys (explicit null clears).
+  New `whenField()` row: tap-to-pick + inline ✕ clear.
+- `miniapp/js/state.js`: `editId`/`editReturn`; back-button and nav
+  handling for the edit tab. `miniapp/styles.css`: `.when-row`,
+  `.when-clear`, `.reminder-*`. i18n: `btn_edit`, `item_ends`,
+  `edit_title`, `new_ends`, `clear`, `item_not_found`, `reminder_offset`,
+  `reminder_at_start`, `reminders_empty`, `reminder_cancelled` (en+ru).
+- `tests/test_api.py::test_reminders_list_filter_by_item` (new).
+- `e2e/tests/edit-item.e2e.ts` (new): card shows the end time; edit view
+  prefills every field; tri-state PATCH verified against ground truth
+  (title+priority changed, ends_at cleared, starts/due/description/kind
+  untouched); reminder listed, then cancelled. The spec deletes its
+  seeded item in `afterEach` (reminder cascades) so later specs see a
+  clean calendar.
+- E2E isolation hardening (root cause of a 5-failure run):
+  `e2e/tests/miniapp.e2e.ts` left the shared deterministic user's language
+  as "en" (Playwright spec order is filesystem order, not alphabetical —
+  adding a file shifted it), breaking every later spec's Russian
+  assertions. It now restores `language: "ru"` in `test.afterEach` (runs
+  even on failure). `e2e/tests/screens-audit.e2e.ts` action count updated
+  3→4 (edit button) and completion now clicks "✓ Готово" by text.
+- App bug found by the new E2E: `renderReminders` passed an array to the
+  variadic `Element.replaceChildren()`, stringifying it to
+  "[object HTMLDivElement]" — now spread. `whenField` also used the raw
+  i18n key as the picker aria-label — now `S(labelKey)`.
+
+Verified: full E2E suite 10 passed; `uv run pytest -q` 447 passed on a
+fresh DB; `uv run ruff check .` clean.
 
 ## V3 — Priority 29: Workout logging datetime
 

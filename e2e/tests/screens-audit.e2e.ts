@@ -141,8 +141,8 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   // Complete it: the done/cancel actions disappear (a status badge replaces
   // them) and only the delete action remains on the card.
   const actionsBefore = await myCard.locator(".item-actions .btn").count();
-  expect(actionsBefore).toBe(3); // done, cancel, delete
-  await myCard.locator(".item-actions .btn").first().click();
+  expect(actionsBefore).toBe(4); // edit, done, cancel, delete
+  await myCard.locator(".item-actions .btn", { hasText: "✓ Готово" }).click();
   // Completion re-renders after the API round-trip: wait for the done/cancel
   // actions to be replaced by the completed state (delete only).
   await expect(myCard.locator(".item-actions .btn")).toHaveCount(1);

@@ -178,9 +178,13 @@ async def list_reminders(
     user: User,
     *,
     status: ReminderStatus | None = None,
+    item_id: int | None = None,
     limit: int = 100,
 ) -> list[Reminder]:
-    """List the user's reminders ordered by fire time."""
+    """List the user's reminders ordered by fire time.
+
+    ``item_id`` restricts the list to reminders linked to one calendar item.
+    """
     stmt = (
         select(Reminder)
         .where(Reminder.user_id == user.id)
@@ -189,6 +193,8 @@ async def list_reminders(
     )
     if status is not None:
         stmt = stmt.where(Reminder.status == status.value)
+    if item_id is not None:
+        stmt = stmt.where(Reminder.calendar_item_id == item_id)
     return list((await session.scalars(stmt)).all())
 
 

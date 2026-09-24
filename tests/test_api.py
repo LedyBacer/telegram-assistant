@@ -256,6 +256,46 @@ async def test_item_create_with_remind_offsets(
     assert fire_at == expected_fire
 
 
+async def test_reminders_list_filter_by_item(client: httpx.AsyncClient) -> None:
+    """The edit view lists a single item's pending reminders (V3 P30)."""
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={"title": "Item A", "starts_at": TODAY_NOON, "remind_offsets_minutes": [30]},
+    )
+    assert res.status_code == 201
+    item_a = res.json()["id"]
+    res = await client.post(
+        "/api/v1/items",
+        headers=HEADERS,
+        json={"title": "Item B", "starts_at": TODAY_NOON, "remind_offsets_minutes": [60]},
+    )
+    assert res.status_code == 201
+    item_b = res.json()["id"]
+
+    res = await client.get(f"/api/v1/reminders?item_id={item_a}", headers=HEADERS)
+    assert res.status_code == 200
+    rows = res.json()
+    assert len(rows) == 1
+    assert rows[0]["calendar_item_id"] == item_a
+    assert rows[0]["offset_minutes"] == 30
+    assert rows[0]["message"] == "Item A"
+
+    res = await client.get(f"/api/v1/reminders?item_id={item_b}", headers=HEADERS)
+    rows = res.json()
+    assert [r["calendar_item_id"] for r in rows] == [item_b]
+    assert rows[0]["offset_minutes"] == 60
+
+    # An item without reminders has an empty list.
+    res = await client.post(
+        "/api/v1/items", headers=HEADERS, json={"title": "Item C"}
+    )
+    item_c = res.json()["id"]
+    res = await client.get(f"/api/v1/reminders?item_id={item_c}", headers=HEADERS)
+    assert res.status_code == 200
+    assert res.json() == []
+
+
 # ---------------------------------------------------------------------------
 # Workouts
 # ---------------------------------------------------------------------------

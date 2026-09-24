@@ -155,6 +155,8 @@ class ReminderOut(ORMModel):
     fire_at: datetime
     message: str
     status: str
+    calendar_item_id: int | None = None
+    offset_minutes: int | None = None
     created_at: datetime
 
 

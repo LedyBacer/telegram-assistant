@@ -22,6 +22,17 @@ async function goTab(page: Page, tab: string): Promise<void> {
   await page.locator(`.nav-btn[data-tab="${tab}"]`).click();
 }
 
+// Step 14 switches the shared deterministic test user's language to "en"
+// and asserts it persists. Playwright's spec file order is not guaranteed
+// (filesystem order), so restore the default "ru" afterwards — even on
+// failure — so later specs don't inherit an English UI / 12h time format.
+test.afterEach(async ({ page }) => {
+  const restore = await page.request.patch(`${base}/api/v1/settings`, {
+    data: { language: "ru" },
+  });
+  expect(restore.status()).toBe(200);
+});
+
 test("Mini App end-to-end scenario", async ({ page }) => {
   // 1-2. Backend up + open app; root redirects to /miniapp and the Today view
   //      renders (calendar). Console guard is active for the whole test.

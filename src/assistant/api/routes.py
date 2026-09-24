@@ -446,10 +446,13 @@ async def search_files(
 @router.get("/reminders", response_model=list[ReminderOut])
 async def list_reminders(
     status: ReminderStatus | None = None,
+    item_id: int | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[ReminderOut]:
-    reminders = await reminders_service.list_reminders(session, user, status=status)
+    reminders = await reminders_service.list_reminders(
+        session, user, status=status, item_id=item_id
+    )
     return [ReminderOut.model_validate(r) for r in reminders]
 
 
