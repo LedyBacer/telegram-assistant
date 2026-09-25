@@ -105,15 +105,27 @@ Goal items are tracked by their `§` number. Committed on `main`; full pytest
   to `**/api/v1/actions*`; v2-features clicks filter buttons where a status
   change moves a card; screens-audit excludes the hidden 1×1px file input
   from the sub-44px check.
+- **§22** (`6eabe66`) Shared modal lifecycle: both `openSheet` and
+  `confirmDialog` now lock body scroll (overflow:hidden + position:fixed),
+  prevent a second sheet from stacking (childElementCount guard), and trap
+  Tab/Shift+Tab focus within the panel (confirmDialog previously had no
+  trap). New E2E `modal-lifecycle.e2e.ts` verifies all four behaviours.
+- **§23** (`c6e2960`) Visible picker-unavailable error on CDN failure:
+  `pickDateTime`/`pickTime` now show a localized error toast
+  (`miniapp.picker_unavailable`) when Flatpickr is not loaded. New E2E
+  `picker-cdn-fail.e2e.ts` aborts the exact jsDelivr URLs and verifies the
+  toast appears.
+- **§24** (audit, no code change): renderGeneration/AbortController safety
+  verified in all new async paths. §20 polling checks `isStale(gen)` +
+  `signal.aborted` before/after each fetch and passes `signal` to the API.
+  §21 viewActions passes `signal` and checks `isStale(gen)` post-fetch.
+  §22/§23 introduce no new async render paths.
 
 Verified at HEAD: `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q` →
 542 passed; `npx playwright test --config=e2e/playwright.config.ts` →
-24 passed; `uv run ruff check .` clean.
+26 passed; `uv run ruff check .` clean.
 
-**Remaining (in order):** §22 (shared modal lifecycle: scroll lock, focus
-trap, Escape, focus return, no double sheets), §23 (visible
-picker-unavailable error on CDN failure), §24
-(renderGeneration/AbortController safety in the new async paths), §25
+**Remaining (in order):** §25
 (canonical telegram-stub), §26/§27 (regression matrices), §28
 (acceptance.sh), §29 (docs/PROGRESS closeout), §31 (Definition of Done +
 REPORT.md).
