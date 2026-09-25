@@ -137,6 +137,37 @@ export function toast(message, kind = "default") {
 /* Bottom sheet / action sheet                                         */
 /* ------------------------------------------------------------------ */
 
+/** Module-level scroll-lock state. */
+let _sheetCount = 0;
+let _prevOverflow = "";
+let _prevPosition = "";
+let _prevPaddingBottom = "";
+
+function _lockScroll() {
+  if (_sheetCount === 0) {
+    const body = document.body;
+    _prevOverflow = body.style.overflow;
+    _prevPosition = body.style.position;
+    _prevPaddingBottom = body.style.paddingBottom;
+    body.style.overflow = "hidden";
+    body.style.position = "fixed";
+    body.style.width = "100%";
+    body.style.paddingBottom = "env(safe-area-inset-bottom)";
+  }
+  _sheetCount += 1;
+}
+
+function _unlockScroll() {
+  _sheetCount = Math.max(0, _sheetCount - 1);
+  if (_sheetCount === 0) {
+    const body = document.body;
+    body.style.overflow = _prevOverflow;
+    body.style.position = _prevPosition;
+    body.style.width = "";
+    body.style.paddingBottom = _prevPaddingBottom;
+  }
+}
+
 /**
  * Open a Telegram-like bottom sheet with a short option list.
  * @param {object} opts
@@ -151,7 +182,11 @@ export function openSheet({ title, options, value = null, searchable = false, se
   return new Promise((resolve) => {
     const root = document.getElementById("sheet-root");
     if (!root) return resolve(null);
+    // No double sheets: if one is already open, resolve with null.
+    if (root.childElementCount > 0) return resolve(null);
+
     const previouslyFocused = document.activeElement;
+    _lockScroll();
 
     let resolved = false;
     const close = (result) => {
@@ -159,6 +194,7 @@ export function openSheet({ title, options, value = null, searchable = false, se
       resolved = true;
       document.removeEventListener("keydown", onKey, true);
       scrim.remove();
+      _unlockScroll();
       if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus();
       resolve(result);
     };
@@ -264,13 +300,18 @@ export function confirmDialog(message, confirmLabel, cancelLabel) {
   return new Promise((resolve) => {
     const root = document.getElementById("sheet-root");
     if (!root) return resolve(false);
+    // No double sheets.
+    if (root.childElementCount > 0) return resolve(false);
+
     const previouslyFocused = document.activeElement;
+    _lockScroll();
     let resolved = false;
     const close = (result) => {
       if (resolved) return;
       resolved = true;
       document.removeEventListener("keydown", onKey, true);
       scrim.remove();
+      _unlockScroll();
       if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus();
       resolve(result);
     };
@@ -279,6 +320,18 @@ export function confirmDialog(message, confirmLabel, cancelLabel) {
         e.preventDefault();
         e.stopPropagation();
         close(false);
+      } else if (e.key === "Tab") {
+        const focusables = [...panel.querySelectorAll("button:not([disabled])")];
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     document.addEventListener("keydown", onKey, true);
