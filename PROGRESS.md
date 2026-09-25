@@ -1,9 +1,60 @@
 # Progress
 
-Status: V4 IN PROGRESS — closing the correctness gaps found by the
-independent post-V3 audit (see the audit below). V3 code is the baseline
-(`4a57308...`); V4 makes targeted correctness fixes and does NOT rewrite
-the product. Working tree is committed at each meaningful boundary.
+Status: V5 IN PROGRESS — "Final Correctness Closeout, CI Repair and Mini App
+Hardening" on the `7713777` baseline. Below is the compact V5 handoff; the
+V4/V3/V2 detail follows. Working tree is committed at each meaningful boundary.
+
+## V5 — Final closeout (baseline `7713777`)
+
+Goal items are tracked by their `§` number. Committed on `main`; full pytest
++ Ruff green before each commit. Committed so far:
+
+- **§2** (`5c87069`) compose `.env` is optional; actionlint pinned
+  (`rsteube/actionlint@v3.5.0`) in CI.
+- **§3** (`c7f0b24`) PostgreSQL-authoritative job-lease ownership: the worker
+  re-checks ownership before committing domain side effects; a stale owner
+  cannot complete/record over a newer owner.
+- **§4/§5/§6.1–6.4** (`f9f85ed`) action payload hardening, workout item
+  identity, reminder rows taken `FOR UPDATE`, and localized (ru/en) action
+  previews.
+- **§6.5** (`848f9cf`) workout visual identity (distinct icon on the card) +
+  a focused E2E.
+- **§10** (`c7e0f86`) Flatpickr served from a pinned jsDelivr 4.6.13 URL (no
+  unpinned CDN in the shipped app).
+- **§11–13** (`9b65299`) safe-area tokens, a stable viewport-height token,
+  chrome (header/bottom-bar) colors synced to the theme, and a
+  ready()/expand() split so the first real render expands the web app.
+- **§14** (`e12d635`) boot-time Russian i18n fallback (`FALLBACK_RU` seeds
+  `STR`); `setLanguage` merges the API dict over the fallback
+  (`{ ...FALLBACK_RU, ...remote }`) so a failed i18n fetch never paints raw
+  keys; `html lang` + `document.title` are set on switch.
+- **§15** (`bcea5d4`, HEAD) dirty-form discard protection: a single async
+  `navigate()` gates every navigation (bottom nav, item "Edit", the Telegram
+  BackButton, a successful save); leaving a dirty New/Edit form asks for a
+  `miniapp.discard_confirm` confirmation, a `beforeunload` handler covers
+  closing the whole app, and the BackButton is a nested-nav affordance shown
+  only on the Edit view. New `miniapp.discard` / `miniapp.discard_confirm`
+  strings (ru/en + `FALLBACK_RU`). E2E `dirty-form.e2e.ts` (cancel keeps the
+  form, confirm leaves). The shared `goTab` test helper now confirms any
+  discard dialog it triggers.
+
+Verified at HEAD: `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q` →
+542 passed; `npm run test:e2e` → 22 passed; `uv run ruff check .` clean.
+
+**Remaining (in order):** §16 (5-tab bottom nav + "More" sheet), §17
+(guarded-async mutation helper / double-submit prevention), §18 (Settings
+consistency: switch rollback, value refresh, Retry card, tz-change calendar
+reset, IANA list via `zoneinfo.available_timezones()`), §19 (form validation:
+ends>=starts pre-submit, structured ApiError, description textarea, real
+effort variable, workout end/duration exclusion), §20 (Files bounded
+foreground polling), §21 (Actions Pending/History filter, default Pending),
+§22 (shared modal lifecycle: scroll lock, focus trap, Escape, focus return,
+no double sheets), §23 (visible picker-unavailable error on CDN failure),
+§24 (renderGeneration/AbortController safety in the new async paths), §25
+(canonical telegram-stub), §26/§27 (regression matrices), §28
+(acceptance.sh), §29 (docs/PROGRESS closeout), §31 (Definition of Done +
+REPORT.md).
+
 
 ## V4 — Audit findings (post-V3, recorded before implementation)
 
