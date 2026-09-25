@@ -92,16 +92,28 @@ Goal items are tracked by their `§` number. Committed on `main`; full pytest
   E2E updates: a11y/screens-audit count textarea alongside inputs;
   create-event-start-end asserts client-side toast (not API 400);
   v2-features targets `.picker-field` `.first()` in schedule card.
+- **§20** (`6f60200`) Files view bounded foreground polling: while any file
+  is in a non-terminal state (`queued`, `downloading`, `extracting`,
+  `chunking`, `embedding`), the view re-fetches every 2.5 s and re-renders
+  the list in place (no full re-render). Polling stops when all files are
+  terminal (`indexed`, `failed`, `rejected`), the generation goes stale, or
+  a network error occurs.
+- **§21** (`3a65a75`) Actions Pending/History filter row: a two-button
+  filter row (Ожидают / История) above the list. Pending fetches
+  `?status=proposed&limit=20`; History fetches `?limit=100` and
+  client-filters to non-proposed statuses. E2E: action-inbox route broadened
+  to `**/api/v1/actions*`; v2-features clicks filter buttons where a status
+  change moves a card; screens-audit excludes the hidden 1×1px file input
+  from the sub-44px check.
 
 Verified at HEAD: `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q` →
 542 passed; `npx playwright test --config=e2e/playwright.config.ts` →
 24 passed; `uv run ruff check .` clean.
 
-**Remaining (in order):** §20 (Files bounded
-foreground polling), §21 (Actions Pending/History filter, default Pending),
-§22 (shared modal lifecycle: scroll lock, focus trap, Escape, focus return,
-no double sheets), §23 (visible picker-unavailable error on CDN failure),
-§24 (renderGeneration/AbortController safety in the new async paths), §25
+**Remaining (in order):** §22 (shared modal lifecycle: scroll lock, focus
+trap, Escape, focus return, no double sheets), §23 (visible
+picker-unavailable error on CDN failure), §24
+(renderGeneration/AbortController safety in the new async paths), §25
 (canonical telegram-stub), §26/§27 (regression matrices), §28
 (acceptance.sh), §29 (docs/PROGRESS closeout), §31 (Definition of Done +
 REPORT.md).
