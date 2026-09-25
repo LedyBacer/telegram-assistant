@@ -133,7 +133,7 @@ CHAT_BASE_URL=http://llm-host:18085/v1
 CHAT_API_KEY=replace-me
 CHAT_MODEL=qwen3.5-9b-64k
 CHAT_TIMEOUT_SECONDS=180
-CHAT_THINKING_ENABLED=false
+CHAT_THINKING_ENABLED=true
 
 EMBEDDING_BASE_URL=http://llm-host:18086/v1
 EMBEDDING_API_KEY=replace-me
@@ -164,21 +164,21 @@ shape, so llama.cpp's `/v1/embeddings` is fully supported.
   error message; the timeout is logged with its configured value. The
   setting applies to chat and structured generation only — the embedding
   provider keeps its own (short) timeout.
-- **`CHAT_THINKING_ENABLED`** (default `false` — fast/no-think; set `true`
-  for the optional reasoning profile) — Qwen *thinking*
-  (reasoning) mode, a llama.cpp/Qwen provider behavior, not a per-user
-  preference. The mode is sent **explicitly** with every chat/structured
-  completion via the documented llama.cpp OpenAI-compatible request field
-  `chat_template_kwargs.enable_thinking` (through the OpenAI client's
-  `extra_body`), never relying on a server default. `true` lets the model
-  reason before answering (slower, better reasoning); `false` disables
-  thinking (usually much lower latency, possibly reduced reasoning
-  quality). It applies to normal assistant chat and structured task-draft
-  generation; embeddings are unaffected. When thinking is enabled and a
-  chat/structured request is about to run, the bot sends a short
-  localized temporary status message ("Думаю…" / "Thinking…") in the
-  user's persisted language and removes it as soon as the provider
-  responds — including on timeout or provider error.
+- **`CHAT_THINKING_ENABLED`** (Settings fallback `false`; the Qwen3.5
+  `.env.example` intentionally sets `true`) — Qwen thinking/reasoning mode.
+  The app sends `chat_template_kwargs.enable_thinking` explicitly on every
+  chat/structured request. For Qwen3.5, thinking uses the model-card sampling
+  family (`top_p=0.95`, `top_k=20`, `min_p=0`): ordinary chat uses
+  `temperature=1.0`, while structured JSON uses the more conservative precise
+  profile `temperature=0.6` / `presence_penalty=0` to retain schema reliability.
+  Embeddings are unaffected. The bot shows a temporary localized
+  "Думаю…" / "Thinking…" status and removes it on success/error/timeout.
+- **`CHAT_THINKING_BUDGET_TOKENS`** (optional, unset = unrestricted) —
+  forwards llama.cpp's per-request `thinking_budget_tokens`. Start unrestricted;
+  if latency or overthinking is excessive, try a measured value such as `4096`.
+- **`CHAT_REASONING_EFFORT`** is retained for custom templates/models, but it
+  is not the recommended quality knob for stock Qwen3.5; use the thinking
+  switch and optional token budget instead.
 
 ### Structured completion retries
 

@@ -91,7 +91,7 @@
   "files.item": "📄 {filename} — {state} ({size} bytes)",
   "files.rejected": "🚫 Couldn't store that file: {error}",
   "files.saved": "📄 Saved {filename}. I'm indexing it in the background — check 📁 My files for the status.",
-  "help.text": "Use the menu below. ➕ creates tasks/events, ⚙️ adjusts settings, /remember <text> stores a fact, /facts lists them, /language changes the language, /cancel aborts an in-progress step.",
+  "help.text": "I work as a personal assistant: I can read and manage tasks/events, explain your schedule, create/cancel reminders, log and schedule workouts, propose durable memory facts, work with uploaded documents and their search, and explain the Mini App, digest, and proactive notifications. You can write naturally — for example “what do I have tomorrow?”, “move the meeting to 18:00”, or “what can you do?”. I propose mutations first and execute them only after confirmation. I do not have general web browsing, email, external Google/Outlook/CalDAV calendar sync, or voice mode. Commands: /remember <text>, /facts, /language, /cancel.",
   "item.cancel": "🚫",
   "language.prompt": "Choose the language / выбери язык:",
   "menu.ask": "💬 Ask assistant",

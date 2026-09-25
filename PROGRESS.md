@@ -2,14 +2,13 @@
 
 Status: V5.2 COMPLETE — "Final corrective patch before real deployment" on
 the V5.1 baseline. V5.1 remote CI is GREEN (`0c8dd19`, run 36110550934, 4/4
-jobs). V5.2 remote CI: PENDING USER PUSH (commits are local only; pushing is
-not permitted here). Below is the compact V5.2 handoff, then the V5.1/V5/V4/
+jobs). V5.2 remote CI is GREEN (`c07fe4c`, run 36129982668, 4/4 jobs). Below is the compact V5.2 handoff, then the V5.1/V5/V4/
 V3/V2 detail. Working tree is committed at each meaningful boundary.
 
 ## V5.2 — Final corrective patch before real deployment (baseline V5.1 `0c8dd19`)
 
 Goal items numbered per the goal (`§`). V5.1 HEAD `0c8dd19` remote CI: GREEN
-(run 36110550934, 4/4 jobs). V5.2 remote CI: PENDING USER PUSH.
+(run 36110550934, 4/4 jobs). V5.2 remote CI: GREEN (`c07fe4c`, run 36129982668, 4/4 jobs).
 
 - **§2 P0** (`f1c118e`) no application DB transaction is held across
   Telegram sends in the worker: reminder/digest handlers do their DB work,
@@ -91,7 +90,7 @@ tz), `timezone-picker-roundtrip.e2e.ts` (item + tz), `v2-features.e2e.ts`
 
 Verification (final numbers below in the V5.2 REPORT section).
 
-**V5.2 complete.** Remote CI for V5.2: PENDING USER PUSH.
+**V5.2 complete.** Remote CI for V5.2: **GREEN — `c07fe4c`, run 36129982668, 4/4 jobs**.
 
 ## V5.1 — Corrective closeout (baseline `93800d5`)
 
@@ -2923,3 +2922,20 @@ confirmed in the catalog.
   credential smoke tests, HTTPS reverse proxy deployment for the Mini
   App, CI pipeline, observability, additional languages (ru/en
   supported today).
+
+## Post-V5.2 review polish
+
+After remote V5.2 verification (`c07fe4c`, GitHub Actions run 36129982668,
+4/4 GREEN), the final review polish:
+- normalizes `en_US` as well as IETF-style `en-US` language tags;
+- applies the larger Telegram system/content safe area rather than merely
+  storing content-safe variables;
+- reports TTL expiry as bounded/localizable `action_expired`;
+- strengthens modal scrolling E2E with real Playwright wheel input;
+- gives the LLM an explicit truthful self-capability/limitation contract and
+  expands deterministic `/help`;
+- enables a Qwen3.5-oriented thinking sampling profile and optional
+  `CHAT_THINKING_BUDGET_TOKENS`.
+
+The next meaningful phase is live Telegram + real Qwen3.5/embedding evaluation,
+not another speculative hardening milestone.

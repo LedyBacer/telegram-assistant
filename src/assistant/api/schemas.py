@@ -241,10 +241,15 @@ class ActionOut(ORMModel):
             and self.expires_at <= datetime.now(UTC)
         ):
             self.status = "expired"
+            # Pure reads do not persist lazy expiry, but can still expose the
+            # same bounded/localizable UX reason as the durable write path.
+            self.reason_code = "action_expired"
         return self
 
     @model_validator(mode="after")
     def _derive_reason_code(self) -> ActionOut:
+        if self.reason_code in ACTION_REASON_CODES:
+            return self
         self.reason_code = (
             self.last_error if self.last_error in ACTION_REASON_CODES else None
         )

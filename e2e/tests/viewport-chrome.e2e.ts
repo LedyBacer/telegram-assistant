@@ -205,3 +205,40 @@ test("nav footprint: content never ends under the fixed bottom nav", async ({
     guard.assertClean();
   }
 });
+
+// Final review: contentSafeAreaInset represents Telegram UI occlusion.
+// When it exceeds the physical safeAreaInset, layout must use the larger
+// protected area rather than merely storing the CSS variable.
+test("content-safe insets can exceed physical safe-area insets", async ({ page }) => {
+  const guard = await openApp(page, base);
+  try {
+    await page.evaluate(() => {
+      const tg = (window as any).__tg;
+      tg.setSafeAreaInset({ top: 10, right: 4, bottom: 12, left: 4 });
+      tg.setContentSafeAreaInset({ top: 70, right: 30, bottom: 50, left: 30 });
+    });
+
+    const geo = await page.evaluate(() => {
+      const topbar = document.querySelector(".topbar") as HTMLElement;
+      const nav = document.querySelector(".bottomnav") as HTMLElement;
+      const view = document.querySelector("#view") as HTMLElement;
+      const topbarCS = getComputedStyle(topbar);
+      const navCS = getComputedStyle(nav);
+      const viewCS = getComputedStyle(view);
+      return {
+        topPadding: Number.parseFloat(topbarCS.paddingTop),
+        navBottomPadding: Number.parseFloat(navCS.paddingBottom),
+        navLeftPadding: Number.parseFloat(navCS.paddingLeft),
+        viewLeftPadding: Number.parseFloat(viewCS.paddingLeft),
+      };
+    });
+
+    expect(geo.topPadding).toBe(80);       // 10 base + 70 content-safe
+    expect(geo.navBottomPadding).toBe(50); // content-safe wins over 12
+    expect(geo.navLeftPadding).toBe(30);
+    expect(geo.viewLeftPadding).toBe(46);  // 16 base + 30 protected
+    await assertNoHorizontalOverflow(page);
+  } finally {
+    guard.assertClean();
+  }
+});

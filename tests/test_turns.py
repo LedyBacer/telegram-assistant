@@ -1375,3 +1375,17 @@ async def test_turn_prompts_carry_action_and_tool_docs(session: AsyncSession) ->
     assert "query=<item named> resolves it" in provider.system
     assert "range_start/range_end (YYYY-MM-DD)" in provider.system
     assert "Each request: {tool, query" in provider.system
+
+async def test_turn_system_explains_real_capabilities_and_limits(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    provider = _FakeProvider(
+        AssistantTurn(mode="answer", reply="I can manage your assistant data.")
+    )
+    await turns_service.run_turn(session, user, "what can you do?", provider=provider)
+    assert provider.system is not None
+    assert "Your real capabilities and limits:" in provider.system
+    assert "explicitly confirms" in provider.system
+    assert "general web browsing" in provider.system
+    assert "external Google/Outlook" in provider.system

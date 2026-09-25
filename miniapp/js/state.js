@@ -415,7 +415,10 @@ export const FALLBACKS = {
  * dict, state.lang, and <html lang> — no duplicated detection.
  */
 export function normalizeUiLanguage(raw) {
-  const primary = String(raw || "").split("-")[0].toLowerCase();
+  const primary = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .split(/[-_]/)[0];
   return primary === "en" ? "en" : "ru";
 }
 

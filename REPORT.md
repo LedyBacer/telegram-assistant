@@ -31,8 +31,8 @@ no Redis/Celery, no Flatpickr re-vendoring. Full per-item detail is in
   (past `due_at` only); modal `#view` scroll-lock E2E.
 - **Docs** — stale "vendor/ Flatpickr self-hosted" claims removed (the app
   loads Flatpickr 4.6.13 from pinned jsDelivr URLs; E2E intercepts them
-  locally); viewport docs match the code; V5.1 remote CI recorded; V5.2
-  marked PENDING USER PUSH.
+  locally); viewport docs match the code; V5.1 and V5.2 remote CI are recorded
+  as GREEN.
 - **E2E isolation contract** — the shared `assistant_e2e` DB is truncated
   once per run; every spec that creates rows or mutates the shared test
   user's settings now cleans up in `finally`/`afterEach` (four leaking
@@ -174,7 +174,7 @@ identity/log.
 ## 2. Remote CI status (honest)
 
 - **V5.1 remote CI: GREEN — `0c8dd19`, run 36110550934, 4/4 jobs.**
-- **V5.2 remote CI: PENDING USER PUSH.**
+- **V5.2 remote CI: GREEN (`c07fe4c`, run 36129982668, 4/4 jobs).**
 
 The V5.2 commits are local only (pushing to `origin/main` is not permitted
 in this environment); the remote run for V5.2 does not exist yet and this
@@ -309,7 +309,7 @@ including the complete `bash scripts/acceptance.sh` run:
 | 9 | Full pytest suite against real PostgreSQL | **556 passed** (83.70 s) |
 | 10 | Playwright Mini App E2E (40 specs, seeded `assistant_e2e`) | **40 passed** (1.3 m) |
 | 11 | Real-Postgres flows in-suite: turns, actions, ingestion, retrieval, digest, proactivity, job leases, modal lifecycle, actions filter, picker CDN failure, atomic file-failure recording, workout interval validation, worker send-outside-transaction, bounded reason codes | Covered |
-| 12 | Credential-free CI workflow in `.github/workflows/` (actionlint clean; V5.2 remote run pending — see §2) | Present |
+| 12 | Credential-free CI workflow in `.github/workflows/` (actionlint clean; V5.2 remote run 36129982668 GREEN, 4/4 jobs) | Present |
 | 13 | `bash scripts/acceptance.sh` executed end-to-end: 22 steps + sub-steps 1b/1c/21b | All passed |
 | 14 | No required TODO/stub/fake implementation (grep audit) | Clean |
 | 15 | No test-auth module in production image (`assistant.api.testing` absent) | Verified |
@@ -330,9 +330,7 @@ throwaway Docker Postgres.
 
 ## 5. Known limitations (honest list)
 
-- **V5.2 remote CI verification pending.** V5.1 is green (`0c8dd19`,
-  run 36110550934, 4/4 jobs); the V5.2 commits are local only (push not
-  permitted), so no remote run exists for them yet. See §2.
+- **V5.2 remote CI verified GREEN.** `c07fe4c`, run 36129982668, 4/4 jobs. V5.1 is also green (`0c8dd19`, run 36110550934, 4/4 jobs).
 - **No live-provider verification.** AI behavior is tested with
   deterministic in-test fake providers plus Qwen output fixtures; a real
   llama.cpp/Qwen deployment is untested here.

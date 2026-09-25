@@ -73,6 +73,7 @@ def _lazy_expire(action: PendingAction) -> bool:
     if _is_expired_now(action):
         action.status = ActionStatus.expired.value
         action.expired_at = _now()
+        action.last_error = "action_expired"
         return True
     return False
 
@@ -360,6 +361,7 @@ async def expire_actions(session: AsyncSession) -> int:
     for action in actions:
         action.status = ActionStatus.expired.value
         action.expired_at = now
+        action.last_error = "action_expired"
     if actions:
         await session.flush()
     return len(actions)

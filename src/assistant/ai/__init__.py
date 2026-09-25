@@ -64,6 +64,7 @@ def build_ai_provider(settings: Settings) -> AIProvider:
             model=settings.chat_model,
             timeout=settings.chat_timeout_seconds,
             thinking_enabled=settings.chat_thinking_enabled,
+            thinking_budget_tokens=settings.chat_thinking_budget_tokens,
             reasoning_effort=settings.chat_reasoning_effort,
         ),
         embedding=(

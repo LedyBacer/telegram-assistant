@@ -902,3 +902,30 @@ def test_payload_schemas_forbid_extra_fields() -> None:
         LogWorkoutPayload(name="x", bogus_field="nope")
     with pytest.raises(ValidationError):
         ScheduleWorkoutPayload(name="x", starts_at=START, bogus_field="nope")
+
+def test_action_out_effective_ttl_gets_action_expired_reason_code() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from assistant.api.schemas import ActionOut
+
+    now = datetime.now(UTC)
+    out = ActionOut.model_validate(
+        {
+            "id": 999_001,
+            "kind": "create_item",
+            "summary": "expired",
+            "status": "proposed",
+            "payload": {"title": "x"},
+            "last_result": None,
+            "last_error": None,
+            "reason_code": None,
+            "created_at": now - timedelta(hours=2),
+            "expires_at": now - timedelta(minutes=1),
+            "confirmed_at": None,
+            "rejected_at": None,
+            "executed_at": None,
+            "expired_at": None,
+        }
+    )
+    assert out.status == "expired"
+    assert out.reason_code == "action_expired"

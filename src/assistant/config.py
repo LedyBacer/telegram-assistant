@@ -47,7 +47,11 @@ class Settings(BaseSettings):
     # production llama.cpp deployment does not enable thinking by surprise.
     # The app must work fully without it.
     chat_thinking_enabled: bool = False
-    chat_reasoning_effort: str | None = None  # "low" | "medium" | "high" | None
+    # Optional llama.cpp per-request reasoning budget. None = unrestricted.
+    chat_thinking_budget_tokens: int | None = Field(default=None, ge=1, le=32768)
+    # Advanced/custom-template knob. Stock Qwen3.5 is not trained with a
+    # dependable low/medium/high effort scale; prefer thinking + token budget.
+    chat_reasoning_effort: str | None = None
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str = "multilingual-e5-small"

@@ -140,8 +140,14 @@ def test_chat_thinking_enabled_sends_llamacpp_option() -> None:
     )
 
     kwargs = create.await_args.kwargs
+    assert kwargs["temperature"] == 1.0
+    assert kwargs["top_p"] == 0.95
+    assert kwargs["presence_penalty"] == 1.5
     assert kwargs["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": True}
+        "chat_template_kwargs": {"enable_thinking": True},
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.0,
     }
 
 
@@ -537,3 +543,43 @@ async def test_chat_status_deleted_on_provider_error(
     assert sent[0].text == "Думаю…"
     sent[0].delete.assert_awaited_once()
     assert "Сейчас не могу связаться" in sent[1].text
+
+def test_qwen35_structured_thinking_uses_precise_sampling_profile() -> None:
+    provider, create = _chat_provider(thinking=True)
+    create.return_value = _fake_completion('{"title": "Draft", "kind": "task"}')
+    out = asyncio.run(
+        provider.chat_structured(
+            system="S",
+            messages=[{"role": "user", "content": "remind me"}],
+            schema=AITaskDraft,
+        )
+    )
+    assert out.title == "Draft"
+    kwargs = create.await_args.kwargs
+    assert kwargs["temperature"] == 0.6
+    assert kwargs["top_p"] == 0.95
+    assert kwargs["presence_penalty"] == 0.0
+    assert kwargs["extra_body"]["top_k"] == 20
+    assert kwargs["extra_body"]["min_p"] == 0.0
+
+
+def test_thinking_budget_is_forwarded_per_request() -> None:
+    provider = OpenAIChatProvider(
+        api_key="k",
+        thinking_enabled=True,
+        thinking_budget_tokens=4096,
+    )
+    create = AsyncMock(return_value=_fake_completion("ok"))
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    asyncio.run(provider.chat(system="S", messages=[{"role": "user", "content": "hi"}]))
+    assert create.await_args.kwargs["extra_body"]["thinking_budget_tokens"] == 4096
+
+
+def test_settings_thinking_budget_is_optional_and_bounded() -> None:
+    assert _settings().chat_thinking_budget_tokens is None
+    assert _settings(chat_thinking_budget_tokens=4096).chat_thinking_budget_tokens == 4096
+    for bad in (0, -1, 32769):
+        with pytest.raises(ValidationError):
+            _settings(chat_thinking_budget_tokens=bad)

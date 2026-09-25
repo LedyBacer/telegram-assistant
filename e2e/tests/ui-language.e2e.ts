@@ -25,13 +25,14 @@ test("normalizeUiLanguage: en, en-US, en-GB → en; ru, ru-RU, unknown → ru", 
         normalizeUiLanguage("en"),
         normalizeUiLanguage("en-US"),
         normalizeUiLanguage("en-GB"),
+        normalizeUiLanguage("en_US"),
         normalizeUiLanguage("ru"),
         normalizeUiLanguage("ru-RU"),
         normalizeUiLanguage("fr-CA"),
         normalizeUiLanguage(undefined),
       ];
     });
-    expect(results).toEqual(["en", "en", "en", "ru", "ru", "ru", "ru"]);
+    expect(results).toEqual(["en", "en", "en", "en", "ru", "ru", "ru", "ru"]);
   } finally {
     guard.assertClean();
   }

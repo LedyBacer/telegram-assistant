@@ -179,12 +179,14 @@ class OpenAIChatProvider:
         max_attempts: int = 2,
         timeout: float = 180.0,
         thinking_enabled: bool = False,
+        thinking_budget_tokens: int | None = None,
         reasoning_effort: str | None = None,
     ) -> None:
         self._model = model
         self._max_attempts = max_attempts
         self._timeout = timeout
         self._thinking_enabled = thinking_enabled
+        self._thinking_budget_tokens = thinking_budget_tokens
         self._reasoning_effort = reasoning_effort
         self._client = AsyncOpenAI(
             api_key=api_key,
@@ -196,23 +198,38 @@ class OpenAIChatProvider:
             max_retries=0,  # bounded retries are managed here
         )
 
-    def _chat_options(self) -> dict:
-        """Provider request options shared by every chat completion call.
+    def _request_options(self, *, structured: bool) -> dict:
+        """Chat-template + sampling options for the current model/profile.
 
-        ``chat_template_kwargs`` is the documented llama.cpp OpenAI-compatible
-        extension for the Jinja chat template; ``enable_thinking`` toggles
-        Qwen reasoning. It is sent explicitly in both directions so the mode
-        never relies on a server-side default. Embeddings never use it.
-
-        ``reasoning_effort`` is an OPTIONAL profile knob. It is only forwarded
-        (to servers that understand it) when thinking is enabled AND an
-        explicit effort is configured; otherwise the fast/no-think path sends
-        nothing extra so a plain llama.cpp deployment is unaffected.
+        Qwen3.5 thinking should not use the old greedy ``temperature=0``
+        structured path. For Qwen3.5, thinking uses the model-card sampling
+        family: general chat uses temp=1.0 / presence_penalty=1.5, while
+        structured JSON uses the conservative precise profile temp=0.6 /
+        presence_penalty=0.0. Both use top_p=.95, top_k=20, min_p=0 and
+        repeat_penalty=1.0. Non-thinking behavior remains unchanged.
         """
         template_kwargs: dict = {"enable_thinking": self._thinking_enabled}
         if self._thinking_enabled and self._reasoning_effort:
             template_kwargs["reasoning_effort"] = self._reasoning_effort
-        return {"extra_body": {"chat_template_kwargs": template_kwargs}}
+
+        extra_body: dict = {"chat_template_kwargs": template_kwargs}
+        if self._thinking_enabled and self._thinking_budget_tokens is not None:
+            extra_body["thinking_budget_tokens"] = self._thinking_budget_tokens
+
+        is_qwen35 = "qwen3.5" in self._model.lower()
+        if self._thinking_enabled and is_qwen35:
+            extra_body.update({"top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0})
+            return {
+                "temperature": 0.6 if structured else 1.0,
+                "top_p": 0.95,
+                "presence_penalty": 0.0 if structured else 1.5,
+                "extra_body": extra_body,
+            }
+
+        return {
+            "temperature": 0 if structured else 0.7,
+            "extra_body": extra_body,
+        }
 
     async def chat(self, *, system: str, messages: list[Message]) -> str:
         started = time.monotonic()
@@ -220,9 +237,8 @@ class OpenAIChatProvider:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[{"role": "system", "content": system}, *messages],
-                temperature=0.7,
                 store=False,
-                **self._chat_options(),
+                **self._request_options(structured=False),
             )
         except APITimeoutError as exc:
             logger.warning(
@@ -263,9 +279,8 @@ class OpenAIChatProvider:
                 response = await self._client.chat.completions.create(
                     model=self._model,
                     messages=[{"role": "system", "content": system_with_json}, *conversation],
-                    temperature=0,
                     store=False,
-                    **self._chat_options(),
+                    **self._request_options(structured=True),
                 )
             except APITimeoutError as exc:
                 # A full inference timeout is not a malformed response:

@@ -208,15 +208,13 @@ test("sheet scroll-locks the #view container and restores scrollTop on close", a
     // prevented, so the position is unchanged. (A programmatic scrollTop
     // write is allowed even with overflow:hidden and is not the behavior
     // under test.)
-    const locked = await view.evaluate((el) => {
-      el.dispatchEvent(new WheelEvent("wheel", { deltaY: 500, bubbles: true }));
-      return {
-        overflowY: getComputedStyle(el).overflowY,
-        scrollTop: el.scrollTop,
-      };
-    });
-    expect(locked.overflowY).toBe("hidden");
-    expect(locked.scrollTop).toBe(scrolled);
+    const lockedStyle = await view.evaluate((el) => getComputedStyle(el).overflowY);
+    expect(lockedStyle).toBe("hidden");
+    await page.mouse.move(20, 200);
+    await page.mouse.wheel(0, 500);
+    await page.waitForTimeout(100);
+    const lockedScrollTop = await view.evaluate((el) => el.scrollTop);
+    expect(lockedScrollTop).toBe(scrolled);
 
     // Close the sheet.
     await page.keyboard.press("Escape");

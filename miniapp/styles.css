@@ -37,7 +37,7 @@
      padding + the 1px top border. Everything that must clear the nav uses
      --nav-footprint and never re-adds a safe inset on top (that
      double-counted the inset). */
-  --nav-safe-bottom: var(--safe-bottom);
+  --nav-safe-bottom: max(var(--safe-bottom), var(--tg-content-safe-bottom));
   --nav-footprint: calc(var(--nav-height) + var(--nav-safe-bottom) + 1px);
   /* Safe-area tokens (V5 §11): the four edges. Plain-browser fallbacks use
      the CSS env() insets; inside Telegram the client overrides all four with
@@ -112,7 +112,11 @@ body {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  padding: calc(10px + var(--safe-top)) calc(16px + var(--safe-right)) 10px calc(16px + var(--safe-left));
+  padding:
+    calc(10px + max(var(--safe-top), var(--tg-content-safe-top)))
+    calc(16px + max(var(--safe-right), var(--tg-content-safe-right)))
+    10px
+    calc(16px + max(var(--safe-left), var(--tg-content-safe-left)));
   background: var(--tg-theme-header-bg-color);
   border-bottom: 1px solid var(--divider);
 }
@@ -144,9 +148,11 @@ body {
      The bottom clearance is the single nav-footprint token (V5.2 §6): the
      fixed nav occupies exactly --nav-footprint, so content never ends
      under it and no inset is counted twice. */
-  padding: 12px calc(16px + var(--tg-content-safe-right))
-          calc(var(--nav-footprint) + 16px)
-          calc(16px + var(--tg-content-safe-left));
+  padding:
+    12px
+    calc(16px + max(var(--safe-right), var(--tg-content-safe-right)))
+    calc(var(--nav-footprint) + 16px)
+    calc(16px + max(var(--safe-left), var(--tg-content-safe-left)));
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -164,8 +170,8 @@ body {
   min-height: var(--nav-height);
   background: var(--tg-theme-section-bg-color);
   border-top: 1px solid var(--divider);
-  padding-left: var(--safe-left);
-  padding-right: var(--safe-right);
+  padding-left: max(var(--safe-left), var(--tg-content-safe-left));
+  padding-right: max(var(--safe-right), var(--tg-content-safe-right));
   padding-bottom: var(--nav-safe-bottom);
 }
 
@@ -733,7 +739,7 @@ textarea.field-input {
   background: var(--tg-theme-secondary-bg-color);
   color: var(--text);
   border-radius: 16px 16px 0 0;
-  padding: 8px 12px calc(12px + var(--safe-bottom));
+  padding: 8px 12px calc(12px + max(var(--safe-bottom), var(--tg-content-safe-bottom)));
 }
 
 .sheet-title {
@@ -801,7 +807,7 @@ textarea.field-input {
   max-width: 340px;
   margin: 0 auto 40%;
   border-radius: 16px;
-  padding: 18px 16px calc(16px + var(--safe-bottom));
+  padding: 18px 16px calc(16px + max(var(--safe-bottom), var(--tg-content-safe-bottom)));
 }
 
 .sheet-confirm-text {
