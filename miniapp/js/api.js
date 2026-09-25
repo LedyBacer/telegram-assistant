@@ -7,10 +7,17 @@
 import { INIT_DATA } from "./telegram.js";
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  /**
+   * @param {string} message  user-facing safe message (not raw internals)
+   * @param {number} status   HTTP status code
+   * @param {any} [detail]    parsed detail from the response body (string or
+   *   Pydantic 422 array) — callers may inspect it for specific field errors
+   */
+  constructor(message, status, detail) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -42,14 +49,14 @@ export async function api(path, method = "GET", body, signal) {
     throw new ApiError("auth", 401);
   }
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
+    let detail = null;
     try {
       const data = await res.json();
-      if (data && typeof data.detail === "string" && data.detail) detail = data.detail;
+      if (data && "detail" in data) detail = data.detail;
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(detail, res.status);
+    throw new ApiError(`HTTP ${res.status}`, res.status, detail);
   }
   if (res.status === 204) return null;
   return res.json();
@@ -72,14 +79,14 @@ export async function apiUpload(path, file, signal) {
   });
   if (res.status === 401) throw new ApiError("auth", 401);
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
+    let detail = null;
     try {
       const data = await res.json();
-      if (data && typeof data.detail === "string" && data.detail) detail = data.detail;
+      if (data && "detail" in data) detail = data.detail;
     } catch {
       /* non-JSON */
     }
-    throw new ApiError(detail, res.status);
+    throw new ApiError(`HTTP ${res.status}`, res.status, detail);
   }
   if (res.status === 204) return null;
   return res.json();

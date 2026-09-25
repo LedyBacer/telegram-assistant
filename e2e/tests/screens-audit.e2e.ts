@@ -73,8 +73,9 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
   await goTab(page, "new");
   await expect(page.locator("#view h2.view-title")).toBeVisible();
   const textInputs = page.locator("#view input.field-input");
-  // title, description, reminders (3+ labeled text inputs).
-  expect(await textInputs.count()).toBeGreaterThanOrEqual(3);
+  const textAreas = page.locator("#view textarea.field-input");
+  // title, reminders (inputs) + description (textarea) = 3+ labeled text fields.
+  expect((await textInputs.count()) + (await textAreas.count())).toBeGreaterThanOrEqual(3);
   // 5 picker fields: kind, priority, starts, end, due.
   await expect(page.locator("#view .picker-field")).toHaveCount(5);
   // The due picker opens Flatpickr in date/time mode and Escape closes it.

@@ -30,10 +30,14 @@ test("accessibility basics", async ({ page }) => {
   // Forms: every text input on the New screen has an accessible name.
   await page.locator(".nav-btn[data-tab=\"new\"]").click();
   const inputs = page.locator("#view input.field-input");
-  const count = await inputs.count();
+  const textareas = page.locator("#view textarea.field-input");
+  const count = (await inputs.count()) + (await textareas.count());
   expect(count).toBeGreaterThanOrEqual(3);
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < (await inputs.count()); i++) {
     await expect(inputs.nth(i)).toHaveAttribute("aria-label", /.+/);
+  }
+  for (let i = 0; i < (await textareas.count()); i++) {
+    await expect(textareas.nth(i)).toHaveAttribute("aria-label", /.+/);
   }
 
   // Bottom sheet: ARIA dialog + listbox + selectable options, focus is

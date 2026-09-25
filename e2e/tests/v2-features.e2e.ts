@@ -178,14 +178,14 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
   await schedCard.locator(".btn-primary", { hasText: "Запланировать" }).click();
   await expect(page.locator("#toast")).toContainText("Сначала выбери время.");
   // Pick today at 23:50 via Flatpickr (date cell + hour/minute time inputs).
-  await schedCard.locator(".picker-field").click();
+  await schedCard.locator(".picker-field").first().click();
   await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
   await page.locator(".flatpickr-calendar .today").click();
   await page.locator(".flatpickr-time input").nth(0).fill("23");
   await page.locator(".flatpickr-time input").nth(1).fill("50");
   await page.locator(".picker-input").focus();
   await page.keyboard.press("Escape");
-  await expect(schedCard.locator(".picker-field")).toContainText("23:50");
+  await expect(schedCard.locator(".picker-field").first()).toContainText("23:50");
   await schedCard.locator('input[type="number"]').fill("30");
   await schedCard.locator(".btn-primary", { hasText: "Запланировать" }).click();
   await expect(page.locator("#toast")).toContainText("Тренировка запланирована.");

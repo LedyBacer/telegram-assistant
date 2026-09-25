@@ -294,6 +294,8 @@
   "miniapp.new_priority": "Priority",
   "miniapp.not_set": "Not set",
   "miniapp.new_title_required": "Enter a title.",
+  "miniapp.end_before_start": "End is before start.",
+  "miniapp.workout_minutes_invalid": "Enter duration in minutes.",
   "miniapp.now": "Now",
   "miniapp.workout_name_required": "Enter the workout name.",
   "miniapp.upload": "Upload a file",

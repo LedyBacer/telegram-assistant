@@ -601,7 +601,7 @@ function actionCard(a) {
             // the server reason and refresh so the card shows "expired".
             // 400 = payload no longer valid (same outcome).
             if (err && (err.status === 409 || err.status === 400)) {
-              toast(S("miniapp.action_stale_detail", { reason: err.message }), "error");
+              toast(S("miniapp.action_stale_detail", { reason: err.detail || err.message }), "error");
             } else {
               toast(S("miniapp.error_generic"), "error");
             }
@@ -755,7 +755,9 @@ async function viewNew(view) {
     placeholder: S("miniapp.new_title_ph"),
     "aria-label": S("miniapp.new_title"),
   });
-  const descInput = input({
+  const descInput = el("textarea", {
+    class: "field-input field-textarea",
+    rows: "3",
     placeholder: S("miniapp.new_description_ph"),
     "aria-label": S("miniapp.new_description"),
   });
@@ -837,6 +839,12 @@ async function viewNew(view) {
         titleInput.focus();
         return;
       }
+      // §19.1: pre-submit validation — ends_at >= starts_at (naive wall strings
+      // compare lexicographically in "YYYY-MM-DDTHH:MM" format).
+      if (formState.startsAt && formState.endsAt && formState.endsAt < formState.startsAt) {
+        toast(S("miniapp.end_before_start"), "error");
+        return;
+      }
       try {
         await api("/api/v1/items", "POST", {
           title: formState.title,
@@ -852,7 +860,8 @@ async function viewNew(view) {
         formDirty = false; // just persisted — nothing left to discard
         navigate("today");
       } catch (err) {
-        toast(err && err.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
+        // §19.2: structured error — don't map every 422 to "title required".
+        toast(S("miniapp.error_generic"), "error");
       }
     }), { variant: "primary" });
 
@@ -951,11 +960,13 @@ async function viewEdit(view, gen, signal) {
     "aria-label": S("miniapp.new_title"),
     placeholder: S("miniapp.new_title_ph"),
   });
-  const descInput = input({
-    value: original.description,
+  const descInput = el("textarea", {
+    class: "field-input field-textarea",
+    rows: "3",
     "aria-label": S("miniapp.new_description"),
     placeholder: S("miniapp.new_description_ph"),
   });
+  descInput.value = original.description;
 
   // V5 §15: a freshly rendered form is clean; typing marks it dirty.
   formDirty = false;
@@ -1050,6 +1061,11 @@ async function viewEdit(view, gen, signal) {
       titleInput.focus();
       return;
     }
+    // §19.1: pre-submit validation — ends_at >= starts_at.
+    if (formState.startsAt && formState.endsAt && formState.endsAt < formState.startsAt) {
+      toast(S("miniapp.end_before_start"), "error");
+      return;
+    }
     // PATCH tri-state (SPEC §4.3): send only the changed keys; an explicit
     // null clears, an omitted key is left as-is.
     const body = {};
@@ -1066,7 +1082,7 @@ async function viewEdit(view, gen, signal) {
       navigate(state.editReturn || "today");
     } catch (err) {
       if (isStale(gen)) return;
-      toast(err && err.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
+      toast(S("miniapp.error_generic"), "error");
     }
   }), { variant: "primary" });
 
@@ -1144,6 +1160,8 @@ async function viewWorkouts(view, gen, signal) {
       whenBtn.querySelector(".picker-value").textContent = fmtWall(wall);
     }
   });
+  // §19.4: store the effort in a real variable, not parsed from rendered text.
+  let effort = null;
   const effortBtn = pickerBtn(S("miniapp.effort"), S("miniapp.not_set"), async () => {
     const chosen = await openSheet({
       title: S("miniapp.effort"),
@@ -1155,9 +1173,11 @@ async function viewWorkouts(view, gen, signal) {
         })),
       ],
     });
-    if (chosen !== null)
+    if (chosen !== null) {
+      effort = chosen === "" ? null : Number(chosen);
       effortBtn.querySelector(".picker-value").textContent =
-        chosen === "" ? S("miniapp.not_set") : `${chosen} / 10`;
+        effort === null ? S("miniapp.not_set") : `${effort} / 10`;
+    }
   });
 
   const logBtn = btn(S("miniapp.log"), (e) => withButtonGuard(e.currentTarget, async () => {
@@ -1167,22 +1187,24 @@ async function viewWorkouts(view, gen, signal) {
       nameInput.focus();
       return;
     }
+    const minutes = minutesInput.value ? Number(minutesInput.value) : null;
+    // §19.4: validate positive workout minutes.
+    if (minutes !== null && (!Number.isFinite(minutes) || minutes < 1)) {
+      toast(S("miniapp.workout_minutes_invalid"), "error");
+      minutesInput.focus();
+      return;
+    }
     try {
       await api("/api/v1/workouts", "POST", {
         name,
         started_at: logStart,
-        duration_minutes: minutesInput.value ? Number(minutesInput.value) : null,
-        perceived_effort: effortValue(),
+        duration_minutes: minutes,
+        perceived_effort: effort,
       });
       toast(S("miniapp.workout_logged"));
       render();
     } catch {
       toast(S("miniapp.error_generic"), "error");
-    }
-    function effortValue() {
-      const v = effortBtn.querySelector(".picker-value").textContent;
-      const match = v.match(/^(\d+)/);
-      return match ? Number(match[1]) : null;
     }
   }), { variant: "primary" });
 
@@ -1214,6 +1236,26 @@ async function viewWorkouts(view, gen, signal) {
     "aria-label": S("miniapp.minutes"),
     inputmode: "numeric",
   });
+  // §19.5: optional explicit end time, mutually exclusive with duration.
+  let schedEnd = null;
+  const schedEndBtn = pickerBtn(S("miniapp.new_end"), S("miniapp.not_set"), async () => {
+    const wall = await pickDateTime(schedEnd);
+    if (wall) {
+      schedEnd = wall;
+      schedEndBtn.querySelector(".picker-value").textContent = fmtWall(wall);
+      // Setting explicit end clears duration.
+      schedMinutesInput.value = "";
+    }
+  });
+  // Entering duration clears the explicit end.
+  schedMinutesInput.addEventListener("input", () => {
+    if (schedMinutesInput.value) {
+      if (schedEnd !== null) {
+        schedEnd = null;
+        schedEndBtn.querySelector(".picker-value").textContent = S("miniapp.not_set");
+      }
+    }
+  });
   const schedBtn = btn(S("miniapp.schedule"), (e) => withButtonGuard(e.currentTarget, async () => {
     const name = schedNameInput.value.trim();
     if (!name) {
@@ -1225,11 +1267,23 @@ async function viewWorkouts(view, gen, signal) {
       toast(S("miniapp.when_required"), "error");
       return;
     }
+    // §19.5: validate end >= start.
+    if (schedEnd && schedEnd < schedStart) {
+      toast(S("miniapp.end_before_start"), "error");
+      return;
+    }
+    const duration = schedMinutesInput.value ? Number(schedMinutesInput.value) : null;
+    if (duration !== null && (!Number.isFinite(duration) || duration < 1)) {
+      toast(S("miniapp.workout_minutes_invalid"), "error");
+      schedMinutesInput.focus();
+      return;
+    }
     try {
       await api("/api/v1/workouts/schedule", "POST", {
         name,
         starts_at: schedStart,
-        duration_minutes: schedMinutesInput.value ? Number(schedMinutesInput.value) : null,
+        duration_minutes: schedEnd ? null : duration,
+        ends_at: schedEnd,
       });
       toast(S("miniapp.workout_scheduled"));
       render();
@@ -1242,6 +1296,7 @@ async function viewWorkouts(view, gen, signal) {
     el("h2", { class: "view-title" }, S("miniapp.workout_schedule")),
     field(S("miniapp.workout_name_ph"), schedNameInput),
     el("div", { class: "form-row" }, field(S("miniapp.when"), schedStartBtn), field(S("miniapp.minutes"), schedMinutesInput)),
+    field(S("miniapp.new_end"), schedEndBtn),
     schedBtn
   );
 

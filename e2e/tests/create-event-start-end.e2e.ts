@@ -144,17 +144,10 @@ test("New surface rejects an inverted end (end before start)", async ({ page }) 
     await pickAt(p, startPicker, "12", "00");
     await pickAt(p, endPicker, "10", "00");
 
-    // The 400 below is the controlled outcome this spec is asserting.
-    guard.allow("/api/v1/items");
-
-    // The shared invariant rejects it at the API: 400, and the form stays.
-    const createRes = await p
-      .locator("#view button.btn-primary")
-      .click()
-      .then(() => p.waitForResponse((r) => r.url().includes("/api/v1/items")));
-    expect(createRes.status()).toBe(400);
-    expect((await createRes.json()).detail).toContain("ends_at");
+    // §19.1: client-side validation rejects before any API call.
+    await p.locator("#view button.btn-primary").click();
     await expect(p.locator("#toast")).toBeVisible();
+    await expect(p.locator("#toast")).toContainText("Конец раньше начала");
 
     // Nothing was created.
     await p.reload();

@@ -142,6 +142,8 @@ export const FALLBACK_RU = {
   "miniapp.new_priority": "Приоритет",
   "miniapp.not_set": "Не задано",
   "miniapp.new_title_required": "Введи название.",
+  "miniapp.end_before_start": "Конец раньше начала.",
+  "miniapp.workout_minutes_invalid": "Введи продолжительность в минутах.",
   "miniapp.now": "Сейчас",
   "miniapp.workout_name_required": "Введи название тренировки.",
   "miniapp.upload": "Загрузить файл",
