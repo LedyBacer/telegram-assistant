@@ -45,6 +45,7 @@ import eval.fixtures as fx  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.orm import selectinload  # noqa: E402
 
+from assistant.actions.calendar import ActionStaleError  # noqa: E402
 from assistant.models.pending_actions import (  # noqa: E402
     ActionStatus,
     PendingAction,
@@ -140,6 +141,13 @@ async def _load_user(session, user_id: int) -> User:
     ).one()
 
 
+def _refusal_code(exc: Exception) -> str:
+    """Stable reason code for a confirm refusal recorded in ``CaseRun.refused``."""
+    if isinstance(exc, ActionStaleError):
+        return exc.reason
+    return str(exc)[:200]
+
+
 async def find_and_confirm(session, user, kind: str):
     """Find the newest *proposed* action of ``kind`` for the user and confirm +
     execute it through the real (row-locked, idempotent) service. Returns the
@@ -210,9 +218,10 @@ async def run_case(
         ctx = {} if not case.setup else await case.setup(provider, ev)
         steps = case.turn_builder(ctx) if case.turn_builder else case.turns
         before = await fx.snapshot_user_state(ev)
+        prev = before
         async with fx.session(expire_on_commit=False) as s:
             user = await _load_user(s, ev.user_id)
-            for step in steps:
+            for turn_no, step in enumerate(steps, 1):
                 if isinstance(step, str):
                     r = await run_turn(s, user, step, provider=provider)
                     run.results.append(r)
@@ -220,11 +229,37 @@ async def run_case(
                     run.max_model_calls = max(run.max_model_calls, r.model_calls)
                     for ch in r.retrieved_chunks:
                         run.retrieved_file_ids.add(ch.file_id)
+                    cur = await fx.snapshot_user_state(ev)
+                    run.per_turn.append(
+                        {
+                            "turn": turn_no,
+                            "kind": "message",
+                            "confirms": [],
+                            "diff": fx.state_diff(prev, cur),
+                        }
+                    )
+                    prev = cur
                 elif isinstance(step, dict) and "confirm" in step:
+                    confirmed_kinds: list[str] = []
                     for kind in step["confirm"]:
-                        res = await find_and_confirm(s, user, kind)
+                        try:
+                            res = await find_and_confirm(s, user, kind)
+                        except (ValueError, ActionStaleError) as exc:
+                            run.refused.append((kind, _refusal_code(exc)))
+                            continue
                         if res is not None:
+                            confirmed_kinds.append(kind)
                             run.executed.append((kind, res))
+                    cur = await fx.snapshot_user_state(ev)
+                    run.per_turn.append(
+                        {
+                            "turn": turn_no,
+                            "kind": "confirm",
+                            "confirms": confirmed_kinds,
+                            "diff": fx.state_diff(prev, cur),
+                        }
+                    )
+                    prev = cur
         after = await fx.snapshot_user_state(ev)
         run.before, run.after = before, after
         run.diff = fx.state_diff(before, after)
@@ -244,6 +279,8 @@ async def run_case(
                 "model_calls_total": run.model_calls_total,
                 "max_model_calls": run.max_model_calls,
                 "executed": [k for k, _ in run.executed],
+                "refused": run.refused,
+                "per_turn": run.per_turn,
                 "retrieved_file_ids": sorted(run.retrieved_file_ids),
                 "latency_ms": round(run.latency_ms, 1),
                 "checks": [c.as_dict() for c in checks],

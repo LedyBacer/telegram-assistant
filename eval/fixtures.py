@@ -84,6 +84,39 @@ def bootstrap_env() -> None:
 
 bootstrap_env()
 
+# ---------------------------------------------------------------------------
+# Telegram network hard-block (V5.4 §29-P2).
+#
+# The mandated production stack imports aiogram transitively (the library
+# import performs no network call), so the library cannot be banned. Instead we
+# hard-block the worker's outbound seams and RECORD any attempt, so the
+# ``p0_no_telegram`` check fails the run if a real Bot API call ever fires
+# during a turn — even one originating from the mandated services. The root
+# seam is ``notifications._get_bot`` (every real send path builds a Bot there);
+# the send wrappers are patched too so a path that bypasses ``_get_bot`` is
+# still blocked and recorded. Called once at the end of this module.
+# ---------------------------------------------------------------------------
+telegram_send_attempts: list[dict] = []
+
+
+def _blocking_tg_send(seam: str, *args, **kwargs):
+    telegram_send_attempts.append({"seam": seam, "args": args, "kwargs": kwargs})
+    raise RuntimeError(f"Telegram network is blocked in the LLM eval ({seam})")
+
+
+def guard_telegram() -> None:
+    import assistant.services.notifications as n  # noqa: PLC0415
+    import assistant.services.tg_text as t  # noqa: PLC0415
+
+    def _no_bot():
+        telegram_send_attempts.append({"seam": "_get_bot"})
+        raise RuntimeError("Telegram Bot creation is blocked in the LLM eval")
+
+    n._get_bot = _no_bot
+    n.send_text = lambda *a, **k: _blocking_tg_send("send_text", *a, **k)
+    t.send_long = lambda *a, **k: _blocking_tg_send("send_long", *a, **k)
+
+
 from assistant.ai import (  # noqa: E402  (import after env bootstrap)
     OpenAIChatProvider,
     OpenAICompatibleProvider,
@@ -515,3 +548,8 @@ def now_utc() -> datetime:
 
 def rel(*, days: int = 0, hours: int = 0, minutes: int = 0) -> datetime:
     return now_utc() + timedelta(days=days, hours=hours, minutes=minutes)
+
+
+# Enforce the Telegram network hard-block now that the service modules are
+# imported (module scope: runs once when the harness loads).
+guard_telegram()

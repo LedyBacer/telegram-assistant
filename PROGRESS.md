@@ -55,9 +55,27 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
     `discard_deleted_storage`.
 - **§29-P2 (in progress)** evaluator correctness — done this session:
   `find_and_confirm` newest-first (`created_at.desc(), id.desc()`) + post-commit
-  discard. Remaining: per-turn pre-confirm snapshots, cross-user real-confirm
-  P0 check, Telegram network block in evaluator, matched A/B, true holdout,
-  stronger oracles.
+  discard, plus:
+  - **Per-turn pre-confirm snapshots**: `scripts/llm_eval.py run_case` now
+    snapshots after every step and appends `run.per_turn` entries
+    (`{turn, kind: message|confirm, confirms, diff}`);
+    `p0_no_mutation_before_confirm` is now PER-TURN (skips `confirm` turns), so
+    a mutation that lands on a non-confirm turn is a P0 even if a later
+    confirm step runs (previously the whole case was exempted once `executed`
+    was non-empty).
+  - **Real cross-user-exec P0** (`p0_no_cross_user_exec`): confirm refusals
+    (ValueError / `ActionStaleError`) are caught per-kind into `run.refused`
+    (not `run.executed`); each executed result's id is verified against the
+    row's `user_id` via the result-carried ids (`_EXEC_ID_TABLE`). Delete kinds
+    skip (row gone; ownership enforced at execution).
+  - **Telegram network hard-block** (`eval/fixtures.py` `guard_telegram`,
+    called at module scope): patches the root seam `notifications._get_bot`
+    plus the `send_text`/`send_long` wrappers; every attempt is recorded in
+    `fx.telegram_send_attempts` and `p0_no_telegram` now fails if any send is
+    attempted (covers `proactivity`'s import-time `send_text` binding too).
+  - `run.refused` + `run.per_turn` surfaced in the JSONL evidence record.
+  - Verified: `ruff check .` clean; full pytest **594 passed**.
+  - Remaining: matched A/B, true holdout, stronger oracles.
 - **Next:** P4 large Russian corpus (≥150 cases / ≥350 phrasings / ≥700 turns /
   ≥80% RU / ≥20 multi-turn / ≥40 holdout); P5 sampling+budget study; P6
   Telegram UX; P7 Mini App esbuild build; P8 freeze + one live final eval
