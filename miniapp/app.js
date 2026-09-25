@@ -568,12 +568,35 @@ const ACTION_STATUS_TONES = {
 };
 
 async function viewActions(view, gen, signal) {
-  const actions = await api("/api/v1/actions?limit=20", "GET", undefined, signal);
+  // §21: Pending (default) / History filter.
+  const filter = state._actionsFilter || "pending";
+  state._actionsFilter = filter;
+  const url = filter === "pending"
+    ? "/api/v1/actions?status=proposed&limit=20"
+    : "/api/v1/actions?limit=100";
+  let actions = await api(url, "GET", undefined, signal);
   if (isStale(gen)) return;
+  if (filter === "history") {
+    actions = actions.filter((a) => a.status !== "proposed");
+  }
+
+  const filterRow = el("div", { class: "filter-row" });
+  const pendingBtn = btn(S("miniapp.actions_pending"), () => {
+    state._actionsFilter = "pending";
+    render();
+  }, { variant: filter === "pending" ? "primary" : "ghost" });
+  const historyBtn = btn(S("miniapp.actions_history"), () => {
+    state._actionsFilter = "history";
+    render();
+  }, { variant: filter === "history" ? "primary" : "ghost" });
+  filterRow.append(pendingBtn, historyBtn);
+
+  const emptyMsg = filter === "pending" ? S("miniapp.actions_empty") : S("miniapp.actions_empty_history");
   view.replaceChildren(
+    filterRow,
     actions.length
       ? el("div", { class: "list" }, ...actions.map(actionCard))
-      : empty(S("miniapp.actions_empty"))
+      : empty(emptyMsg)
   );
 }
 

@@ -1008,6 +1008,16 @@ textarea.field-input {
   flex: 0 0 auto;
 }
 
+.filter-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.filter-row .btn {
+  flex: 1 1 0;
+}
+
 .search-results {
   margin-bottom: 12px;
 }

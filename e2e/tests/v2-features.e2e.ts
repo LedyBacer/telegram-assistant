@@ -132,6 +132,9 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
   const createCard = page.locator("#view .list .card", { hasText: ACTION_TITLE });
   await createCard.locator(".item-actions .btn").first().click(); // Confirm
   await expect(page.locator("#toast")).toContainText("Сохранено.");
+  // §21: after confirm, the action leaves the Pending view; switch to History
+  // to verify the badge and absence of action buttons.
+  await page.locator(".filter-row .btn", { hasText: "История" }).click();
   await expect(createCard.locator(".badge")).toHaveText("выполнено");
   // No confirm/reject buttons remain on an executed action.
   await expect(createCard.locator(".item-actions .btn")).toHaveCount(0);
@@ -142,6 +145,8 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
   // 1b. Stale target: confirming a cancel_item whose target does not exist
   //     returns 409 → localized toast; the action is expired server-side.
   await goTab(page, "actions");
+  // Switch back to Pending (the filter was set to History in step 1a).
+  await page.locator(".filter-row .btn", { hasText: "Ожидают" }).click();
   const staleCard = page.locator("#view .list .card", { hasText: STALE_SUMMARY });
   // The stale confirm is expected to return 409 (controlled error).
   guard.allow("/actions/2/confirm");
@@ -150,17 +155,20 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
   await expect(page.locator("#toast")).toContainText(
     "Действие неактуально: proposal no longer applies to current data",
   );
-  // V3 P33: the stale branch re-renders; the navigation below re-fetches
-  // and shows the expired state.
+  // V3 P33: the stale branch re-renders; the expired action moves to History.
   await goTab(page, "today");
   await goTab(page, "actions");
+  await page.locator(".filter-row .btn", { hasText: "История" }).click();
   await expect(staleCard.locator(".badge")).toHaveText("истекло");
   await expect(staleCard.locator(".item-actions .btn")).toHaveCount(0);
 
   // 1c. Reject the remaining proposed action.
+  await page.locator(".filter-row .btn", { hasText: "Ожидают" }).click();
   const rejectCard = page.locator("#view .list .card", { hasText: REJECT_SUMMARY });
   await rejectCard.locator(".item-actions .btn").nth(1).click(); // Reject
   await expect(page.locator("#toast")).toContainText("Сохранено.");
+  // The rejected action moves to History.
+  await page.locator(".filter-row .btn", { hasText: "История" }).click();
   await expect(rejectCard.locator(".badge")).toHaveText("отклонено");
   await assertCleanText(page);
   await assertNoHorizontalOverflow(page);

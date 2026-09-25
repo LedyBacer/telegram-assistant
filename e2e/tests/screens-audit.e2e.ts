@@ -223,6 +223,8 @@ test("per-screen audit: states, user content, settings, task lifecycle", async (
       );
       return els
         .filter((e) => e.offsetParent !== null)
+        // Hidden programmatic file input (1×1px) is not a user control.
+        .filter((e) => !(e instanceof HTMLInputElement && e.type === "file"))
         .filter((e) => e.getBoundingClientRect().height < 44)
         .map((e) => `${e.tagName}.${e.className}`);
     });

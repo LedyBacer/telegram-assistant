@@ -10,7 +10,7 @@ import { openApp, assertNoLeakedDom } from "../helpers/app";
 
 const base = "http://127.0.0.1:" + (process.env.E2E_PORT ?? 8123);
 // Glob note: "?" is a single-character wildcard, so the query part is a "*".
-const listRoute = "**/api/v1/actions?limit=*";
+const listRoute = "**/api/v1/actions*";
 
 const ISO = "2026-09-24T12:00:00Z";
 const LATER = "2026-09-24T13:00:00Z";

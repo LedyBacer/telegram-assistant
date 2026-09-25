@@ -325,6 +325,9 @@
 
   "miniapp.tab_actions": "⏳ Actions",
   "miniapp.actions_empty": "No pending actions — the assistant will ask you here before changing anything.",
+  "miniapp.actions_pending": "Pending",
+  "miniapp.actions_history": "History",
+  "miniapp.actions_empty_history": "No history yet.",
   "miniapp.action_expires": "expires {when}",
   "miniapp.action_stale": "This action no longer applies to current data.",
   "miniapp.action_stale_detail": "Action no longer applies: {reason}",
