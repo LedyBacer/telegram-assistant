@@ -375,3 +375,12 @@ BASE_URL=https://telegram-assistant.bacer.ru bash scripts/public_smoke.sh
   the database dump, keyed by the server-generated storage keys.
 - `.env` contains secrets — store it with the same care as the database
   credentials.
+
+### Telegram formatting for AI replies
+
+The bot intentionally has no global `parse_mode`. Normal deterministic messages
+and user-sourced values remain plain text. Conversational AI replies only are
+converted at delivery time from a conservative Markdown subset to Telegram HTML.
+Raw model HTML is escaped, long replies are split before conversion, and a
+Telegram parse error falls back to the original plain-text segment. The original
+Markdown remains unchanged in the chat history/database.

@@ -2939,3 +2939,12 @@ After remote V5.2 verification (`c07fe4c`, GitHub Actions run 36129982668,
 
 The next meaningful phase is live Telegram + real Qwen3.5/embedding evaluation,
 not another speculative hardening milestone.
+
+## Telegram AI Markdown rendering
+
+Conversational AI replies are stored unchanged as model-authored Markdown, but
+are converted at Telegram delivery time to a conservative, escaped HTML subset:
+headings, bold/italic/strike/spoiler, inline/fenced code, safe links,
+blockquotes and bullets. The bot still has no global `parse_mode`; deterministic
+messages and ordinary user-sourced values remain plain text. A Telegram entity
+parse failure retries only the failed AI segment as its original plain text.

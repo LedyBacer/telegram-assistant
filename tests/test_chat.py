@@ -463,3 +463,24 @@ async def test_natural_language_draft_releases_tx_before_model_io(
 
     assert provider.in_transaction_during_call is False
     state.set_state.assert_awaited_once_with(TaskDraftStates.confirm)
+
+
+async def test_on_text_renders_model_markdown_for_telegram(
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the model reply is rendered; the bot has no global parse mode."""
+    _no_thinking(monkeypatch)
+    monkeypatch.setattr(
+        turns_service,
+        "get_ai_provider",
+        lambda: _FakeProvider(reply="**Bold** and `code`"),
+    )
+    message = _fake_text_message("format this")
+    await on_text(message, session, _fake_state())
+    await session.commit()
+
+    message.answer.assert_awaited_once()
+    call = message.answer.await_args
+    assert call.args[0] == "<b>Bold</b> and <code>code</code>"
+    assert call.kwargs["parse_mode"] == "HTML"
