@@ -120,15 +120,29 @@ Goal items are tracked by their `§` number. Committed on `main`; full pytest
   `signal.aborted` before/after each fetch and passes `signal` to the API.
   §21 viewActions passes `signal` and checks `isStale(gen)` post-fetch.
   §22/§23 introduce no new async render paths.
+- **§25** (`161c552`, HEAD) canonical telegram-stub: the E2E
+  `initDataUnsafe` payload now carries the full `user` object
+  (`id`, `first_name`, `last_name`, `username`, `language_code`,
+  `is_bot`, `can_join_groups`, `can_read_all_group_messages`,
+  `supports_inline_queries`) matching the real Telegram SDK shape, not
+  just `id`+`first_name`.
+- **§26/§27** (regression matrices): full backend pytest 542 passed
+  (47.70 s) and full Playwright E2E 26 passed (56.1 s), both run in
+  parallel against the local PG, both green.
+- **§28** (acceptance.sh): verified the script is syntactically valid
+  (`bash -n`), covers all 22 numbered steps (compose, ports, build,
+  fresh PG, Alembic, API healthz/readyz, seed, worker, pytest subsets
+  9-13, create_bot, RU/EN, test_ai, full pytest, Ruff, lockfile,
+  no test-auth, Flatpickr CDN policy, Playwright E2E) plus sub-steps
+  1b (clean-checkout compose) and 1c (actionlint 1.7.12). No changes
+  required; the existing script satisfies the §28 14+ check list.
 
-Verified at HEAD: `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q` →
-542 passed; `npx playwright test --config=e2e/playwright.config.ts` →
-26 passed; `uv run ruff check .` clean.
+Verified at HEAD `161c552`: `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q`
+→ 542 passed; `npx playwright test --config=e2e/playwright.config.ts` →
+26 passed; `uv run ruff check .` clean; `bash -n scripts/acceptance.sh` OK.
 
-**Remaining (in order):** §25
-(canonical telegram-stub), §26/§27 (regression matrices), §28
-(acceptance.sh), §29 (docs/PROGRESS closeout), §31 (Definition of Done +
-REPORT.md).
+**Remaining (in order):** §29 (docs/PROGRESS closeout), §31 (Definition of
+Done + REPORT.md).
 
 
 ## V4 — Audit findings (post-V3, recorded before implementation)
