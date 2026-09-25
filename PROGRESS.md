@@ -46,7 +46,7 @@ Goal items are tracked by their `§` number. Committed on `main`; full pytest
   secondary tabs through the More sheet, and specs that asserted a secondary
   bottom-nav button (a11y count, stale-render is-active, screenshots) were
   updated to the launcher/sheet model.
-- **§17** (`d04c9a5`, HEAD) double-submit prevention: `withButtonGuard(button,
+- **§17** (`d04c9a5`) double-submit prevention: `withButtonGuard(button,
   fn)` in ui.js disables the button (plus a `.is-busy` class with
   `pointer-events:none`) for the duration of `fn`, re-enabling it in `finally`
   only while connected. Every mutation handler in app.js routes through it
@@ -56,17 +56,31 @@ Goal items are tracked by their `§` number. Committed on `main`; full pytest
   digest rows, motivation switch, and the eight proactive rows). Delete
   handlers capture `e.currentTarget` before `await confirmDialog(...)` because
   `currentTarget` is null after an `await` (else the guard is bypassed).
-  Fixing the empty-day render path exposed a pre-existing bug: viewToday
-  passed a `null` summary to `replaceChildren` (a literal "null" text node),
-  now filtered. New E2E `double-submit.e2e.ts`: a double click on a delayed
+  New E2E `double-submit.e2e.ts`: a double click on a delayed
   save fires exactly one POST /items.
+- **§18** (`4a20b2e`, HEAD) settings consistency:
+  - §18.1: switch rows roll back to previous value when PATCH fails
+    (`patchSwitch(boxEl, prev, body)` pattern).
+  - §18.2: successful proactive PATCH triggers `render()` so all displayed
+    values refresh from the server response.
+  - §18.3: proactive card load failure renders a localized error state with
+    a "Повторить" button (Retry re-calls `render()`).
+  - §18.4: timezone change resets `state.month` and `state.selectedDate`
+    so Today recalculates in the new zone.
+  - §18.5: timezone picker fetches the full IANA list from the new
+    `GET /api/v1/timezones` endpoint (`zoneinfo.available_timezones()`),
+    falling back to `Intl.supportedValuesOf` then the 15-zone curated list.
+  - Fixed `replaceChildren([...])` → `replaceChildren(...[...])` array
+    stringification bug in `viewToday` (introduced in §17: `daySummary`
+    null-filtering wrapped nodes in an array; without spread, Chromium
+    stringified it as `[object HTMLDivElement],...`).
+  New E2E `settings-consistency.e2e.ts` covers all four sub-items.
 
 Verified at HEAD: `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q` →
-542 passed; `npm run test:e2e` → 23 passed; `uv run ruff check .` clean.
+542 passed; `npx playwright test --config=e2e/playwright.config.ts` →
+24 passed; `uv run ruff check .` clean.
 
-**Remaining (in order):** §18 (Settings
-consistency: switch rollback, value refresh, Retry card, tz-change calendar
-reset, IANA list via `zoneinfo.available_timezones()`), §19 (form validation:
+**Remaining (in order):** §19 (form validation:
 ends>=starts pre-submit, structured ApiError, description textarea, real
 effort variable, workout end/duration exclusion), §20 (Files bounded
 foreground polling), §21 (Actions Pending/History filter, default Pending),
