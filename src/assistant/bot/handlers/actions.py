@@ -40,6 +40,11 @@ async def on_action(
                 session, user, action_id
             )
             text = t(lang, "action.done", summary=action.summary)
+            # Commit before touching disk so a ``delete_file`` artifact is
+            # removed only once the row deletion is durable (the middleware
+            # commits again, as a no-op, when the handler returns).
+            await session.commit()
+            actions_service.discard_deleted_storage(_result)
         except ActionStaleError:
             text = t(lang, "action.expired")
         except ValueError:

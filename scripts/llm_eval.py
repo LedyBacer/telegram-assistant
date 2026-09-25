@@ -52,6 +52,7 @@ from assistant.models.pending_actions import (  # noqa: E402
 from assistant.models.users import User  # noqa: E402
 from assistant.services.actions import (  # noqa: E402
     confirm_and_execute_action,
+    discard_deleted_storage,
 )
 from assistant.services.turns import run_turn  # noqa: E402
 
@@ -151,13 +152,15 @@ async def find_and_confirm(session, user, kind: str):
                 PendingAction.kind == kind,
                 PendingAction.status == ActionStatus.proposed.value,
             )
-            .order_by(PendingAction.created_at)
+            .order_by(PendingAction.created_at.desc(), PendingAction.id.desc())
         )
     ).first()
     if action is None:
         return None
     _, result = await confirm_and_execute_action(session, user, action.id)
     await session.commit()
+    # Post-commit disk cleanup for a ``delete_file`` execution.
+    discard_deleted_storage(result)
     return result
 
 

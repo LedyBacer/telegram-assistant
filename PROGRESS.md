@@ -1,9 +1,67 @@
 # Progress
 
-Status: V5.2 COMPLETE — "Final corrective patch before real deployment" on
-the V5.1 baseline. V5.1 remote CI is GREEN (`0c8dd19`, run 36110550934, 4/4
-jobs). V5.2 remote CI is GREEN (`c07fe4c`, run 36129982668, 4/4 jobs). Below is the compact V5.2 handoff, then the V5.1/V5/V4/
-V3/V2 detail. Working tree is committed at each meaningful boundary.
+Status: **V5.4 in progress** — making the assistant + Ornith-1.5-9B highly
+reliable for real Russian personal-assistant use, measured empirically by
+running the real model against production orchestration (P1 sampling
+correctness done @ `c099e9a`; P3 data-management actions done this session).
+Prior: V5.3 live-LLM harness + hardening @ `45617d5`; V5.2 CI GREEN
+(`c07fe4c`, run 36129982668, 4/4 jobs); V5.1 CI GREEN (`0c8dd19`). Working
+tree committed at each meaningful boundary; no push.
+
+## V5.4 — Real-LLM reliability hardening (goal §29 phases, in progress)
+
+Mission: find real failures of the 9B model against the production turn
+engine, fix generalized causes, then re-run a stronger final eval. Acceptance
+(§25): P0 = 100%; core Russian profile ≥95% overall (facts / reminders /
+entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
+≥99% schema-valid; holdout ≥90%; final metrics from ONE post-freeze run.
+
+- **§29-P1 (done, `c099e9a`)** explicit sampling profile for the
+  Ornith/Qwen3.5 reasoning family (`config.py` chat + structured profiles,
+  `provider.py` `_resolve_sampling_profile` / `_request_options`, threaded in
+  `ai/__init__.py`). Sampling is INDEPENDENT of thinking mode.
+- **§29-P3 (done, this session)** data-management actions for natural-language
+  deletion:
+  - `src/assistant/actions/data.py` — `delete_file` (by `file_id` preferred,
+    or exact `original_filename`; ambiguous → `file_ambiguous`, never guessed;
+    cross-user → `file_not_found`) and `delete_fact` (by `fact_id`). Stale
+    codes: `file_not_found`/`file_ambiguous`/`file_changed`,
+    `fact_not_found`/`fact_changed`. Baselines are tolerant of an unresolvable
+    target (proposal always succeeds; staleness enforced at confirm). Real-name
+    / value previews with `.id` fallbacks. Registered in
+    `actions/__init__.py` (kinds now 11, incl. both new ones).
+  - **Post-commit disk rule** (P22): the `delete_file` executor returns the
+    file's `storage_key` WITHOUT touching disk; every confirming surface
+    (`bot/handlers/actions.py` confirm branch, `api/routes/actions.py`
+    `confirm_action`, `scripts/llm_eval.py` `find_and_confirm`) calls the new
+    `actions_service.discard_deleted_storage(result)` strictly AFTER
+    `session.commit()` so a rolled-back commit never destroys the only copy.
+    Bot path commits explicitly before discard (middleware's re-commit is a
+    no-op).
+  - `files` read tool now emits `id=…`-prefixed lines + its
+    `TOOL_DESCRIPTIONS` entry updated; `ai/prompts.py` "facts are NOT actions"
+    block rewritten (both prompt copies) to document the new delete actions
+    (ids must come from tool results, never invented).
+  - i18n ru/en: `action.preview.delete_file{,.id}` +
+    `action.preview.delete_fact{,.id}`.
+  - 12 new tests in `tests/test_actions.py` (resolve by id / filename,
+    ambiguous + not-found + cross-user expiry, payload validation, delete_fact,
+    previews, post-commit disk discard). Fixed 2 stale `test_thinking_ux.py`
+    sampling assertions (default `qwen3.5-9b-64k` always resolves to
+    qwen35_reasoning, so knobs are always sent — sampling independent of
+    thinking mode).
+  - Verified: `ruff check .` clean; full pytest **594 passed**
+    (`FILE_STORAGE_DIR=$(mktemp -d)`); import check confirms both kinds +
+    `discard_deleted_storage`.
+- **§29-P2 (in progress)** evaluator correctness — done this session:
+  `find_and_confirm` newest-first (`created_at.desc(), id.desc()`) + post-commit
+  discard. Remaining: per-turn pre-confirm snapshots, cross-user real-confirm
+  P0 check, Telegram network block in evaluator, matched A/B, true holdout,
+  stronger oracles.
+- **Next:** P4 large Russian corpus (≥150 cases / ≥350 phrasings / ≥700 turns /
+  ≥80% RU / ≥20 multi-turn / ≥40 holdout); P5 sampling+budget study; P6
+  Telegram UX; P7 Mini App esbuild build; P8 freeze + one live final eval
+  (thinking ON); P9 rewrite `docs/LLM_EVAL_REPORT.md` + final `REPORT.md`.
 
 ## V5.3 — Real-LLM behavioral evaluation + autonomous hardening (in progress)
 

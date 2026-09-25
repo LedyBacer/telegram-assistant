@@ -106,7 +106,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "reminders": "pending reminders (with ids); "
     "query=<the reminder the user named> resolves it",
     "workouts": "recent workout logs",
-    "files": "stored files (name, state, size)",
+    "files": "stored files (id, name, state, size)",
     "documents": "search the text of stored documents for relevant excerpts",
     "facts": "confirmed user facts (with ids)",
 }
@@ -343,8 +343,11 @@ async def run_read_tool(
             .scalars()
             .all()
         )
+        # ``id=`` prefix so the model can target a file by id (e.g. for the
+        # ``delete_file`` action) without guessing.
         lines = [
-            f"{f.original_filename} (state={f.state.value}, {f.size_bytes} bytes)"
+            f"id={f.id} {f.original_filename} "
+            f"(state={f.state.value}, {f.size_bytes} bytes)"
             for f in files
         ]
         return ("\n".join(lines) if lines else "(no data)", [])

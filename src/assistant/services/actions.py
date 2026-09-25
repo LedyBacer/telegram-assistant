@@ -67,6 +67,22 @@ def effective_status(action: PendingAction) -> str:
     return action.status
 
 
+def discard_deleted_storage(result: dict | None) -> None:
+    """Post-commit disk cleanup for a ``delete_file`` execution (V5.4).
+
+    The ``delete_file`` executor returns the file's ``storage_key`` without
+    touching the disk (the DB delete is still inside the open transaction).
+    Every confirming surface (bot, Mini App API, eval) calls this *after*
+    ``session.commit()`` so the on-disk artifact is removed only once the row
+    deletion is durable — mirroring the REST ``DELETE /files`` path. No-op for
+    every other action kind / result.
+    """
+    if result and result.get("storage_key"):
+        from assistant.services.files import discard_storage  # noqa: PLC0415
+
+        discard_storage(result["storage_key"])
+
+
 def _lazy_expire(action: PendingAction) -> bool:
     """Write-path only: transition an overdue action to ``expired``. Returns
     True if the action just expired. Callers in a write transaction commit it."""

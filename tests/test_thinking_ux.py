@@ -165,8 +165,13 @@ def test_chat_thinking_disabled_sends_no_thinking_option() -> None:
     )
 
     kwargs = create.await_args.kwargs
+    # Sampling is independent of thinking mode (V5.4 P1): the qwen35_reasoning
+    # profile's knobs are present even when thinking is disabled.
     assert kwargs["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": False}
+        "chat_template_kwargs": {"enable_thinking": False},
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.0,
     }
 
 
@@ -184,8 +189,12 @@ def test_thinking_option_applies_to_structured_completion() -> None:
 
     assert out.title == "Draft"
     kwargs = create.await_args.kwargs
+    # Sampling is independent of thinking mode (V5.4 P1).
     assert kwargs["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": False}
+        "chat_template_kwargs": {"enable_thinking": False},
+        "top_k": 20,
+        "min_p": 0.0,
+        "repeat_penalty": 1.0,
     }
 
 

@@ -50,7 +50,7 @@ async def confirm_action(
     if pre is None:
         raise _not_found()
     try:
-        action, _result = await actions_service.confirm_and_execute_action(
+        action, result = await actions_service.confirm_and_execute_action(
             session, user, action_id
         )
     except ActionStaleError as exc:
@@ -71,6 +71,8 @@ async def confirm_action(
         await session.commit()
         raise _bad_request(exc) from exc
     await session.commit()
+    # Post-commit disk cleanup for a ``delete_file`` execution.
+    actions_service.discard_deleted_storage(result)
     return ActionOut.model_validate(action)
 
 

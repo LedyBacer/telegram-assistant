@@ -139,15 +139,18 @@ Action kinds you may propose:
 {actions_doc}
 All datetimes in payloads are "YYYY-MM-DD HH:MM" in the user's timezone ({tz}).
 
-Important — facts are NOT actions:
-- There is NO action kind for facts. Never emit an action with a fact-shaped
-  payload (no "update_fact", "add_fact", "delete_fact", etc.).
-- Fact changes are expressed ONLY through the "facts" list of your JSON
-  object. To replace an existing fact, set "replaces_fact_id" to the id the
-  "facts" tool result showed for the old fact.
-- The listed action kinds operate on calendar items and reminders ONLY.
-  Never use update_item/complete_item/cancel_item/delete_item to change a
-  fact, and never use item actions to change a reminder (or vice versa).
+Important — facts and files:
+- Adding/replacing facts are NOT actions: express them ONLY through the
+  "facts" list of your JSON object. There is NO add_fact/update_fact action;
+  to replace an existing fact, set "replaces_fact_id" to the id the "facts"
+  tool result showed for the old fact.
+- Deleting data IS an action: use "delete_fact" with a fact id (from the
+  "facts" tool) to remove one confirmed fact, and "delete_file" with a file
+  id (from the "files" tool) — or the file's name — to remove an uploaded
+  file. The id must come from the tool results; never invent one.
+- The OTHER listed action kinds operate on calendar items and reminders ONLY:
+  never use update_item/complete_item/cancel_item/delete_item to change a
+  fact, a file, or a reminder (or vice versa).
 
 Rules:
 - Answer in {language}, even if the user writes in a different language
@@ -222,15 +225,18 @@ Action kinds you may propose:
 All datetimes in payloads are "YYYY-MM-DD HH:MM" in the user's timezone
 ({tz}).
 
-Important — facts are NOT actions:
-- There is NO action kind for facts. Never emit an action with a fact-shaped
-  payload (no "update_fact", "add_fact", "delete_fact", etc.).
-- Fact changes are expressed ONLY through the "facts" list of your JSON
-  object. To replace an existing fact, set "replaces_fact_id" to the id the
-  "facts" tool result showed for the old fact.
-- The listed action kinds operate on calendar items and reminders ONLY.
-  Never use update_item/complete_item/cancel_item/delete_item to change a
-  fact, and never use item actions to change a reminder (or vice versa).
+Important — facts and files:
+- Adding/replacing facts are NOT actions: express them ONLY through the
+  "facts" list of your JSON object. There is NO add_fact/update_fact action;
+  to replace an existing fact, set "replaces_fact_id" to the id the "facts"
+  tool result showed for the old fact.
+- Deleting data IS an action: use "delete_fact" with a fact id (from the
+  "facts" tool) to remove one confirmed fact, and "delete_file" with a file
+  id (from the "files" tool) — or the file's name — to remove an uploaded
+  file. The id must come from the tool results; never invent one.
+- The OTHER listed action kinds operate on calendar items and reminders ONLY:
+  never use update_item/complete_item/cancel_item/delete_item to change a
+  fact, a file, or a reminder (or vice versa).
 
 Rules:
 - Answer in {language}, even if the user wrote in a different language.

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -17,10 +18,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from assistant.actions.calendar import ActionStaleError, UpdateItemPayload
 from assistant.models.calendar_items import CalendarItem
+from assistant.models.facts import UserFact
+from assistant.models.files import UserFile
 from assistant.models.pending_actions import ActionStatus
 from assistant.models.users import User
 from assistant.services import actions as act
 from assistant.services import calendar as cal
+from assistant.services import facts as facts_service
+from assistant.services import files as files_service
 from assistant.services.users import upsert_user
 
 START = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -929,3 +934,228 @@ def test_action_out_effective_ttl_gets_action_expired_reason_code() -> None:
     )
     assert out.status == "expired"
     assert out.reason_code == "action_expired"
+
+
+# ---------------------------------------------------------------------------
+# Data-management actions: delete_file / delete_fact (V5.4)
+# ---------------------------------------------------------------------------
+
+
+async def _confirmed_fact(
+    session: AsyncSession, user: User, value: str = "Prefers trains"
+) -> UserFact:
+    fact = await facts_service.propose_fact(session, user, value=value)
+    await facts_service.confirm_fact(session, user, fact.id)
+    await session.flush()
+    return fact
+
+
+async def _file(
+    session: AsyncSession, user: User, name: str = "report.pdf"
+) -> UserFile:
+    file = await files_service.register_upload(
+        session,
+        user,
+        original_filename=name,
+        mime_type="application/pdf",
+        size_bytes=10,
+        telegram_file_id=f"tg-{uuid4().hex[:8]}",
+    )
+    await session.flush()
+    return file
+
+
+async def test_execute_delete_file_by_id(session: AsyncSession) -> None:
+    user = await _user(session)
+    file = await _file(session, user, "report.pdf")
+    action = await act.propose_action(
+        session, user, kind="delete_file",
+        payload={"file_id": file.id}, summary="Delete report.pdf",
+    )
+    await act.confirm_action(session, user, action.id)
+    done, result = await act.execute_action(session, user, action.id)
+    await session.commit()
+    assert done.status == ActionStatus.executed.value
+    assert result["file_id"] == file.id
+    assert result["deleted"] is True
+    assert result["storage_key"] == file.storage_key
+    assert await files_service.get_file(session, user, file.id) is None
+
+
+async def test_execute_delete_file_by_filename(session: AsyncSession) -> None:
+    user = await _user(session)
+    file = await _file(session, user, "unique-name.docx")
+    action = await act.propose_action(
+        session, user, kind="delete_file",
+        payload={"filename": "unique-name.docx"}, summary="Delete it",
+    )
+    await act.confirm_action(session, user, action.id)
+    done, result = await act.execute_action(session, user, action.id)
+    await session.commit()
+    assert done.status == ActionStatus.executed.value
+    assert result["file_id"] == file.id
+    assert await files_service.get_file(session, user, file.id) is None
+
+
+async def test_delete_file_ambiguous_filename_expires_action(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    a = await _file(session, user, "dup.txt")
+    b = await _file(session, user, "dup.txt")
+    assert a.id != b.id
+    action = await act.propose_action(
+        session, user, kind="delete_file",
+        payload={"filename": "dup.txt"}, summary="Delete dup",
+    )
+    await act.confirm_action(session, user, action.id)
+    with pytest.raises(ActionStaleError):
+        await act.execute_action(session, user, action.id)
+    await session.commit()
+    fresh = await act.get_action(session, user, action.id)
+    assert fresh is not None
+    assert fresh.status == ActionStatus.expired.value
+    # An ambiguous target must never delete (at least) one file silently.
+    assert await files_service.get_file(session, user, a.id) is not None
+    assert await files_service.get_file(session, user, b.id) is not None
+
+
+async def test_delete_file_not_found_expires_action(session: AsyncSession) -> None:
+    user = await _user(session)
+    action = await act.propose_action(
+        session, user, kind="delete_file",
+        payload={"file_id": 9_999_999}, summary="Delete nothing",
+    )
+    await act.confirm_action(session, user, action.id)
+    with pytest.raises(ActionStaleError):
+        await act.execute_action(session, user, action.id)
+    await session.commit()
+    fresh = await act.get_action(session, user, action.id)
+    assert fresh is not None
+    assert fresh.status == ActionStatus.expired.value
+
+
+async def test_delete_file_cross_user_is_not_found(session: AsyncSession) -> None:
+    owner = await _user(session, user_id=61)
+    other = await _user(session, user_id=62)
+    file = await _file(session, owner, "private.pdf")
+    action = await act.propose_action(
+        session, other, kind="delete_file",
+        payload={"file_id": file.id}, summary="Delete",
+    )
+    await act.confirm_action(session, other, action.id)
+    with pytest.raises(ActionStaleError):
+        await act.execute_action(session, other, action.id)
+    await session.commit()
+    # The owner's file is untouched by the other user's action.
+    assert await files_service.get_file(session, owner, file.id) is not None
+
+
+def test_delete_file_payload_requires_identifier() -> None:
+    from pydantic import ValidationError
+
+    from assistant.actions.data import DeleteFilePayload
+
+    with pytest.raises(ValidationError):
+        DeleteFilePayload()
+    # A valid identifier is accepted (id OR filename).
+    assert DeleteFilePayload(file_id=1).file_id == 1
+    assert DeleteFilePayload(filename="a.txt").filename == "a.txt"
+    # Unknown fields are rejected (extra="forbid").
+    with pytest.raises(ValidationError):
+        DeleteFilePayload(file_id=1, bogus=1)  # type: ignore[arg-type]
+
+
+async def test_execute_delete_fact(session: AsyncSession) -> None:
+    user = await _user(session)
+    fact = await _confirmed_fact(session, user, "Prefers trains over flights")
+    action = await act.propose_action(
+        session, user, kind="delete_fact",
+        payload={"fact_id": fact.id}, summary="Delete fact",
+    )
+    await act.confirm_action(session, user, action.id)
+    done, result = await act.execute_action(session, user, action.id)
+    await session.commit()
+    assert done.status == ActionStatus.executed.value
+    assert result["fact_id"] == fact.id
+    assert result["deleted"] is True
+    assert await facts_service.get_fact(session, user, fact.id) is None
+
+
+async def test_delete_fact_not_found_expires_action(session: AsyncSession) -> None:
+    user = await _user(session)
+    action = await act.propose_action(
+        session, user, kind="delete_fact",
+        payload={"fact_id": 9_999_999}, summary="Delete nothing",
+    )
+    await act.confirm_action(session, user, action.id)
+    with pytest.raises(ActionStaleError):
+        await act.execute_action(session, user, action.id)
+    await session.commit()
+    fresh = await act.get_action(session, user, action.id)
+    assert fresh is not None
+    assert fresh.status == ActionStatus.expired.value
+
+
+async def test_delete_file_preview_uses_real_filename(session: AsyncSession) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.flush()
+    file = await _file(session, user, "budget.xlsx")
+    action = await act.propose_action(
+        session, user, kind="delete_file",
+        payload={"file_id": file.id}, summary="ignore me",
+    )
+    assert action.summary == "Delete file 'budget.xlsx'"
+
+
+async def test_delete_file_preview_id_fallback(session: AsyncSession) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.flush()
+    action = await act.propose_action(
+        session, user, kind="delete_file",
+        payload={"file_id": 424_242}, summary="ignore me",
+    )
+    assert action.summary == "Delete file #424242"
+
+
+async def test_delete_fact_preview_uses_value(session: AsyncSession) -> None:
+    user = await _user(session)
+    user.settings.language = "en"
+    await session.flush()
+    fact = await _confirmed_fact(session, user, "Lives in Berlin")
+    action = await act.propose_action(
+        session, user, kind="delete_fact",
+        payload={"fact_id": fact.id}, summary="ignore me",
+    )
+    assert action.summary == "Delete stored fact 'Lives in Berlin'"
+
+
+async def test_delete_file_post_commit_discards_disk(
+    session: AsyncSession, monkeypatch, tmp_path
+) -> None:
+    from assistant.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "file_storage_dir", str(tmp_path / "files")
+    )
+    user = await _user(session)
+    file = await _file(session, user, "doomed.bin")
+    (tmp_path / "files").mkdir(parents=True, exist_ok=True)
+    disk = tmp_path / "files" / file.storage_key
+    disk.write_text("x")
+    await session.commit()
+
+    action = await act.propose_action(
+        session, user, kind="delete_file",
+        payload={"file_id": file.id}, summary="Delete",
+    )
+    await act.confirm_action(session, user, action.id)
+    _, result = await act.execute_action(session, user, action.id)
+    # Before the commit the disk artifact must survive (a failed commit must
+    # not destroy the only copy).
+    assert disk.exists()
+    await session.commit()
+    act.discard_deleted_storage(result)
+    assert not disk.exists()
