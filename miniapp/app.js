@@ -88,16 +88,29 @@ const FALLBACK_TIMEZONES = [
 ];
 
 /**
- * Canonical IANA timezone list for the picker (V3 P35): the browser's own
- * list (400+ zones, no network, always valid IANA names), plus the user's
- * currently configured zone when the browser does not know it.
+ * Canonical IANA timezone list for the picker. The authoritative source is the
+ * server list (`zoneinfo.available_timezones()` via /api/v1/timezones) so a
+ * browser without `Intl.supportedValuesOf` never collapses to the 15-entry
+ * curated fallback (V5 §18.5). `Intl.supportedValuesOf` is used only as an
+ * offline fast path if the fetch fails; the user's configured zone is always
+ * included. Cached after the first successful load.
  */
-function timezoneOptions() {
-  let zones;
-  try {
-    zones = Intl.supportedValuesOf("timeZone");
-  } catch {
-    zones = FALLBACK_TIMEZONES;
+let tzOptionsCache = null;
+async function timezoneOptions() {
+  let zones = tzOptionsCache;
+  if (!zones) {
+    try {
+      const list = await api("/api/v1/timezones");
+      if (Array.isArray(list) && list.length) zones = list;
+    } catch {
+      // Offline: best effort from the browser, then the curated fallback.
+      try {
+        zones = Intl.supportedValuesOf("timeZone");
+      } catch {
+        zones = FALLBACK_TIMEZONES;
+      }
+    }
+    tzOptionsCache = zones;
   }
   const current = state.me && state.me.settings && state.me.settings.timezone;
   return current && !zones.includes(current) ? [current, ...zones] : zones;
@@ -412,9 +425,10 @@ async function viewToday(view, gen, signal) {
   );
 
   // replaceChildren(stringifies null to a literal "null" text node), so drop
-  // the null summary (an empty day) before populating the view.
+  // the null summary (an empty day) before populating the view. Spread the
+  // array: replaceChildren takes variadic nodes, a bare array is stringified.
   view.replaceChildren(
-    [
+    ...[
       daySummary(dayItems),
       grid,
       dayHeader,
@@ -1633,13 +1647,18 @@ function replaceForm(f) {
 async function viewSettings(view, gen, signal) {
   const settings = state.me.settings;
 
-  // Proactive settings are a separate card; a failure there must not break
-  // the core settings screen.
-  let proactiveCard = null;
+  // Proactive settings are a separate card; a failure there must not break the
+  // core settings screen, but it must not vanish silently either — a localized
+  // error state with a Retry affordance distinguishes "unavailable" from
+  // "does not exist" (V5 §18.3).
+  let proactiveCard;
   try {
     proactiveCard = await buildProactiveCard(signal);
   } catch {
-    /* card omitted */
+    proactiveCard = card(
+      el("h2", { class: "view-title" }, S("miniapp.proactive_title")),
+      errorState(S("miniapp.proactive_load_error"), () => render())
+    );
   }
   if (isStale(gen)) return;
 
@@ -1665,13 +1684,18 @@ async function viewSettings(view, gen, signal) {
         const chosen = await openSheet({
           title: S("miniapp.settings_timezone"),
           value: settings.timezone,
-          options: timezoneOptions().map((z) => ({ value: z, label: z })),
+          options: (await timezoneOptions()).map((z) => ({ value: z, label: z })),
           searchable: true,
           searchPlaceholder: S("miniapp.tz_search_ph"),
         });
         if (!chosen) return;
         const saved = await api("/api/v1/settings", "PATCH", { timezone: chosen });
         state.me.settings = saved;
+        // Reset calendar-derived state so Today recalculates from the new zone
+        // and the old zone's selected day is not carried across a midnight
+        // boundary (V5 §18.4).
+        state.month = null;
+        state.selectedDate = null;
         toast(S("miniapp.settings_saved"));
         render();
       })),
@@ -1683,11 +1707,16 @@ async function viewSettings(view, gen, signal) {
         toast(S("miniapp.settings_saved"));
         render();
       })),
-      switchRow(S("miniapp.settings_motivation"), settings.motivation_enabled, (next, boxEl) => withButtonGuard(boxEl, async () => {
-        const saved = await api("/api/v1/settings", "PATCH", { motivation_enabled: next });
-        state.me.settings = saved;
-        toast(S("miniapp.settings_saved"));
-        render();
+      switchRow(S("miniapp.settings_motivation"), settings.motivation_enabled, (next, boxEl, prev) => withButtonGuard(boxEl, async () => {
+        try {
+          const saved = await api("/api/v1/settings", "PATCH", { motivation_enabled: next });
+          state.me.settings = saved;
+          toast(S("miniapp.settings_saved"));
+          render();
+        } catch {
+          boxEl.checked = prev; // roll back the uncommitted toggle (V5 §18.1)
+          toast(S("miniapp.error_generic"), "error");
+        }
       }))
     ),
     proactiveCard
@@ -1702,29 +1731,46 @@ async function buildProactiveCard(signal) {
     undefined,
     signal
   );
-  const patch = async (elRef, body) => {
-    await withButtonGuard(elRef, async () => {
-      try {
-        await api("/api/v1/proactive-settings", "PATCH", body);
-        toast(S("miniapp.settings_saved"));
-      } catch {
-        toast(S("miniapp.error_generic"), "error");
-      }
-    });
+  // The authoritative value comes from the PATCH response; a re-render refreshes
+  // every displayed value so the saved state is visible without leaving Settings
+  // (V5 §18.2).
+  const doPatch = async (body) => {
+    await api("/api/v1/proactive-settings", "PATCH", body);
+    toast(S("miniapp.settings_saved"));
+    render();
   };
+  // Value rows are already inside a guard from their settingsRow onTap, so they
+  // send the PATCH directly here (no second guard — the row is already disabled).
+  const patchRow = (rowEl, body) => withButtonGuard(rowEl, async () => {
+    try {
+      await doPatch(body);
+    } catch {
+      toast(S("miniapp.error_generic"), "error");
+    }
+  });
+  // Switches roll back to the previous value if the server rejects the write
+  // (V5 §18.1).
+  const patchSwitch = (boxEl, prev, body) => withButtonGuard(boxEl, async () => {
+    try {
+      await doPatch(body);
+    } catch {
+      boxEl.checked = prev;
+      toast(S("miniapp.error_generic"), "error");
+    }
+  });
   return card(
     el("h2", { class: "view-title" }, S("miniapp.proactive_title")),
-    switchRow(S("miniapp.proactive_enabled"), ps.enabled, (v, boxEl) => patch(boxEl, { enabled: v })),
-    switchRow(S("miniapp.proactive_weekly_review"), ps.weekly_review_enabled, (v, boxEl) => patch(boxEl, { weekly_review_enabled: v })),
-    switchRow(S("miniapp.proactive_workout_nudge"), ps.workout_nudge_enabled, (v, boxEl) => patch(boxEl, { workout_nudge_enabled: v })),
-    switchRow(S("miniapp.proactive_overdue_nudge"), ps.overdue_nudge_enabled, (v, boxEl) => patch(boxEl, { overdue_nudge_enabled: v })),
+    switchRow(S("miniapp.proactive_enabled"), ps.enabled, (v, boxEl, prev) => patchSwitch(boxEl, prev, { enabled: v })),
+    switchRow(S("miniapp.proactive_weekly_review"), ps.weekly_review_enabled, (v, boxEl, prev) => patchSwitch(boxEl, prev, { weekly_review_enabled: v })),
+    switchRow(S("miniapp.proactive_workout_nudge"), ps.workout_nudge_enabled, (v, boxEl, prev) => patchSwitch(boxEl, prev, { workout_nudge_enabled: v })),
+    switchRow(S("miniapp.proactive_overdue_nudge"), ps.overdue_nudge_enabled, (v, boxEl, prev) => patchSwitch(boxEl, prev, { overdue_nudge_enabled: v })),
     settingsRow(S("miniapp.proactive_quiet_from"), ps.quiet_hours_start.slice(0, 5), (rowEl) => withButtonGuard(rowEl, async () => {
       const t = await pickTime(ps.quiet_hours_start.slice(0, 5));
-      if (t) patch(rowEl, { quiet_hours_start: `${t}:00` });
+      if (t) patchRow(rowEl, { quiet_hours_start: `${t}:00` });
     })),
     settingsRow(S("miniapp.proactive_quiet_until"), ps.quiet_hours_end.slice(0, 5), (rowEl) => withButtonGuard(rowEl, async () => {
       const t = await pickTime(ps.quiet_hours_end.slice(0, 5));
-      if (t) patch(rowEl, { quiet_hours_end: `${t}:00` });
+      if (t) patchRow(rowEl, { quiet_hours_end: `${t}:00` });
     })),
     settingsRow(S("miniapp.proactive_max_per_day"), String(ps.max_nudges_per_day), (rowEl) => withButtonGuard(rowEl, async () => {
       const chosen = await openSheet({
@@ -1732,7 +1778,7 @@ async function buildProactiveCard(signal) {
         value: String(ps.max_nudges_per_day),
         options: [...Array(20).keys()].map((i) => ({ value: String(i + 1), label: String(i + 1) })),
       });
-      if (chosen) patch(rowEl, { max_nudges_per_day: Number(chosen) });
+      if (chosen) patchRow(rowEl, { max_nudges_per_day: Number(chosen) });
     })),
     settingsRow(S("miniapp.proactive_min_interval"), S("miniapp.minutes_value", { minutes: ps.min_interval_minutes }), (rowEl) => withButtonGuard(rowEl, async () => {
       const chosen = await openSheet({
@@ -1743,7 +1789,7 @@ async function buildProactiveCard(signal) {
           label: n === 0 ? "0" : S("miniapp.minutes_value", { minutes: n }),
         })),
       });
-      if (chosen) patch(rowEl, { min_interval_minutes: Number(chosen) });
+      if (chosen) patchRow(rowEl, { min_interval_minutes: Number(chosen) });
     }))
   );
 }
@@ -1776,7 +1822,9 @@ function switchRow(label, checked, onChange) {
     "aria-label": label,
     checked: checked ? "checked" : null,
   });
-  box.addEventListener("change", () => onChange(box.checked, box));
+  // Pass the pre-toggle value so a handler can roll the switch back if the
+  // server rejects the write (V5 §18.1).
+  box.addEventListener("change", () => onChange(box.checked, box, !box.checked));
   return el("div", { class: "settings-row settings-row-static" },
     el("span", { class: "settings-row-label" }, label),
     el("label", { class: "switch-wrap" }, box));

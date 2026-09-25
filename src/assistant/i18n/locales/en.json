@@ -350,5 +350,6 @@
   "miniapp.proactive_quiet_from": "Quiet hours from",
   "miniapp.proactive_quiet_until": "Quiet hours until",
   "miniapp.proactive_max_per_day": "Max nudges per day",
-  "miniapp.proactive_min_interval": "Minimum interval between nudges"
+  "miniapp.proactive_min_interval": "Minimum interval between nudges",
+  "miniapp.proactive_load_error": "Could not load proactive notifications."
 }

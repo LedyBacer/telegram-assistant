@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from zoneinfo import available_timezones
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +27,19 @@ async def read_settings(
 ) -> SettingsOut:
     assert user.settings is not None  # upsert_user guarantees settings
     return SettingsOut.model_validate(user.settings)
+
+
+@router.get("/timezones", response_model=list[str])
+async def list_timezones(
+    user: User = Depends(get_current_user),
+) -> list[str]:
+    """Complete IANA timezone list (server-generated via ``zoneinfo``).
+
+    The Mini App timezone picker uses this as its authoritative option list so
+    a browser without ``Intl.supportedValuesOf`` never collapses to a tiny
+    curated fallback (V5 §18.5).
+    """
+    return sorted(available_timezones())
 
 
 @router.patch("/settings", response_model=SettingsOut)

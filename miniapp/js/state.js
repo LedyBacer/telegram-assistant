@@ -198,6 +198,7 @@ export const FALLBACK_RU = {
   "miniapp.proactive_quiet_until": "Тихие часы до",
   "miniapp.proactive_max_per_day": "Максимум напоминаний в день",
   "miniapp.proactive_min_interval": "Минимальный интервал между напоминаниями",
+  "miniapp.proactive_load_error": "Не удалось загрузить проактивные уведомления.",
 };
 
 /**
