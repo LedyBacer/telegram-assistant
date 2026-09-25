@@ -1,9 +1,97 @@
 # Progress
 
-Status: V5.1 COMPLETE — "Corrective closeout" on the `93800d5` baseline
-(remote CI GREEN, run 36099136501). Below is the compact V5.1 handoff, then
-the V5/V4/V3/V2 detail. Working tree is committed at each meaningful
-boundary. V5.1 remote CI: PENDING USER PUSH.
+Status: V5.2 COMPLETE — "Final corrective patch before real deployment" on
+the V5.1 baseline. V5.1 remote CI is GREEN (`0c8dd19`, run 36110550934, 4/4
+jobs). V5.2 remote CI: PENDING USER PUSH (commits are local only; pushing is
+not permitted here). Below is the compact V5.2 handoff, then the V5.1/V5/V4/
+V3/V2 detail. Working tree is committed at each meaningful boundary.
+
+## V5.2 — Final corrective patch before real deployment (baseline V5.1 `0c8dd19`)
+
+Goal items numbered per the goal (`§`). V5.1 HEAD `0c8dd19` remote CI: GREEN
+(run 36110550934, 4/4 jobs). V5.2 remote CI: PENDING USER PUSH.
+
+- **§2 P0** (`f1c118e`) no application DB transaction is held across
+  Telegram sends in the worker: reminder/digest handlers do their DB work,
+  COMMIT, then send; job-state transitions re-check ownership through
+  `owns_job_now()` on an independent session, so a send cannot stall a
+  connection-pool slot under a held transaction.
+- **§3 P0** (`c9e3035`) `schedule_workout()` validates the interval:
+  `ends_at < starts_at` and contradictory `duration_minutes`/`ends_at`
+  raise `LocalizableError("workouts.err_interval")` (ru/en); six service
+  tests pin the accepted and rejected shapes.
+- **§4 P0** (`c9e3035`) every proactive-settings value row `await`s its own
+  `patchRow(...)` inside the guarded tap: one PATCH per interaction, the row
+  stays disabled while the PATCH is in flight (a rapid second tap cannot
+  open a second picker), and the displayed value comes from the server
+  response. E2E `proactive-settings.e2e.ts` delays the PATCH 1.2 s to make
+  the in-flight window observable.
+- **§5 P1** (`c9e3035`) `--tg-viewport-stable-height` is driven by
+  `tg.viewportStableHeight` with a `tg.viewportHeight` fallback; the
+  `viewportInfo` fallback is gone and the E2E stub no longer exposes
+  `viewportInfo` at all, so any regression to it would break the suite.
+- **§6 P1** (`c9e3035`) the bottom-nav clearance is a single `--nav-footprint`
+  token (nav height + 1px `border-top` + safe-area bottom); the
+  `viewport-chrome.e2e.ts` geometry test asserts with non-zero insets that
+  no `.view` content ends under the fixed bottom nav.
+- **§7 P1** (`c9e3035`) dirty-form closing confirmation is a real lifecycle:
+  `enableClosingConfirmation()`/`disableClosingConfirmation()` are called
+  from `setFormDirty()`, and `dirty-form.e2e.ts` asserts the stub's
+  `__tg.closingConfirmation()` flips with the form state (including the
+  failed-save 500 case, which keeps it enabled).
+- **§8 P1** (`c9e3035`) the E2E stub records the full WebApp lifecycle
+  (`ready`/`expand`/`disableVerticalSwipes`/…); `boot-lifecycle.e2e.ts`
+  asserts `expand` early + `ready` exactly once for a normal boot, and the
+  explicit startup-empty state (not a crash) for a failed `/me`.
+- **§9 P2** (`c9e3035`) `normalizeUiLanguage(raw)`: `en*` → `en`, `ru*` →
+  `ru`, anything else → `ru`; matrix test in `tests/` plus the
+  `ui-language.e2e.ts` boot test (client `en-US` paints English before `/me`,
+  stored `ru` wins after).
+- **§10 P2** (`c9e3035`) bounded action reason codes: `ActionOut` derives
+  `reason_code` from `last_error` ONLY when it is in the fixed code set
+  (`item_changed`, `item_missing`, `reminder_not_pending`,
+  `action_expired`, `invalid_payload`); raw `last_error` is never rendered —
+  the client maps codes through `ACTION_REASON_KEYS` to localized messages
+  (generic stale fallback for anything else).
+- **§11 P2** (`c9e3035`) `action-inbox.e2e.ts`: mocked API routes exercise
+  confirm/reject/expired-card rendering and the stale-confirm 409
+  (`action_stale` → localized toast, no raw code in the DOM).
+- **§12 P2** (`c9e3035`) `more-active-nav.e2e.ts`: the More button shows
+  its visible active state only while a secondary tab is open.
+- **§13 P2** (`c9e3035`) `today-overdue.e2e.ts`: an event that STARTS
+  yesterday is not overdue; an item DUE yesterday (scheduled) is; completed
+  items are not counted — "Просрочено: 1".
+- **§14 P2** (`c9e3035`) `modal-lifecycle.e2e.ts` asserts the open modal
+  locks `#view` scrolling (wheel event does not scroll) and the lock is
+  restored on close.
+- **§15** docs: V5.1 HEAD `0c8dd19` + CI run 36110550934 recorded; V5.2
+  marked PENDING USER PUSH; the stale "vendor/ Flatpickr self-hosted"
+  claims removed (production loads Flatpickr 4.6.13 from pinned jsDelivr
+  URLs; the E2E harness intercepts them locally); viewport docs match the
+  code (no `viewportInfo`; `--nav-footprint` includes the 1px border).
+- **§18** verification gates (fresh): `uv lock --check`, Ruff, full pytest,
+  `npm ci && npm run test:e2e`, actionlint `rhysd/actionlint:1.7.12`,
+  `COMPOSE_DISABLE_ENV_FILE=1 docker compose config --quiet`, full
+  `bash scripts/acceptance.sh`.
+
+Commits: `f1c118e` (§2), `c9e3035` (§3–§14 + E2E isolation contract), plus
+the V5.2 docs/report commit.
+
+### E2E shared-DB isolation contract (V5.2)
+
+The suite is `workers:1` + sequential and `global-setup` truncates the ONE
+shared `assistant_e2e` DB once per run — so every spec that creates rows or
+changes the shared test user's settings now cleans up after itself (delete
+its rows; restore timezone UTC / language ru / proactive defaults), in a
+`finally`/`afterEach`. The four leaking specs found by the 39/40 full run
+were fixed: `miniapp.e2e.ts` (task/fact/file), `timezone.e2e.ts` (item +
+tz), `timezone-picker-roundtrip.e2e.ts` (item + tz), `v2-features.e2e.ts`
+(seeded actions/facts/file + created items, direct-DB `afterEach`). Result:
+40/40 green on a shared warm DB.
+
+Verification (final numbers below in the V5.2 REPORT section).
+
+**V5.2 complete.** Remote CI for V5.2: PENDING USER PUSH.
 
 ## V5.1 — Corrective closeout (baseline `93800d5`)
 
@@ -86,8 +174,9 @@ scheduling, no test-auth in the image. Environment note: the local repo tree
 was `775` (umask artifact); `chmod -R go+rX .` was applied so the non-root
 actionlint container can read it (git checkouts are 755; CI unaffected).
 
-**V5.1 complete.** All 19 items closed. Remote CI for V5.1: PENDING USER
-PUSH (baseline `93800d5` GREEN, run 36099136501).
+**V5.1 complete.** All 19 items closed. Remote CI for V5.1: **GREEN —
+`0c8dd19`, run 36110550934, 4/4 jobs** (pushed and verified after this
+entry was written; baseline `93800d5` was GREEN, run 36099136501).
 
 ## V5 — Final closeout (baseline `7713777`)
 
@@ -789,7 +878,9 @@ Verified accurate (no change needed):
   (idempotency keys, lease/heartbeat, `recover_abandoned`); nudges are
   at-most-once via commit-before-send — already stated correctly.
 - **Flatpickr loading** (`README.md`): self-hosted in `miniapp/vendor/`
-  (P36) — already stated correctly.
+  (P36) — already stated correctly. (Superseded by V5 §10 `c7e0f86`:
+  `vendor/` was removed and Flatpickr is served from a pinned jsDelivr
+  4.6.13 URL; E2E intercepts those URLs from `node_modules/flatpickr`.)
 - **Worker transaction ownership** (`docs/ARCHITECTURE.md`): the worker owns
   claiming and final job state; handlers own their domain transactions; no
   outer `session.begin()` around handlers — already stated correctly.
@@ -2786,8 +2877,8 @@ confirmed in the catalog.
 
 - Milestone 18: Mini App production-hardening pass. Frontend rewritten as
   small vanilla ES modules (`miniapp/{index.html,styles.css,app.js,
-  js/{api,telegram,ui,state}.js}`, vendored Flatpickr — no framework, no
-  build step); root-cause fix of the `[object HTMLDivElement]` rendering
+  js/{api,telegram,ui,state}.js}`, Flatpickr from a pinned jsDelivr URL
+  (E2E intercepts locally) — no framework, no build step); root-cause fix of the `[object HTMLDivElement]` rendering
   bug (safe `el()` DOM construction, user content as text nodes, no
   innerHTML); `GET /` → 307 → `/miniapp` implemented in FastAPI;
   Telegram-native theming via `--tg-theme-*` variables (light/dark/custom,

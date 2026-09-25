@@ -276,8 +276,11 @@ miniapp/
         ui.js         # DOM helpers (safe text rendering), bottom sheet,
                       #   Flatpickr date/time pickers
         state.js      # app state (language, theme, cache)
-    vendor/           # vendored Flatpickr (js + css + ru locale)
 ```
+
+Flatpickr (4.6.13) loads from its pinned `cdn.jsdelivr.net` URLs in
+`index.html`; the Playwright harness intercepts those exact URLs and
+serves the files from `node_modules/flatpickr` so E2E is offline-deterministic.
 
 - **Entry point:** `GET /` → **307** → `/miniapp` (implemented in FastAPI; no
   reverse-proxy workaround needed). `GET /miniapp` serves `index.html` with 200.

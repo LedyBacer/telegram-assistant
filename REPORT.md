@@ -1,12 +1,45 @@
-# Telegram Assistant — Milestone Report (V5.1: Corrective Closeout)
+# Telegram Assistant — Milestone Report (V5.2: Final Corrective Patch)
 
 Date: 2026-09-25
 Scope: V1 core (SPEC §1–§31) + V2 upgrades (SPEC §42–§48) + V3
-hardening + V4 correctness closure + V5 final closeout + **V5.1
-corrective closeout** (this milestone). This report supersedes the 2026-09-25
-V5 report; where they differ, this version is authoritative.
+hardening + V4 correctness closure + V5 final closeout + V5.1 corrective
+closeout + **V5.2 final corrective patch** (this milestone). This report
+supersedes the V5.1 report; where they differ, this version is
+authoritative.
 
-## 0. What V5.1 closed
+## 0. What V5.2 closed
+
+Fifteen goal items on the V5.1 baseline `0c8dd19` (remote CI GREEN, run
+36110550934, 4/4 jobs). Corrective only: no new features, no framework,
+no Redis/Celery, no Flatpickr re-vendoring. Full per-item detail is in
+`PROGRESS.md` (V5.2 section).
+
+- **P0** — no DB transaction held across Telegram sends (worker; job
+  ownership re-checked in an independent session); `schedule_workout()`
+  interval validation (`LocalizableError("workouts.err_interval")`, ru/en);
+  every proactive-settings row `await`s its own PATCH (one PATCH per tap,
+  row disabled in flight, server-authoritative value).
+- **P1** — viewport height strictly `viewportStableHeight` →
+  `viewportHeight` (no `viewportInfo`); single `--nav-footprint` token
+  (incl. the 1px nav border-top) with a geometry E2E; dirty-form closing
+  confirmation as a real `enable/disableClosingConfirmation` lifecycle;
+  stub lifecycle recording + boot-lifecycle E2E (normal and failed boot).
+- **P2** — `normalizeUiLanguage` matrix + `en-US` boot test; bounded
+  action `reason_code`s derived at API serialization (raw `last_error`
+  never rendered); action-inbox E2E (mocked routes, stale-confirm 409 →
+  localized toast); More-button active-state E2E; Today overdue-count E2E
+  (past `due_at` only); modal `#view` scroll-lock E2E.
+- **Docs** — stale "vendor/ Flatpickr self-hosted" claims removed (the app
+  loads Flatpickr 4.6.13 from pinned jsDelivr URLs; E2E intercepts them
+  locally); viewport docs match the code; V5.1 remote CI recorded; V5.2
+  marked PENDING USER PUSH.
+- **E2E isolation contract** — the shared `assistant_e2e` DB is truncated
+  once per run; every spec that creates rows or mutates the shared test
+  user's settings now cleans up in `finally`/`afterEach` (four leaking
+  specs fixed: miniapp, timezone, timezone-picker-roundtrip, v2-features).
+  Full suite: 40/40.
+
+## 0a. What V5.1 closed
 
 Nineteen corrective items on the `93800d5` baseline (remote CI GREEN, run
 36099136501), closeout-only: no new features, no React/Redis/redesign.
@@ -105,52 +138,48 @@ Twenty-eight goal items, each with a commit reference:
 
 Full per-item detail is in `PROGRESS.md` (V5 section).
 
-## 1. Verification (V5.1 final state, 2026-09-25)
+## 1. Verification (V5.2 final state, 2026-09-25)
 
-Full `bash scripts/acceptance.sh` run (22 steps + sub-steps 1b/1c/21b),
-all green, on a fresh Docker PostgreSQL:
+All checks re-run fresh for V5.2, all green, on real PostgreSQL:
 
 | Check | Result |
 |-------|--------|
-| Docker Compose config (local + clean-checkout via `git archive`) | OK |
-| actionlint (pinned `rhysd/actionlint:1.7.12`) | 0 errors |
-| Port exposure audit (loopback-only) | OK |
-| `docker build` (frozen lock) + entrypoint imports + no test-auth module in image | OK |
-| `alembic upgrade head` from empty database | OK |
-| API `/healthz` + `/readyz` | OK |
-| Worker digest scheduling (2 users, no MissingGreenlet) | OK |
-| Full pytest suite (real PostgreSQL) | **546 passed** (51.00 s) |
-| Ruff (`uv run ruff check .`) | All checks passed |
 | `uv lock --check` (lock matches `pyproject.toml`) | OK |
-| Playwright Mini App E2E (fresh `assistant_e2e`) | **27 passed** (1.3 m) |
+| Ruff (`uv run ruff check .`) | All checks passed |
+| Full pytest suite (real PostgreSQL, fresh `FILE_STORAGE_DIR`) | **556 passed** (83.70 s) |
+| `npm ci && npm run test:e2e` (fresh `assistant_e2e` truncate) | **40 passed** (1.3 m) |
+| actionlint (`rhysd/actionlint:1.7.12`) | 0 errors |
+| `COMPOSE_DISABLE_ENV_FILE=1 docker compose config --quiet` | OK |
+| Full `bash scripts/acceptance.sh` (22 steps + sub-steps) | All passed |
 | Git working tree clean after final commit | Verified |
 
-The 546-item suite includes all V1–V5.1 regression tests: lease tests,
-proactivity gates, turn protocol, readiness terminology, X-Request-Id
-bounding, CI workflow guards, action payload hardening, localized previews,
-i18n fallback, double-submit prevention, settings consistency, form
-validation, files polling, action `status=actionable`/`history` filters,
-atomic file-failure recording, workout interval invariant, modal lifecycle,
-and picker CDN failure.
+The 556-item suite includes all V1–V5.1 regression tests plus the V5.2
+additions: workout interval validation (six service tests), bounded action
+`reason_code` serialization, and the `normalizeUiLanguage` matrix.
 
-The 27 Playwright specs cover: a11y/screens audit, action inbox, actions
-filter (pending/history), app shell, bot foundation, CDN failure,
-create-event-start-end, dirty form, double-submit, edit item, E2E auth,
-file upload, miniapp shell, modal lifecycle, onboarding, picker CDN fail,
-proactivity, reminder presets, search, settings consistency (incl. the
-P0 #1 four-row PATCH regression), theme, timezone, v2 features (incl. the
-localized `action_stale` toast), viewport chrome (non-zero safe/content
-insets + runtime change), and workout identity/log.
+The 40 Playwright specs (29 spec files) cover: a11y/screens audit, action
+inbox (mocked routes, stale-confirm 409 → localized toast, no raw codes in
+the DOM), actions filter, app shell, boot lifecycle (normal + failed boot),
+CDN failure, create-event-start-end, dirty form (incl. closing-confirmation
+lifecycle), double-submit, edit item, E2E auth, file upload, miniapp shell,
+modal lifecycle (incl. `#view` scroll lock), more-active-nav, onboarding,
+picker CDN fail, proactive settings (one PATCH per tap, disabled in
+flight), proactivity, reminder presets, search, settings consistency,
+theme, timezone (user-TZ rendering + picker roundtrip), today-overdue,
+ui-language (en-US boot), v2 features (incl. the localized
+`action_stale` toast), viewport chrome (stable-height fallback chain,
+`--nav-footprint` geometry with non-zero insets), and workout
+identity/log.
 
 ## 2. Remote CI status (honest)
 
-- **Baseline remote CI: `93800d5` → GREEN, run 36099136501.**
-- **V5.1 remote CI: PENDING USER PUSH.**
+- **V5.1 remote CI: GREEN — `0c8dd19`, run 36110550934, 4/4 jobs.**
+- **V5.2 remote CI: PENDING USER PUSH.**
 
-The V5.1 changes are committed locally and locally verified (full
-acceptance run above), but pushing to `origin/main` is not permitted in
-this environment; the remote green run for V5.1 does not exist yet and this
-report does not claim one.
+The V5.2 commits are local only (pushing to `origin/main` is not permitted
+in this environment); the remote run for V5.2 does not exist yet and this
+report does not claim one. Everything below was verified locally against
+real PostgreSQL.
 
 ## 3. V4 closure (prior milestone, 2026-09-24)
 
@@ -244,12 +273,13 @@ src/assistant/
   db/         async engine, session, Base
   logging.py  structured JSON logging, bounded X-Request-Id correlation
   config.py   pydantic-settings (env-driven, audited)
-miniapp/      index.html + app.js + js/ SPA + vendor/ (Flatpickr
-              self-hosted); all strings from backend locales
+miniapp/      index.html + app.js + js/ SPA; Flatpickr 4.6.13 from a
+              pinned jsDelivr URL (E2E intercepts the URLs locally);
+              all strings from backend locales
 alembic/      async migration env, 9 revisions
-tests/        27 test modules, 511 test functions (530 collected items),
+tests/        27 test modules, 556 collected pytest items,
               real PostgreSQL
-e2e/          Playwright Mini App browser E2E (16 spec files / 18 specs)
+e2e/          Playwright Mini App browser E2E (29 spec files / 40 specs)
 scripts/      acceptance.sh — 22-step production-like verification run
 .github/      credential-free CI workflow (V4: FILE_STORAGE_DIR moved to
               the step that needs it, fixing the V3 rejection)
@@ -261,10 +291,10 @@ Dependency versions (pinned in `uv.lock`): Python ≥3.12, aiogram
 1.20.0, Pydantic 2.13.5, openai 3.16.2, pgvector 0.5.0 (PostgreSQL 17.11
 + pgvector).
 
-## 4. Definition of Done (V5.1 final run, 2026-09-25)
+## 4. Definition of Done (V5.2 final run, 2026-09-25)
 
 All checks executed on 2026-09-25 (local, real PostgreSQL) — full pass,
-via the complete `bash scripts/acceptance.sh` run:
+including the complete `bash scripts/acceptance.sh` run:
 
 | # | Check | Result |
 |---|-------|--------|
@@ -276,15 +306,15 @@ via the complete `bash scripts/acceptance.sh` run:
 | 6 | `docker build` (frozen lock, `uv sync --frozen`) | Built |
 | 7 | Fresh Docker PostgreSQL databases (`assistant` + `assistant_e2e`) created | OK |
 | 8 | `alembic upgrade head` from empty database | Applied cleanly |
-| 9 | Full pytest suite against real PostgreSQL | **546 passed** (51.00 s) |
-| 10 | Playwright Mini App E2E (27 specs, seeded `assistant_e2e`) | **27 passed** (1.3 m) |
-| 11 | Real-Postgres flows in-suite: turns, actions, ingestion, retrieval, digest, proactivity, job leases, modal lifecycle, actions filter, picker CDN failure, atomic file-failure recording, workout interval invariant | Covered |
-| 12 | Credential-free CI workflow in `.github/workflows/` (actionlint clean; remote run pending — see §2) | Present |
+| 9 | Full pytest suite against real PostgreSQL | **556 passed** (83.70 s) |
+| 10 | Playwright Mini App E2E (40 specs, seeded `assistant_e2e`) | **40 passed** (1.3 m) |
+| 11 | Real-Postgres flows in-suite: turns, actions, ingestion, retrieval, digest, proactivity, job leases, modal lifecycle, actions filter, picker CDN failure, atomic file-failure recording, workout interval validation, worker send-outside-transaction, bounded reason codes | Covered |
+| 12 | Credential-free CI workflow in `.github/workflows/` (actionlint clean; V5.2 remote run pending — see §2) | Present |
 | 13 | `bash scripts/acceptance.sh` executed end-to-end: 22 steps + sub-steps 1b/1c/21b | All passed |
 | 14 | No required TODO/stub/fake implementation (grep audit) | Clean |
 | 15 | No test-auth module in production image (`assistant.api.testing` absent) | Verified |
 | 16 | `PROGRESS.md` matches actual state | Updated |
-| 17 | Documentation matches code (README/SPEC/ASSUMPTIONS/ARCHITECTURE/this report) | Done |
+| 17 | Documentation matches code (README/SPEC/ASSUMPTIONS/ARCHITECTURE/this report; Flatpickr CDN + viewport claims corrected) | Done |
 | 18 | Git working tree clean after final commit | Verified |
 
 External AI/Telegram HTTP calls are mocked in tests (fake providers,
@@ -300,9 +330,9 @@ throwaway Docker Postgres.
 
 ## 5. Known limitations (honest list)
 
-- **V5.1 remote CI verification pending.** Baseline `93800d5` is green
-  (run 36099136501); the V5.1 commits are local only (push not permitted),
-  so no remote run exists for them yet. See §2.
+- **V5.2 remote CI verification pending.** V5.1 is green (`0c8dd19`,
+  run 36110550934, 4/4 jobs); the V5.2 commits are local only (push not
+  permitted), so no remote run exists for them yet. See §2.
 - **No live-provider verification.** AI behavior is tested with
   deterministic in-test fake providers plus Qwen output fixtures; a real
   llama.cpp/Qwen deployment is untested here.
