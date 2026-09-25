@@ -319,6 +319,7 @@
   "miniapp.sheet_cancel": "Cancel",
   "miniapp.pick_datetime": "Pick date and time",
   "miniapp.pick_time": "Pick time",
+  "miniapp.picker_unavailable": "Could not load date picker. Check your connection.",
   "miniapp.size_bytes": "{n} B",
   "miniapp.size_kb": "{n} KB",
   "miniapp.size_mb": "{n} MB",

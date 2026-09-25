@@ -319,6 +319,7 @@
   "miniapp.sheet_cancel": "Отмена",
   "miniapp.pick_datetime": "Выбрать дату и время",
   "miniapp.pick_time": "Выбрать время",
+  "miniapp.picker_unavailable": "Не удалось загрузить выбор даты. Проверь соединение.",
   "miniapp.size_bytes": "{n} Б",
   "miniapp.size_kb": "{n} КБ",
   "miniapp.size_mb": "{n} МБ",

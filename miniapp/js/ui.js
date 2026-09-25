@@ -388,6 +388,7 @@ export function pickDateTime(initialWall = null) {
 
     const fallback = () => {
       holder.remove();
+      toast(S("miniapp.picker_unavailable"), "error");
       resolve(null);
     };
     if (!hasFlatpickr()) return fallback();
@@ -451,6 +452,7 @@ export function pickTime(initial = null) {
 
     const fallback = () => {
       holder.remove();
+      toast(S("miniapp.picker_unavailable"), "error");
       resolve(null);
     };
     if (!hasFlatpickr()) return fallback();
