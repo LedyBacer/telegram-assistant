@@ -190,6 +190,170 @@ def test_chat_structured_wraps_api_errors() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sampling profiles (V5.4 §4): the model-card family must apply by an
+# explicit profile (not the alias string) and be independent of thinking mode.
+# ---------------------------------------------------------------------------
+
+
+def _provider_with_profile(
+    *,
+    model: str = "ornith1.5-9b-q5km-64k",
+    profile: str = "auto",
+    structured_sampling: str = "precise",
+    thinking_enabled: bool = False,
+) -> OpenAIChatProvider:
+    return OpenAIChatProvider(
+        api_key="chat-key",
+        model=model,
+        thinking_enabled=thinking_enabled,
+        sampling_profile=profile,
+        structured_sampling=structured_sampling,
+    )
+
+
+def test_sampling_auto_resolves_reasoning_families() -> None:
+    assert (
+        _provider_with_profile(model="ornith1.5-9b-q5km-64k")
+        ._resolve_sampling_profile()
+        == "qwen35_reasoning"
+    )
+    assert (
+        _provider_with_profile(model="qwen3.5-9b-64k")._resolve_sampling_profile()
+        == "qwen35_reasoning"
+    )
+    assert (
+        _provider_with_profile(model="Qwen3.5-9B")._resolve_sampling_profile()
+        == "qwen35_reasoning"
+    )
+    assert (
+        _provider_with_profile(model="qwen3_5-9b")._resolve_sampling_profile()
+        == "qwen35_reasoning"
+    )
+
+
+def test_sampling_auto_unknown_model_is_legacy() -> None:
+    assert (
+        _provider_with_profile(model="fake-model")._resolve_sampling_profile()
+        == "legacy"
+    )
+    assert (
+        _provider_with_profile(model="llama-3.1-8b")._resolve_sampling_profile()
+        == "legacy"
+    )
+
+
+def test_sampling_explicit_profile_wins_over_alias() -> None:
+    # Explicit legacy even though the alias would auto-resolve to reasoning.
+    assert (
+        _provider_with_profile(
+            model="ornith1.5-9b-q5km-64k", profile="legacy"
+        )._resolve_sampling_profile()
+        == "legacy"
+    )
+    # Explicit reasoning even though the alias would not auto-resolve to it.
+    assert (
+        _provider_with_profile(
+            model="fake-model", profile="qwen35_reasoning"
+        )._resolve_sampling_profile()
+        == "qwen35_reasoning"
+    )
+
+
+def test_reasoning_profile_general_chat_sampling() -> None:
+    provider = _provider_with_profile(model="ornith1.5-9b-q5km-64k")
+    opts = provider._request_options(structured=False)
+    assert opts["temperature"] == 1.0
+    assert opts["top_p"] == 0.95
+    assert opts["presence_penalty"] == 1.5
+    extra = opts["extra_body"]
+    assert extra["top_k"] == 20
+    assert extra["min_p"] == 0.0
+    assert extra["repeat_penalty"] == 1.0
+
+
+def test_reasoning_profile_structured_sampling_precise_and_general() -> None:
+    precise = _provider_with_profile(
+        model="ornith1.5-9b-q5km-64k", structured_sampling="precise"
+    )._request_options(structured=True)
+    assert precise["temperature"] == 0.6
+    assert precise["presence_penalty"] == 0.0
+    assert precise["top_p"] == 0.95
+    assert precise["extra_body"]["top_k"] == 20
+
+    general = _provider_with_profile(
+        model="ornith1.5-9b-q5km-64k", structured_sampling="general"
+    )._request_options(structured=True)
+    assert general["temperature"] == 1.0
+    assert general["presence_penalty"] == 1.5
+
+
+def test_reasoning_profile_sampling_independent_of_thinking() -> None:
+    off = _provider_with_profile(model="ornith1.5-9b-q5km-64k", thinking_enabled=False)
+    on = _provider_with_profile(model="ornith1.5-9b-q5km-64k", thinking_enabled=True)
+    off_opts = off._request_options(structured=False)
+    on_opts = on._request_options(structured=False)
+    # Identical sampling with thinking on and off (the A/B study toggles only
+    # enable_thinking).
+    for key in ("temperature", "top_p", "presence_penalty"):
+        assert off_opts[key] == on_opts[key]
+    for key in ("top_k", "min_p", "repeat_penalty"):
+        assert off_opts["extra_body"][key] == on_opts["extra_body"][key]
+    # Only enable_thinking differs.
+    assert off_opts["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+    assert on_opts["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_legacy_profile_sampling_unchanged() -> None:
+    provider = _provider_with_profile(model="fake-model")
+    assert provider._request_options(structured=False)["temperature"] == 0.7
+    assert provider._request_options(structured=True)["temperature"] == 0
+    # The legacy path sends no model-card knobs.
+    assert "top_k" not in provider._request_options(structured=False)["extra_body"]
+
+
+def test_reasoning_profile_sampling_reaches_provider_call() -> None:
+    provider, create = _chat_provider_with_fake_client(model="ornith1.5-9b-q5km-64k")
+    provider._sampling_profile = "qwen35_reasoning"
+    create.return_value = _fake_completion("hi")
+
+    asyncio.run(
+        provider.chat(system="S", messages=[{"role": "user", "content": "x"}])
+    )
+    kwargs = create.await_args.kwargs
+    assert kwargs["temperature"] == 1.0
+    assert kwargs["top_p"] == 0.95
+    assert kwargs["presence_penalty"] == 1.5
+    assert kwargs["extra_body"]["top_k"] == 20
+    assert kwargs["extra_body"]["min_p"] == 0.0
+    assert kwargs["extra_body"]["repeat_penalty"] == 1.0
+
+
+def test_build_ai_provider_applies_sampling_profile() -> None:
+    settings = Settings(
+        database_url="postgresql+asyncpg://u:p@localhost/db",
+        public_base_url="https://app.test",
+        telegram_bot_token="1:test",
+        chat_base_url="https://chat.example/v1",
+        chat_api_key="chat-key",
+        chat_model="ornith1.5-9b-q5km-64k",
+        chat_sampling_profile="qwen35_reasoning",
+        chat_structured_sampling="general",
+        embedding_base_url="https://embed.example/v1",
+        embedding_api_key="embed-key",
+        embedding_model="multilingual-e5-small",
+        embedding_dimensions=384,
+    )
+    provider = build_ai_provider(settings)
+    chat = provider._chat_provider
+    assert chat._sampling_profile == "qwen35_reasoning"
+    assert chat._structured_sampling == "general"
+    # The explicit structured family is applied even for the ornith alias.
+    opts = chat._request_options(structured=True)
+    assert opts["temperature"] == 1.0
+    assert opts["presence_penalty"] == 1.5
+
+
+# ---------------------------------------------------------------------------
 # extract_json_object: real Qwen/llama.cpp output shapes
 # ---------------------------------------------------------------------------
 

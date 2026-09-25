@@ -181,6 +181,8 @@ class OpenAIChatProvider:
         thinking_enabled: bool = False,
         thinking_budget_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        sampling_profile: str = "auto",
+        structured_sampling: str = "precise",
     ) -> None:
         self._model = model
         self._max_attempts = max_attempts
@@ -188,6 +190,8 @@ class OpenAIChatProvider:
         self._thinking_enabled = thinking_enabled
         self._thinking_budget_tokens = thinking_budget_tokens
         self._reasoning_effort = reasoning_effort
+        self._sampling_profile = sampling_profile
+        self._structured_sampling = structured_sampling
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -198,15 +202,36 @@ class OpenAIChatProvider:
             max_retries=0,  # bounded retries are managed here
         )
 
+    def _resolve_sampling_profile(self) -> str:
+        """Return the effective sampling profile (V5.4 §4).
+
+        An explicit profile is used verbatim. "auto" infers the model-card
+        family from the served alias so the reasoning family applies to both
+        ``qwen3.5*`` and the ``ornith*`` aliases that serve the same model
+        family, while unknown models fall back to the legacy defaults.
+        """
+        profile = self._sampling_profile
+        if profile == "auto":
+            model = self._model.lower()
+            if "qwen3.5" in model or "qwen3_5" in model or "ornith" in model:
+                return "qwen35_reasoning"
+            return "legacy"
+        return profile
+
     def _request_options(self, *, structured: bool) -> dict:
         """Chat-template + sampling options for the current model/profile.
 
-        Qwen3.5 thinking should not use the old greedy ``temperature=0``
-        structured path. For Qwen3.5, thinking uses the model-card sampling
-        family: general chat uses temp=1.0 / presence_penalty=1.5, while
-        structured JSON uses the conservative precise profile temp=0.6 /
-        presence_penalty=0.0. Both use top_p=.95, top_k=20, min_p=0 and
-        repeat_penalty=1.0. Non-thinking behavior remains unchanged.
+        The sampling family is chosen by the resolved sampling profile, not
+        by thinking mode, so the production A/B study (thinking on vs off,
+        V5.4 §25) toggles only ``enable_thinking`` while sampling stays
+        constant.
+
+        The qwen35_reasoning profile sends the model-card sampling: general
+        chat uses temp=1.0 / presence_penalty=1.5; structured JSON uses the
+        precise profile temp=0.6 / presence_penalty=0.0 (or the general
+        family when ``structured_sampling == "general"``). Both use
+        top_p=.95, top_k=20, min_p=0 and repeat_penalty=1.0. The legacy
+        profile keeps the historical greedy structured / 0.7 general path.
         """
         template_kwargs: dict = {"enable_thinking": self._thinking_enabled}
         if self._thinking_enabled and self._reasoning_effort:
@@ -216,13 +241,18 @@ class OpenAIChatProvider:
         if self._thinking_enabled and self._thinking_budget_tokens is not None:
             extra_body["thinking_budget_tokens"] = self._thinking_budget_tokens
 
-        is_qwen35 = "qwen3.5" in self._model.lower()
-        if self._thinking_enabled and is_qwen35:
+        if self._resolve_sampling_profile() == "qwen35_reasoning":
             extra_body.update({"top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0})
+            if structured and self._structured_sampling == "general":
+                temperature, presence = 1.0, 1.5
+            elif structured:
+                temperature, presence = 0.6, 0.0
+            else:
+                temperature, presence = 1.0, 1.5
             return {
-                "temperature": 0.6 if structured else 1.0,
+                "temperature": temperature,
                 "top_p": 0.95,
-                "presence_penalty": 0.0 if structured else 1.5,
+                "presence_penalty": presence,
                 "extra_body": extra_body,
             }
 

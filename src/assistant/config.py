@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Sampling profiles for the chat provider (V5.4 §4). Production selects one
+# explicitly because served-model aliases are arbitrary: a model card's
+# recommended sampling must not hinge on the string an operator happens to
+# alias it as. "auto" infers the family from the alias (qwen3.5 / qwen3_5 /
+# ornith -> qwen35_reasoning, anything else -> legacy).
+SamplingProfile = Literal["auto", "qwen35_reasoning", "legacy"]
+
+# Sampling family for STRUCTURED calls under the qwen35_reasoning profile:
+# "precise" (temp 0.6 / presence_penalty 0.0) or "general"
+# (temp 1.0 / presence_penalty 1.5). Chosen by the V5.4 A/B study (§25).
+StructuredSampling = Literal["precise", "general"]
 
 
 class Settings(BaseSettings):
@@ -52,6 +65,13 @@ class Settings(BaseSettings):
     # Advanced/custom-template knob. Stock Qwen3.5 is not trained with a
     # dependable low/medium/high effort scale; prefer thinking + token budget.
     chat_reasoning_effort: str | None = None
+    # Sampling profile (V5.4 §4). Set explicitly in production (e.g.
+    # CHAT_SAMPLING_PROFILE=qwen35_reasoning) so the correct model-card
+    # sampling is applied even when the served alias ("ornith...") does not
+    # contain the family name.
+    chat_sampling_profile: SamplingProfile = "auto"
+    # Structured-call sampling family under the qwen35_reasoning profile.
+    chat_structured_sampling: StructuredSampling = "precise"
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str = "multilingual-e5-small"

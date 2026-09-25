@@ -66,6 +66,8 @@ def build_ai_provider(settings: Settings) -> AIProvider:
             thinking_enabled=settings.chat_thinking_enabled,
             thinking_budget_tokens=settings.chat_thinking_budget_tokens,
             reasoning_effort=settings.chat_reasoning_effort,
+            sampling_profile=settings.chat_sampling_profile,
+            structured_sampling=settings.chat_structured_sampling,
         ),
         embedding=(
             OpenAIEmbeddingProvider(
