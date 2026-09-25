@@ -1,12 +1,60 @@
-# Telegram Assistant — Milestone Report (V5: Final Correctness Closeout)
+# Telegram Assistant — Milestone Report (V5.1: Corrective Closeout)
 
 Date: 2026-09-25
 Scope: V1 core (SPEC §1–§31) + V2 upgrades (SPEC §42–§48) + V3
-hardening + V4 correctness closure + **V5 final closeout, CI repair and
-Mini App hardening** (this milestone). This report supersedes the 2026-09-24
-V4 report; where they differ, this version is authoritative.
+hardening + V4 correctness closure + V5 final closeout + **V5.1
+corrective closeout** (this milestone). This report supersedes the 2026-09-25
+V5 report; where they differ, this version is authoritative.
 
-## 0. What V5 closed
+## 0. What V5.1 closed
+
+Nineteen corrective items on the `93800d5` baseline (remote CI GREEN, run
+36099136501), closeout-only: no new features, no React/Redis/redesign.
+Full per-item detail is in `PROGRESS.md` (V5.1 section).
+
+P0 (Mini App correctness):
+- **#1** nested `withButtonGuard` in proactive settings value rows: one guard
+  per interaction (the outer row tap); E2E regression asserts all four rows
+  fire exactly one PATCH each.
+- **#2** real Telegram closing confirmation via
+  `enableClosingConfirmation()` / `disableClosingConfirmation()`, driven by
+  the dirty-form state.
+- **#3** centralized form dirty state: `setFormDirty(value)` + `markDirty()`;
+  dirty state syncs the closing confirmation and the discard gate.
+- **#4** `--tg-viewport-stable-height` from `tg.viewportStableHeight`.
+- **#5** `safeAreaInset` and `contentSafeAreaInset` as distinct CSS token
+  groups (`--tg-safe-*` chrome vs `--tg-content-safe-*` content region).
+- **#6** `viewportChanged` / `safeAreaChanged` / `contentSafeAreaChanged`
+  subscribed via `onTelegramEvent(name, handler)`.
+- **#7** viewport E2E with NON-ZERO insets (safe 59/0/34/0, content
+  59/0/16/0), runtime-change controls, and group-independence assertions.
+- **#8** boot lifecycle: `expand()` early, `ready()` exactly once after the
+  first visible UI.
+
+P1:
+- **#9** atomic `_record_failure()` (closed in an earlier V5.1 commit).
+- **#10** workout interval invariant (closed in an earlier V5.1 commit).
+- **#11** modal scroll locking locks `#view` (the scroll container).
+- **#12** scrim close on `pointerdown`.
+- **#13** English bootstrap fallback: `FALLBACKS = { ru, en }`; the client's
+  `language_code` drives the first-paint dictionary, `<html lang>`, title,
+  and static shell; `/me`'s stored preference overrides afterwards. E2E
+  holds `/me` in flight to deterministically assert the EN first paint.
+- **#14** static shell localized: `#app-title`, `#nav` aria-label, and
+  `document.title` via `syncShellLabels()` (new `miniapp.app_title` /
+  `miniapp.navigation` keys in ru/en).
+
+P2:
+- **#15** visible active state on the "More" nav button (`.is-active-secondary`
+  + `aria-current`) while a secondary tab is open.
+- **#16** Pending Actions served by `?status=actionable` (no client filter).
+- **#17** Today overdue count: only `status === "scheduled" && due_at &&
+  due_at < now`.
+- **#18** Actions history served by `?status=history` (no client filter).
+- **#19** stale-action UX: 409 detail `action_stale` → localized
+  `miniapp.action_stale` toast (ru/en).
+
+## 0a. What V5 closed
 
 Twenty-eight goal items, each with a commit reference:
 
@@ -57,37 +105,52 @@ Twenty-eight goal items, each with a commit reference:
 
 Full per-item detail is in `PROGRESS.md` (V5 section).
 
-## 1. Verification (V5 final state, 2026-09-25)
+## 1. Verification (V5.1 final state, 2026-09-25)
+
+Full `bash scripts/acceptance.sh` run (22 steps + sub-steps 1b/1c/21b),
+all green, on a fresh Docker PostgreSQL:
 
 | Check | Result |
 |-------|--------|
-| Full pytest suite (real PostgreSQL, `FILE_STORAGE_DIR=$(mktemp -d)`) | **542 passed** (47.70 s) |
-| Playwright Mini App E2E (`--config=e2e/playwright.config.ts`) | **26 passed** (56.1 s) |
+| Docker Compose config (local + clean-checkout via `git archive`) | OK |
+| actionlint (pinned `rhysd/actionlint:1.7.12`) | 0 errors |
+| Port exposure audit (loopback-only) | OK |
+| `docker build` (frozen lock) + entrypoint imports + no test-auth module in image | OK |
+| `alembic upgrade head` from empty database | OK |
+| API `/healthz` + `/readyz` | OK |
+| Worker digest scheduling (2 users, no MissingGreenlet) | OK |
+| Full pytest suite (real PostgreSQL) | **546 passed** (51.00 s) |
 | Ruff (`uv run ruff check .`) | All checks passed |
 | `uv lock --check` (lock matches `pyproject.toml`) | OK |
-| `bash -n scripts/acceptance.sh` (syntax valid) | OK |
-| Git working tree clean | Verified |
+| Playwright Mini App E2E (fresh `assistant_e2e`) | **27 passed** (1.3 m) |
+| Git working tree clean after final commit | Verified |
 
-The 542-item suite includes all V1–V5 regression tests: lease tests,
+The 546-item suite includes all V1–V5.1 regression tests: lease tests,
 proactivity gates, turn protocol, readiness terminology, X-Request-Id
 bounding, CI workflow guards, action payload hardening, localized previews,
 i18n fallback, double-submit prevention, settings consistency, form
-validation, files polling, actions filter, modal lifecycle, picker CDN
-failure, and the full V4 §41 scenario→test matrix.
+validation, files polling, action `status=actionable`/`history` filters,
+atomic file-failure recording, workout interval invariant, modal lifecycle,
+and picker CDN failure.
 
-The 26 Playwright specs cover: a11y/screens audit, action inbox, actions
+The 27 Playwright specs cover: a11y/screens audit, action inbox, actions
 filter (pending/history), app shell, bot foundation, CDN failure,
 create-event-start-end, dirty form, double-submit, edit item, E2E auth,
 file upload, miniapp shell, modal lifecycle, onboarding, picker CDN fail,
-proactivity, search, settings consistency, theme, timezone, v2 features.
+proactivity, reminder presets, search, settings consistency (incl. the
+P0 #1 four-row PATCH regression), theme, timezone, v2 features (incl. the
+localized `action_stale` toast), viewport chrome (non-zero safe/content
+insets + runtime change), and workout identity/log.
 
 ## 2. Remote CI status (honest)
 
-**Status: REMOTE CI VERIFICATION PENDING.** No GitHub Actions run is green
-in this milestone, and this report does not claim one is. The corrected CI
-workflow is committed and locally validated (actionlint v1.7.12: 0 parse
-errors, 0 lint errors). Pushing to `origin/main` is not permitted in this
-environment; a remote green run is the one remaining, externally-gated step.
+- **Baseline remote CI: `93800d5` → GREEN, run 36099136501.**
+- **V5.1 remote CI: PENDING USER PUSH.**
+
+The V5.1 changes are committed locally and locally verified (full
+acceptance run above), but pushing to `origin/main` is not permitted in
+this environment; the remote green run for V5.1 does not exist yet and this
+report does not claim one.
 
 ## 3. V4 closure (prior milestone, 2026-09-24)
 
@@ -198,25 +261,26 @@ Dependency versions (pinned in `uv.lock`): Python ≥3.12, aiogram
 1.20.0, Pydantic 2.13.5, openai 3.16.2, pgvector 0.5.0 (PostgreSQL 17.11
 + pgvector).
 
-## 4. Definition of Done (V5 final run, 2026-09-25)
+## 4. Definition of Done (V5.1 final run, 2026-09-25)
 
-All checks executed on 2026-09-25 (local, real PostgreSQL) — full pass:
+All checks executed on 2026-09-25 (local, real PostgreSQL) — full pass,
+via the complete `bash scripts/acceptance.sh` run:
 
 | # | Check | Result |
 |---|-------|--------|
 | 1 | `uv sync` (lock resolved) | OK |
 | 2 | Ruff (`uv run ruff check .`) | All checks passed |
-| 3 | Import check (all entrypoints import cleanly) | OK |
+| 3 | Import check (all entrypoints import cleanly, incl. in the production image) | OK |
 | 4 | `uv lock --check` (lock matches `pyproject.toml`) | OK |
-| 5 | Docker Compose config valid; no non-loopback published ports | OK |
+| 5 | Docker Compose config valid (local + clean checkout); no non-loopback published ports | OK |
 | 6 | `docker build` (frozen lock, `uv sync --frozen`) | Built |
-| 7 | Fresh PostgreSQL databases (`assistant` + `assistant_e2e`) created | OK |
+| 7 | Fresh Docker PostgreSQL databases (`assistant` + `assistant_e2e`) created | OK |
 | 8 | `alembic upgrade head` from empty database | Applied cleanly |
-| 9 | Full pytest suite against real PostgreSQL | **542 passed** (47.70 s) |
-| 10 | Playwright Mini App E2E (26 specs, seeded `assistant_e2e`) | **26 passed** (56.1 s) |
-| 11 | Real-Postgres flows in-suite: turns, actions, ingestion, retrieval, digest, proactivity, job leases, modal lifecycle, actions filter, picker CDN failure | Covered |
-| 12 | Credential-free CI workflow in `.github/workflows/` (corrected; remote run pending — see §2) | Present |
-| 13 | `bash scripts/acceptance.sh` syntax valid; 22 steps + sub-steps | Verified |
+| 9 | Full pytest suite against real PostgreSQL | **546 passed** (51.00 s) |
+| 10 | Playwright Mini App E2E (27 specs, seeded `assistant_e2e`) | **27 passed** (1.3 m) |
+| 11 | Real-Postgres flows in-suite: turns, actions, ingestion, retrieval, digest, proactivity, job leases, modal lifecycle, actions filter, picker CDN failure, atomic file-failure recording, workout interval invariant | Covered |
+| 12 | Credential-free CI workflow in `.github/workflows/` (actionlint clean; remote run pending — see §2) | Present |
+| 13 | `bash scripts/acceptance.sh` executed end-to-end: 22 steps + sub-steps 1b/1c/21b | All passed |
 | 14 | No required TODO/stub/fake implementation (grep audit) | Clean |
 | 15 | No test-auth module in production image (`assistant.api.testing` absent) | Verified |
 | 16 | `PROGRESS.md` matches actual state | Updated |
@@ -236,9 +300,9 @@ throwaway Docker Postgres.
 
 ## 5. Known limitations (honest list)
 
-- **Remote CI verification pending.** The corrected CI workflow is
-  committed but not pushed; no green GitHub Actions run exists for this
-  milestone (single-turn, push not permitted). See §2.
+- **V5.1 remote CI verification pending.** Baseline `93800d5` is green
+  (run 36099136501); the V5.1 commits are local only (push not permitted),
+  so no remote run exists for them yet. See §2.
 - **No live-provider verification.** AI behavior is tested with
   deterministic in-test fake providers plus Qwen output fixtures; a real
   llama.cpp/Qwen deployment is untested here.

@@ -39,6 +39,17 @@
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
+  /* Content safe-area tokens (V5.1 P0 #5): a DISTINCT group from --safe-*.
+     --safe-* describes the webview-wide safeAreaInset (the chrome — top
+     bar, bottom nav — consumes it); --tg-content-safe-* describes the
+     content region's contentSafeAreaInset, which the client reports
+     separately and which can differ. Plain-browser fallback: the same
+     env() insets; inside Telegram the client overrides all four with px
+     values at runtime (js/telegram.js applyViewport). */
+  --tg-content-safe-top: env(safe-area-inset-top, 0px);
+  --tg-content-safe-right: env(safe-area-inset-right, 0px);
+  --tg-content-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --tg-content-safe-left: env(safe-area-inset-left, 0px);
   /* Stable viewport height (V5 §12): 100dvh in a plain browser; the client
      overrides with viewportInfo.contentHeight (px) so the app height stays
      fixed while the on-screen keyboard appears (no jump / reflow). */
@@ -120,9 +131,11 @@ body {
 .view {
   flex: 1;
   min-height: 0;
-  padding: 12px calc(16px + var(--safe-right))
-          calc(var(--nav-height) + var(--safe-bottom) + 16px)
-          calc(16px + var(--safe-left));
+  /* The view is the content region — it consumes the CONTENT safe-area
+     insets (V5.1 P0 #5), not the webview-wide --safe-* chrome insets. */
+  padding: 12px calc(16px + var(--tg-content-safe-right))
+          calc(var(--nav-height) + var(--tg-content-safe-bottom) + 16px)
+          calc(16px + var(--tg-content-safe-left));
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -163,6 +176,12 @@ body {
 
 .nav-btn.is-active {
   color: var(--tg-theme-accent-text-color);
+}
+
+/* "More" launcher secondary active state (V5.1 P2 #15): a secondary tab is
+   open. Distinguished from a directly-active tab by a softened accent. */
+.nav-btn.is-active-secondary {
+  color: color-mix(in srgb, var(--tg-theme-accent-text-color) 55%, var(--hint));
 }
 
 .nav-icon {

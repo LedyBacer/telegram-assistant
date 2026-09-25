@@ -16,8 +16,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from assistant.config import get_settings
 from assistant.models.files import FileChunk, FileState
@@ -336,6 +336,115 @@ async def test_lease_lost_failure_not_recorded(session, engine, monkeypatch, tmp
     assert file_row is not None
     # A genuine failure (no lease loss) WOULD mark it failed — this one must not.
     assert file_row.state != FileState.failed.value
+
+
+async def test_record_failure_atomic_with_concurrent_reclaim(
+    session: AsyncSession, engine: AsyncEngine, monkeypatch, tmp_path
+) -> None:
+    """V5.1: ``_record_failure`` re-validates ownership WITH a row lock in the
+    same transaction as the failed-state write.
+
+    A concurrent recovery + re-claim by a new owner takes the same row lock,
+    so it cannot land between the ownership check and the commit: if the
+    re-claim is committed first, the stale owner's row-locked recheck sees it
+    and skips; if the failure transaction holds the lock, the re-claim waits
+    behind it and the failure stamp is the authoritative state. Either way a
+    stale failure can never overwrite a new owner's committed work.
+    """
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+
+    user = await _user(session)
+    file = await _seed_local_file(session, user, "failure after reclaim")
+    file_id = file.id
+    await session.commit()
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    # A claims the job (its real owner token).
+    async with factory() as a, a.begin():
+        job = (
+            await a.scalar(
+                select(BackgroundJob).where(BackgroundJob.type == files.FILES_INGEST_JOB_TYPE)
+            )
+        )
+        claimed = await jobs_service.claim_job(a, worker_id="A")
+    assert job is not None and claimed is not None
+    job_id, token_a = job.id, claimed.locked_by
+
+    # B expires A's lease, recovers, re-claims and completes the job — all
+    # committed from separate connections (the real recovery path).
+    async with factory() as b, b.begin():
+        await b.execute(
+            text(
+                "UPDATE background_jobs SET lease_until = now() - interval '1 minute' "
+                "WHERE id=:id"
+            ),
+            {"id": job_id},
+        )
+        assert await jobs_service.recover_abandoned(b) == 1
+        await b.execute(
+            text("UPDATE background_jobs SET available_at = now() WHERE status = 'pending'")
+        )
+    async with factory() as b2, b2.begin():
+        claimed_b = await jobs_service.claim_job(b2, worker_id="B")
+        assert claimed_b is not None and claimed_b.id == job_id
+        done = await jobs_service.complete_job(b2, job_id, owner_token=claimed_b.locked_by)
+        assert done.status == JobStatus.completed.value
+
+    # A's pipeline now fails and records the visible failure state. The
+    # row-locked recheck must see B's committed completion and skip.
+    await files._record_failure(file_id, job_id, token_a, "stale failure")
+
+    session.expire_all()
+    file_row = await session.scalar(
+        select(files.UserFile).where(files.UserFile.id == file_id)
+    )
+    assert file_row is not None
+    # A stale failure must not clobber the file the new owner took over.
+    assert file_row.state != FileState.failed.value
+    # B's committed completion is intact.
+    job_row = await session.scalar(
+        select(BackgroundJob)
+        .where(BackgroundJob.id == job_id)
+        .execution_options(populate_existing=True)
+    )
+    assert job_row is not None
+    assert job_row.status == JobStatus.completed.value
+
+
+async def test_record_failure_stamps_when_owned(
+    session: AsyncSession, engine: AsyncEngine, monkeypatch, tmp_path
+) -> None:
+    """Positive control: a live owner's ``_record_failure`` stamps the file
+    ``failed`` in the same row-locked transaction (the lock does not
+    over-block legitimate owners)."""
+    monkeypatch.setattr(get_settings(), "file_storage_dir", str(tmp_path / "files"))
+
+    user = await _user(session)
+    file = await _seed_local_file(session, user, "genuine failure")
+    file_id = file.id
+    await session.commit()
+
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as a, a.begin():
+        job = (
+            await a.scalar(
+                select(BackgroundJob).where(BackgroundJob.type == files.FILES_INGEST_JOB_TYPE)
+            )
+        )
+        claimed = await jobs_service.claim_job(a, worker_id="A")
+    assert job is not None and claimed is not None
+    job_id, token_a = job.id, claimed.locked_by
+
+    await files._record_failure(file_id, job_id, token_a, "embedding blew up")
+
+    session.expire_all()
+    file_row = await session.scalar(
+        select(files.UserFile).where(files.UserFile.id == file_id)
+    )
+    assert file_row is not None
+    assert file_row.state == FileState.failed.value
+    assert file_row.error == "embedding blew up"
 
 
 async def test_lease_heartbeat_marks_lost_on_renewal_error(monkeypatch) -> None:

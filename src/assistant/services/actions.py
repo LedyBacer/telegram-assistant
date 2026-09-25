@@ -15,6 +15,7 @@ rather than executed.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import and_, or_, select
@@ -29,6 +30,11 @@ from assistant.models.users import User
 #: this long (checked lazily on every access, and in bulk via
 #: :func:`expire_actions` from the worker).
 DEFAULT_ACTION_TTL = timedelta(hours=1)
+
+#: List filters: a concrete status, or the aggregate views
+#: ``actionable`` (live proposed/confirmed) and ``history`` (terminal,
+#: TTL-aware) (V5.1 §26.17/§26.18).
+ActionFilter = ActionStatus | Literal["actionable", "history"]
 
 _TERMINAL = (
     ActionStatus.rejected.value,
@@ -143,7 +149,7 @@ async def list_actions(
     session: AsyncSession,
     user: User,
     *,
-    status: ActionStatus | None = None,
+    status: ActionFilter | None = None,
     limit: int = 50,
 ) -> list[PendingAction]:
     """List the user's actions, newest first, optionally filtered by
@@ -153,7 +159,12 @@ async def list_actions(
     ``expires_at`` has passed is treated as ``expired`` in the query itself,
     so ``?status=proposed`` excludes overdue rows and ``?status=expired``
     includes them — without requiring the worker to have flushed the durable
-    ``expired`` transition first."""
+    ``expired`` transition first.
+
+    Aggregate filters (V5.1): ``actionable`` returns the live
+    proposed/confirmed rows (the inbox the user can still act on);
+    ``history`` returns everything terminal — executed, rejected, expired,
+    plus overdue proposed/confirmed rows reported as expired."""
     stmt = (
         select(PendingAction)
         .where(PendingAction.user_id == user.id)
@@ -172,7 +183,21 @@ async def list_actions(
         PendingAction.expires_at.is_not(None),
         PendingAction.expires_at <= now,
     )
-    if status == ActionStatus.expired:
+    if status == "actionable":
+        stmt = stmt.where(
+            PendingAction.status.in_(
+                (ActionStatus.proposed.value, ActionStatus.confirmed.value)
+            ),
+            live,
+        )
+    elif status == "history":
+        stmt = stmt.where(
+            or_(
+                PendingAction.status.in_(_TERMINAL),
+                overdue,
+            )
+        )
+    elif status == ActionStatus.expired:
         stmt = stmt.where(or_(PendingAction.status == status.value, overdue))
     elif status in (ActionStatus.proposed, ActionStatus.confirmed):
         stmt = stmt.where(PendingAction.status == status.value, live)

@@ -871,9 +871,41 @@ async def test_action_confirm_stale_target_is_409(
 
     res = await client.post(f"/api/v1/actions/{action_id}/confirm", headers=HEADERS)
     assert res.status_code == 409
+    # V5.1: the detail is a stable error CODE, not a human-readable
+    # server-language string — clients map it to their own localized text.
+    assert res.json()["detail"] == "action_stale"
     # The proposal expired rather than executing.
     listed = await client.get("/api/v1/actions", headers=HEADERS)
     assert [a["status"] for a in listed.json()] == ["expired"]
+
+
+async def test_actions_aggregate_filters(
+    client: httpx.AsyncClient, session: AsyncSession
+) -> None:
+    """V5.1: ?status=actionable returns the live inbox, ?status=history the
+    terminal rows (server-side; the Mini App renders both tabs from these)."""
+    action_id = await _propose_create_item(client, session)
+    # The proposed action is in the actionable view, not the history.
+    actionable = await client.get(
+        "/api/v1/actions", headers=HEADERS, params={"status": "actionable"}
+    )
+    assert [a["id"] for a in actionable.json()] == [action_id]
+    assert (
+        await client.get("/api/v1/actions", headers=HEADERS, params={"status": "history"})
+    ).json() == []
+
+    res = await client.post(f"/api/v1/actions/{action_id}/confirm", headers=HEADERS)
+    assert res.status_code == 200
+
+    actionable = await client.get(
+        "/api/v1/actions", headers=HEADERS, params={"status": "actionable"}
+    )
+    assert actionable.json() == []
+    history = await client.get(
+        "/api/v1/actions", headers=HEADERS, params={"status": "history"}
+    )
+    assert [a["id"] for a in history.json()] == [action_id]
+    assert history.json()[0]["status"] == "executed"
 
 
 async def test_actions_are_user_scoped(

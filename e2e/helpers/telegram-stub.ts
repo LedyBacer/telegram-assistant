@@ -89,6 +89,7 @@ const STUB_SOURCE = `
 
   const counters = { ready: 0, expand: 0, haptic: 0 };
   const chromeCalls = { setHeaderColor: [], setBottomBarColor: [] };
+  const closing = { enabled: false, enable: 0, disable: 0 };
   const events = {};
   const backButton = { shown: false, handler: null };
 
@@ -128,7 +129,14 @@ const STUB_SOURCE = `
     colorScheme: PRESETS.light.colorScheme,
     themeParams: PRESETS.light.params,
     viewportInfo: { contentTop: 0, contentBottom: 0, contentWidth: 390, contentHeight: 844, strokeWidth: 0 },
-    safeAreaInset: { top: 0, right: 0, bottom: 0, left: 0 },
+    viewportStableHeight: 844,
+    // V5.1 P0 #7: NON-ZERO, realistic insets (top = Dynamic Island, bottom =
+    // home indicator) so specs can prove the client values reach :root.
+    safeAreaInset: { top: 59, right: 0, bottom: 34, left: 0 },
+    // A DISTINCT value from safeAreaInset (bottom 16 vs 34) so specs can
+    // prove the two token groups (--safe-* vs --tg-content-safe-*) are wired
+    // to their own client properties (V5.1 P0 #5).
+    contentSafeAreaInset: { top: 59, right: 0, bottom: 16, left: 0 },
     isClosing: "regular",
     isVerticalSwipesEnabled: false,
 
@@ -141,8 +149,9 @@ const STUB_SOURCE = `
     setHeaderColor(c) { chromeCalls.setHeaderColor.push(c); },
     setBottomBarColor(c) { chromeCalls.setBottomBarColor.push(c); },
     setViewMode() {},
-    enableClosing() {},
-    disableClosing() {},
+    // Real SDK method names (V5.1 P0 #2) — tracked for assertions.
+    enableClosingConfirmation() { closing.enabled = true; closing.enable += 1; },
+    disableClosingConfirmation() { closing.enabled = false; closing.disable += 1; },
     showPopup() { return Promise.resolve(); },
     hidePopup() {},
     showConfirm() { return Promise.resolve({ confirmed: true }); },
@@ -191,6 +200,21 @@ const STUB_SOURCE = `
     fireBackButton() { if (backButton.handler) backButton.handler(); },
     setLanguage(lang) { webApp.language = lang; webApp.user.language_code = lang; },
     backButtonShown() { return backButton.shown; },
+    closingConfirmation() { return Object.assign({}, closing); },
+    // Runtime metric changes: update the reported value AND emit the event,
+    // exactly like the real client (V5.1 P0 #6/#7).
+    setSafeAreaInset(inset) {
+      webApp.safeAreaInset = inset;
+      (events.safeAreaChanged || []).forEach((cb) => cb());
+    },
+    setContentSafeAreaInset(inset) {
+      webApp.contentSafeAreaInset = inset;
+      (events.contentSafeAreaChanged || []).forEach((cb) => cb());
+    },
+    setViewportStableHeight(h) {
+      webApp.viewportStableHeight = h;
+      (events.viewportChanged || []).forEach((cb) => cb());
+    },
   };
 })();
 `;

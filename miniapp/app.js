@@ -12,8 +12,12 @@ import {
   applyViewport,
   onThemeChanged,
   onViewportChanged,
+  onSafeAreaChanged,
+  onContentSafeAreaChanged,
   webAppReady,
   webAppExpand,
+  enableClosingConfirmation,
+  disableClosingConfirmation,
   backButtonShow,
   backButtonHide,
   backButtonOn,
@@ -146,15 +150,19 @@ function buildNav() {
     )
   );
   // The "More" launcher opens a sheet of the secondary tabs (V5 §16). It is a
-  // launcher, not a view: it never becomes state.tab, so it is never active.
+  // launcher, not a view: it never becomes state.tab, but while a secondary
+  // tab is open it shows a secondary active state (V5.1 P2 #15) so the bar
+  // reflects where the user is.
+  const moreActive = MORE_TABS.some(([key]) => key === state.tab);
   buttons.push(
     el(
       "button",
       {
         type: "button",
-        class: "nav-btn",
+        class: `nav-btn${moreActive ? " is-active-secondary" : ""}`,
         "data-tab": "more",
         "aria-haspopup": "true",
+        "aria-current": moreActive ? "true" : null,
         "aria-label": S("miniapp.tab_more"),
         onclick: () => openMoreSheet(),
       },
@@ -240,8 +248,17 @@ async function render() {
 
 // True while the user has edited the New/Edit form since it last rendered.
 let formDirty = false;
+// Central dirty-state entry point (V5.1 P0 #3): every transition goes
+// through here so the Telegram closing-confirmation (P0 #2) always mirrors
+// the flag — the client asks before closing a dirty form, and stops asking
+// as soon as the form is saved, discarded, or re-rendered clean.
+function setFormDirty(value) {
+  formDirty = value;
+  if (value) enableClosingConfirmation();
+  else disableClosingConfirmation();
+}
 function markDirty() {
-  formDirty = true;
+  setFormDirty(true);
 }
 const isFormView = (tab) => tab === "new" || tab === "edit";
 
@@ -255,7 +272,7 @@ async function navigate(tab, { force = false } = {}) {
     if (!(await confirmDialog(S("miniapp.discard_confirm"), S("miniapp.discard"), S("miniapp.btn_cancel")))) return;
   }
   if (state.tab === "edit") state.editId = null;
-  formDirty = false;
+  setFormDirty(false);
   haptic();
   state.tab = tab;
   render();
@@ -363,8 +380,9 @@ function daySummary(dayItems) {
   for (const item of dayItems) {
     if (item.status === "scheduled") {
       scheduled += 1;
-      const anchor = item.due_at || item.starts_at;
-      if (anchor && new Date(anchor).getTime() < now) overdue += 1;
+      // V5.1 P2 #17: overdue means a hard deadline passed — only a due_at in
+      // the past counts; a bare start time is not a deadline.
+      if (item.due_at && new Date(item.due_at).getTime() < now) overdue += 1;
     } else if (item.status === "completed") {
       completed += 1;
     }
@@ -568,17 +586,16 @@ const ACTION_STATUS_TONES = {
 };
 
 async function viewActions(view, gen, signal) {
-  // §21: Pending (default) / History filter.
+  // §21: Pending (default) / History filter. V5.1 P2 #16/#18: both filters
+  // are served by the backend aggregates (status=actionable / status=history),
+  // so no client-side filtering of a full list is needed.
   const filter = state._actionsFilter || "pending";
   state._actionsFilter = filter;
   const url = filter === "pending"
-    ? "/api/v1/actions?status=proposed&limit=20"
-    : "/api/v1/actions?limit=100";
-  let actions = await api(url, "GET", undefined, signal);
+    ? "/api/v1/actions?status=actionable&limit=20"
+    : "/api/v1/actions?status=history&limit=100";
+  const actions = await api(url, "GET", undefined, signal);
   if (isStale(gen)) return;
-  if (filter === "history") {
-    actions = actions.filter((a) => a.status !== "proposed");
-  }
 
   const filterRow = el("div", { class: "filter-row" });
   const pendingBtn = btn(S("miniapp.actions_pending"), () => {
@@ -620,10 +637,12 @@ function actionCard(a) {
             toast(S("miniapp.saved"));
             render();
           } catch (err) {
-            // 409 = stale target (server already expired the action): surface
-            // the server reason and refresh so the card shows "expired".
-            // 400 = payload no longer valid (same outcome).
-            if (err && (err.status === 409 || err.status === 400)) {
+            // V5.1 P2 #19: the server returns the stable code "action_stale"
+            // (409) when a proposed action no longer applies — map it to the
+            // localized message instead of surfacing a raw backend string.
+            if (err && err.status === 409 && err.detail === "action_stale") {
+              toast(S("miniapp.action_stale"), "error");
+            } else if (err && (err.status === 409 || err.status === 400)) {
               toast(S("miniapp.action_stale_detail", { reason: err.detail || err.message }), "error");
             } else {
               toast(S("miniapp.error_generic"), "error");
@@ -788,7 +807,7 @@ async function viewNew(view) {
   const remindPicker = reminderPicker();
 
   // V5 §15: a freshly rendered form is clean; typing marks it dirty.
-  formDirty = false;
+  setFormDirty(false);
   titleInput.addEventListener("input", markDirty);
   descInput.addEventListener("input", markDirty);
 
@@ -880,7 +899,7 @@ async function viewNew(view) {
           remind_offsets_minutes: remindPicker.get(),
         });
         toast(S("miniapp.saved"));
-        formDirty = false; // just persisted — nothing left to discard
+        setFormDirty(false); // just persisted — nothing left to discard
         navigate("today");
       } catch (err) {
         // §19.2: structured error — don't map every 422 to "title required".
@@ -992,7 +1011,7 @@ async function viewEdit(view, gen, signal) {
   descInput.value = original.description;
 
   // V5 §15: a freshly rendered form is clean; typing marks it dirty.
-  formDirty = false;
+  setFormDirty(false);
   titleInput.addEventListener("input", markDirty);
   descInput.addEventListener("input", markDirty);
 
@@ -1101,7 +1120,7 @@ async function viewEdit(view, gen, signal) {
     try {
       await api(`/api/v1/items/${id}`, "PATCH", body, signal);
       toast(S("miniapp.saved"));
-      formDirty = false;
+      setFormDirty(false);
       navigate(state.editReturn || "today");
     } catch (err) {
       if (isStale(gen)) return;
@@ -1848,17 +1867,21 @@ async function buildProactiveCard(signal) {
     toast(S("miniapp.settings_saved"));
     render();
   };
-  // Value rows are already inside a guard from their settingsRow onTap, so they
-  // send the PATCH directly here (no second guard — the row is already disabled).
-  const patchRow = (rowEl, body) => withButtonGuard(rowEl, async () => {
+  // One guard per interaction (V5.1 P0 #1): value rows are ALREADY inside
+  // withButtonGuard (their settingsRow onTap), which disables the row for
+  // the whole picker→PATCH sequence — so the PATCH is sent directly here.
+  // Wrapping it in a second guard on the same row would see disabled===true
+  // and swallow the request, so the value would never persist.
+  const patchRow = async (body) => {
     try {
       await doPatch(body);
     } catch {
       toast(S("miniapp.error_generic"), "error");
     }
-  });
-  // Switches roll back to the previous value if the server rejects the write
-  // (V5 §18.1).
+  };
+  // Switches have no outer guard (switchRow fires onChange directly), so the
+  // checkbox itself is the single guard source. Rolls back if the server
+  // rejects the write (V5 §18.1).
   const patchSwitch = (boxEl, prev, body) => withButtonGuard(boxEl, async () => {
     try {
       await doPatch(body);
@@ -1875,11 +1898,11 @@ async function buildProactiveCard(signal) {
     switchRow(S("miniapp.proactive_overdue_nudge"), ps.overdue_nudge_enabled, (v, boxEl, prev) => patchSwitch(boxEl, prev, { overdue_nudge_enabled: v })),
     settingsRow(S("miniapp.proactive_quiet_from"), ps.quiet_hours_start.slice(0, 5), (rowEl) => withButtonGuard(rowEl, async () => {
       const t = await pickTime(ps.quiet_hours_start.slice(0, 5));
-      if (t) patchRow(rowEl, { quiet_hours_start: `${t}:00` });
+      if (t) patchRow({ quiet_hours_start: `${t}:00` });
     })),
     settingsRow(S("miniapp.proactive_quiet_until"), ps.quiet_hours_end.slice(0, 5), (rowEl) => withButtonGuard(rowEl, async () => {
       const t = await pickTime(ps.quiet_hours_end.slice(0, 5));
-      if (t) patchRow(rowEl, { quiet_hours_end: `${t}:00` });
+      if (t) patchRow({ quiet_hours_end: `${t}:00` });
     })),
     settingsRow(S("miniapp.proactive_max_per_day"), String(ps.max_nudges_per_day), (rowEl) => withButtonGuard(rowEl, async () => {
       const chosen = await openSheet({
@@ -1887,7 +1910,7 @@ async function buildProactiveCard(signal) {
         value: String(ps.max_nudges_per_day),
         options: [...Array(20).keys()].map((i) => ({ value: String(i + 1), label: String(i + 1) })),
       });
-      if (chosen) patchRow(rowEl, { max_nudges_per_day: Number(chosen) });
+      if (chosen) patchRow({ max_nudges_per_day: Number(chosen) });
     })),
     settingsRow(S("miniapp.proactive_min_interval"), S("miniapp.minutes_value", { minutes: ps.min_interval_minutes }), (rowEl) => withButtonGuard(rowEl, async () => {
       const chosen = await openSheet({
@@ -1898,7 +1921,7 @@ async function buildProactiveCard(signal) {
           label: n === 0 ? "0" : S("miniapp.minutes_value", { minutes: n }),
         })),
       });
-      if (chosen) patchRow(rowEl, { min_interval_minutes: Number(chosen) });
+      if (chosen) patchRow({ min_interval_minutes: Number(chosen) });
     }))
   );
 }
@@ -1944,21 +1967,30 @@ function switchRow(label, checked, onChange) {
 /* ------------------------------------------------------------------ */
 
 async function boot() {
-  // ready() now; expand() is deferred until the first real render (V5 §13).
-  webAppReady();
+  // V5.1 P0 #8: expand() EARLY — the client immediately gives the full
+  // viewport; ready() fires exactly once, after visible UI is on screen
+  // (see the end of this function).
+  webAppExpand();
   applyTheme();
   applyViewport();
   onThemeChanged(() => {
     // Theme changes re-style the app through CSS variables automatically.
   });
   onViewportChanged(() => {
-    // Safe-area / stable-height tokens are re-applied inside the handler.
+    // Stable-height tokens are re-applied inside the handler.
+  });
+  onSafeAreaChanged(() => {
+    // Webview safe-area tokens are re-applied inside the handler (P0 #6).
+  });
+  onContentSafeAreaChanged(() => {
+    // Content safe-area tokens are re-applied inside the handler (P0 #6).
   });
   backButtonOn(() => {
     navigate(state.tab === "edit" ? (state.editReturn || "today") : "today");
   });
-  // Closing the whole app (not just navigating) — native confirmation when a
-  // form has unsaved changes (V5 §15).
+  // Closing the whole app (not just navigating) — the browser-side fallback
+  // to the native closing-confirmation (setFormDirty, V5.1 P0 #2): confirm
+  // when a form has unsaved changes (V5 §15).
   window.addEventListener("beforeunload", (e) => {
     if (isFormView(state.tab) && formDirty) {
       e.preventDefault();
@@ -1969,12 +2001,13 @@ async function boot() {
     const me = await loadMe();
     whoEl.textContent = [me.user.first_name, me.user.last_name].filter(Boolean).join(" ");
     await render();
-    webAppExpand();
   } catch (e) {
     const key = e && e.status === 401 ? "miniapp.status_auth" : "miniapp.status_open";
     viewEl.replaceChildren(empty(S(key)));
-    webAppExpand();
   }
+  // Visible UI is on screen (the rendered view, or the explicit fallback
+  // state) — signal ready exactly once (V5.1 P0 #8).
+  webAppReady();
 }
 
 boot();

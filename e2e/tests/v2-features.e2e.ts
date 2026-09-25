@@ -151,10 +151,9 @@ test("V2 features: actions inbox, fact supersede, workout schedule, file retry, 
   // The stale confirm is expected to return 409 (controlled error).
   guard.allow("/actions/2/confirm");
   await staleCard.locator(".item-actions .btn").first().click(); // Confirm
-  // V3 P33: the stale toast now carries the server's 409 detail.
-  await expect(page.locator("#toast")).toContainText(
-    "Действие неактуально: proposal no longer applies to current data",
-  );
+  // V5.1 P2 #19: the server 409 carries the stable code "action_stale",
+  // mapped to the localized stale message (no raw backend string).
+  await expect(page.locator("#toast")).toContainText("Это действие больше не актуально.");
   // V3 P33: the stale branch re-renders; the expired action moves to History.
   await goTab(page, "today");
   await goTab(page, "actions");

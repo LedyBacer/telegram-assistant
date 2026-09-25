@@ -19,7 +19,9 @@ router = APIRouter(tags=["miniapp"])
 
 @router.get("/actions", response_model=list[ActionOut])
 async def list_actions(
-    status: ActionStatus | None = None,
+    # Concrete status, or the aggregate views: ``actionable`` (live
+    # proposed/confirmed inbox) and ``history`` (terminal, TTL-aware) (V5.1).
+    status: actions_service.ActionFilter | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -56,10 +58,11 @@ async def confirm_action(
         # persist it before raising, because the session dependency rolls
         # back uncommitted work when the handler exits with an exception
         # (the action would otherwise stay proposed forever).
+        # The detail is a STABLE ERROR CODE, not human text (V5.1): clients
+        # map it to their own localized message, so no server-language string
+        # is ever shown to the user.
         await session.commit()
-        raise HTTPException(
-            status_code=409, detail="proposal no longer applies to current data"
-        ) from exc
+        raise HTTPException(status_code=409, detail="action_stale") from exc
     except ValueError as exc:
         # Rejected/expired/no-longer-valid: persist any in-transaction expiry
         # the service recorded, then 400. (Not-found is handled above via the

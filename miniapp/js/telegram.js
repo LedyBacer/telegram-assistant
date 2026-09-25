@@ -80,10 +80,17 @@ export function syncChrome() {
 }
 
 /**
- * Apply the client viewport metrics (V5 §11, §12): the four safe-area insets
- * as px custom properties (--safe-top/right/bottom/left) and a stable
- * viewport height (--tg-viewport-stable-height, from viewportInfo
- * contentHeight) that does not jump when the on-screen keyboard appears.
+ * Apply the client viewport metrics (V5 §11, §12; V5.1 P0 #4/#5):
+ *  - the four safe-area insets as px custom properties
+ *    (--safe-top/right/bottom/left),
+ *  - the four CONTENT safe-area insets as a distinct token group
+ *    (--tg-content-safe-top/right/bottom/left) from `contentSafeAreaInset`
+ *    — the insets the content region must respect, which can differ from
+ *    the webview-wide `safeAreaInset`,
+ *  - a stable viewport height (--tg-viewport-stable-height) from
+ *    `viewportStableHeight` (the dedicated SDK property; older clients
+ *    fall back to `viewportInfo.contentHeight`) that does not jump when
+ *    the on-screen keyboard appears.
  * In a plain browser the CSS env()/100dvh fallbacks apply.
  */
 export function applyViewport() {
@@ -101,58 +108,83 @@ export function applyViewport() {
       if (Number.isFinite(px)) rootStyle.setProperty(cssVar, `${px}px`);
     }
   }
-  const info = tg.viewportInfo;
-  const h = info && Number(info.contentHeight);
+  const contentInset = tg.contentSafeAreaInset;
+  if (contentInset && typeof contentInset === "object") {
+    for (const [edge, cssVar] of [
+      ["top", "--tg-content-safe-top"],
+      ["right", "--tg-content-safe-right"],
+      ["bottom", "--tg-content-safe-bottom"],
+      ["left", "--tg-content-safe-left"],
+    ]) {
+      const px = Number(contentInset[edge]);
+      if (Number.isFinite(px)) rootStyle.setProperty(cssVar, `${px}px`);
+    }
+  }
+  let h = Number(tg.viewportStableHeight);
+  if (!(Number.isFinite(h) && h > 0)) {
+    h = tg.viewportInfo ? Number(tg.viewportInfo.contentHeight) : NaN;
+  }
   if (Number.isFinite(h) && h > 0) rootStyle.setProperty("--tg-viewport-stable-height", `${h}px`);
+}
+
+/**
+ * Subscribe to any Telegram WebApp event (V5.1 P0 #6). `handler` receives the
+ * event payload; the return value is a disposer that detaches the listener.
+ * No-op in a plain browser (returns an empty disposer).
+ */
+export function onTelegramEvent(name, handler) {
+  if (!tg || typeof tg.onEvent !== "function") return () => {};
+  try {
+    tg.onEvent(name, handler);
+  } catch {
+    return () => {};
+  }
+  return () => {
+    try {
+      tg.offEvent(name, handler);
+    } catch {
+      /* already detached */
+    }
+  };
 }
 
 /** Register a callback for runtime Telegram viewport changes. No-op in browser. */
 export function onViewportChanged(callback) {
-  if (!tg || typeof tg.onEvent !== "function") return () => {};
-  const handler = () => {
+  return onTelegramEvent("viewportChanged", () => {
     applyViewport();
     callback();
-  };
-  try {
-    tg.onEvent("viewportChanged", handler);
-  } catch {
-    return () => {};
-  }
-  return () => {
-    try {
-      tg.offEvent("viewportChanged", handler);
-    } catch {
-      /* already detached */
-    }
-  };
+  });
+}
+
+/** Re-apply the safe-area tokens on runtime changes (V5.1 P0 #6). No-op in browser. */
+export function onSafeAreaChanged(callback) {
+  return onTelegramEvent("safeAreaChanged", () => {
+    applyViewport();
+    callback();
+  });
+}
+
+/** Re-apply the content safe-area tokens on runtime changes (V5.1 P0 #6). No-op in browser. */
+export function onContentSafeAreaChanged(callback) {
+  return onTelegramEvent("contentSafeAreaChanged", () => {
+    applyViewport();
+    callback();
+  });
 }
 
 /** Register a callback for runtime Telegram theme changes. No-op in browser. */
 export function onThemeChanged(callback) {
-  if (!tg || typeof tg.onEvent !== "function") return () => {};
-  const handler = () => {
+  return onTelegramEvent("themeChanged", () => {
     applyTheme();
     callback();
-  };
-  try {
-    tg.onEvent("themeChanged", handler);
-  } catch {
-    return () => {};
-  }
-  return () => {
-    try {
-      tg.offEvent("themeChanged", handler);
-    } catch {
-      /* already detached */
-    }
-  };
+  });
 }
 
 /**
- * ready()/expand() split (V5 §13): the app signals `ready()` at boot, and
- * requests `expand()` only once real content is on screen — so the client
- * grows the viewport to the content, not to an empty shell (avoids the
- * initial half-height flash).
+ * Boot lifecycle (V5 §13, V5.1 P0 #8): `expand()` is called EARLY (the
+ * client immediately gives the full viewport), and `ready()` is called
+ * exactly once AFTER visible UI is on screen — so the client never paints
+ * an empty shell and knows the app is interactive.
  */
 export function webAppReady() {
   if (!tg) return;
@@ -176,6 +208,28 @@ export function webAppExpand() {
 export function initWebApp() {
   webAppReady();
   webAppExpand();
+}
+
+/**
+ * Closing confirmation (V5.1 P0 #2): while enabled, the client asks the
+ * user to confirm before closing the app — used while a form has unsaved
+ * changes. Real SDK `enableClosingConfirmation()`; no-op in a plain
+ * browser or on clients without the API.
+ */
+export function enableClosingConfirmation() {
+  try {
+    tg?.enableClosingConfirmation?.();
+  } catch {
+    /* unsupported */
+  }
+}
+
+export function disableClosingConfirmation() {
+  try {
+    tg?.disableClosingConfirmation?.();
+  } catch {
+    /* unsupported */
+  }
 }
 
 /** Current Telegram user object, or null outside Telegram. */

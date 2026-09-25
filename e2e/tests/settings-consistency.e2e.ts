@@ -53,6 +53,90 @@ test("settings consistency: switch rollback, proactive error, IANA list, tz date
   await expect(weeklySwitch).toBeChecked();
 
   // =====================================================================
+  // V5.1 P0 #1 — every proactive value row fires its PATCH.
+  // Regression: the row handler was wrapped in withButtonGuard while the
+  // row itself was ALREADY disabled by the outer guard, so the inner guard
+  // swallowed the call and the PATCH never fired. All four rows (two time
+  // pickers, two value sheets) must persist a changed value.
+  // =====================================================================
+  let patchCount = 0;
+  await page.route("**/api/v1/proactive-settings", (route) => {
+    if (route.request().method() === "PATCH") patchCount += 1;
+    route.continue();
+  });
+
+  const rows = proactiveCard.locator("button.settings-row");
+  expect(await rows.count()).toBe(4);
+
+  // Row 0: quiet_from (default 22:00) → time picker → 21:00.
+  await rows.nth(0).click();
+  await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
+  await page.locator(".flatpickr-time input").nth(0).fill("21");
+  await page.locator(".flatpickr-time input").nth(1).fill("00");
+  await page.locator(".picker-input").focus();
+  await page.keyboard.press("Escape");
+  await expect(rows.nth(0).locator(".settings-row-value")).toHaveText("21:00");
+  await expect(page.locator("#toast")).toContainText("Настройки сохранены.");
+
+  // Row 1: quiet_until (default 08:00) → time picker → 07:00.
+  await rows.nth(1).click();
+  await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
+  await page.locator(".flatpickr-time input").nth(0).fill("07");
+  await page.locator(".flatpickr-time input").nth(1).fill("00");
+  await page.locator(".picker-input").focus();
+  await page.keyboard.press("Escape");
+  await expect(rows.nth(1).locator(".settings-row-value")).toHaveText("07:00");
+  await expect(page.locator("#toast")).toContainText("Настройки сохранены.");
+
+  // Row 2: max per day (default 3) → value sheet → 5.
+  await rows.nth(2).click();
+  const maxSheet = page.locator(".sheet");
+  await expect(maxSheet).toBeVisible();
+  await maxSheet.locator('.sheet-row[data-value="5"]').click();
+  await expect(rows.nth(2).locator(".settings-row-value")).toHaveText("5");
+  await expect(page.locator("#toast")).toContainText("Настройки сохранены.");
+
+  // Row 3: min interval (default 120 мин) → value sheet → 60 мин.
+  await rows.nth(3).click();
+  const intervalSheet = page.locator(".sheet");
+  await expect(intervalSheet).toBeVisible();
+  await intervalSheet.locator('.sheet-row[data-value="60"]').click();
+  await expect(rows.nth(3).locator(".settings-row-value")).toHaveText("60 мин");
+  await expect(page.locator("#toast")).toContainText("Настройки сохранены.");
+
+  // Exactly one PATCH per row: none dropped by a nested guard, none doubled.
+  expect(patchCount).toBe(4);
+  await page.unroute("**/api/v1/proactive-settings");
+
+  // Restore the defaults: v2-features (later in the shared-DB run) asserts
+  // 22:00 / 08:00 / 3 / 120 мин on a pristine settings row.
+  await rows.nth(0).click();
+  await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
+  await page.locator(".flatpickr-time input").nth(0).fill("22");
+  await page.locator(".flatpickr-time input").nth(1).fill("00");
+  await page.locator(".picker-input").focus();
+  await page.keyboard.press("Escape");
+  await expect(rows.nth(0).locator(".settings-row-value")).toHaveText("22:00");
+
+  await rows.nth(1).click();
+  await page.locator(".flatpickr-calendar").waitFor({ state: "visible" });
+  await page.locator(".flatpickr-time input").nth(0).fill("08");
+  await page.locator(".flatpickr-time input").nth(1).fill("00");
+  await page.locator(".picker-input").focus();
+  await page.keyboard.press("Escape");
+  await expect(rows.nth(1).locator(".settings-row-value")).toHaveText("08:00");
+
+  await rows.nth(2).click();
+  await page.locator(".sheet").waitFor({ state: "visible" });
+  await page.locator('.sheet .sheet-row[data-value="3"]').click();
+  await expect(rows.nth(2).locator(".settings-row-value")).toHaveText("3");
+
+  await rows.nth(3).click();
+  await page.locator(".sheet").waitFor({ state: "visible" });
+  await page.locator('.sheet .sheet-row[data-value="120"]').click();
+  await expect(rows.nth(3).locator(".settings-row-value")).toHaveText("120 мин");
+
+  // =====================================================================
   // §18.3 — Proactive load failure shows error state with Retry
   // =====================================================================
   // Intercept GET /proactive-settings with 500.

@@ -1,8 +1,93 @@
 # Progress
 
-Status: V5 IN PROGRESS — "Final Correctness Closeout, CI Repair and Mini App
-Hardening" on the `7713777` baseline. Below is the compact V5 handoff; the
-V4/V3/V2 detail follows. Working tree is committed at each meaningful boundary.
+Status: V5.1 COMPLETE — "Corrective closeout" on the `93800d5` baseline
+(remote CI GREEN, run 36099136501). Below is the compact V5.1 handoff, then
+the V5/V4/V3/V2 detail. Working tree is committed at each meaningful
+boundary. V5.1 remote CI: PENDING USER PUSH.
+
+## V5.1 — Corrective closeout (baseline `93800d5`)
+
+Closeout-only pass: no new features, no React/Redis/redesign, no push.
+Items numbered per the goal. Baseline remote CI: `93800d5` → GREEN, run
+36099136501. V5.1 remote CI: PENDING USER PUSH.
+
+P0 (Mini App correctness):
+- **#1** nested `withButtonGuard` in proactive settings value rows: `patchRow`
+  is a plain async function; the single guard is the outer `withButtonGuard`
+  in `settingsRow`'s tap handler (one guard per interaction). E2E regression
+  in `settings-consistency.e2e.ts`: all four rows (2 time pickers, 2 value
+  sheets) fire exactly one PATCH each (`patchCount === 4`).
+- **#2** real Telegram closing confirmation: `enableClosingConfirmation()` /
+  `disableClosingConfirmation()` in `js/telegram.js`, driven from the dirty
+  form state (see #3). The E2E stub implements both methods and exposes
+  `__tg.closingConfirmation()`.
+- **#3** centralized form dirty state: `setFormDirty(value)` is the single
+  entry point; `markDirty()` is a convenience wrapper. Dirty state syncs the
+  Telegram closing confirmation (enabled on dirty, disabled on clean) and the
+  discard-confirmation navigation gate.
+- **#4** `--tg-viewport-stable-height` is now driven by
+  `tg.viewportStableHeight` (falling back to `tg.viewportHeight`).
+- **#5** `safeAreaInset` and `contentSafeAreaInset` are distinct CSS token
+  groups: `--tg-safe-*` (chrome: topbar, bottom nav) and
+  `--tg-content-safe-*` (content region, `.view` padding).
+- **#6** `viewportChanged` / `safeAreaChanged` / `contentSafeAreaChanged`
+  subscribe through the single `onTelegramEvent(name, handler)` helper.
+- **#7** viewport E2E strengthened: the stub now reports NON-ZERO insets
+  (safe 59/0/34/0, content 59/0/16/0 — distinct bottom) plus
+  `viewportStableHeight: 844`, with runtime-change controls
+  (`__tg.setSafeAreaInset`, `__tg.setContentSafeAreaInset`,
+  `__tg.setViewportStableHeight`). `viewport-chrome.e2e.ts` asserts the
+  non-zero pixels, runtime updates, and group independence (a
+  `safeAreaChanged` does not touch the content group and vice versa).
+- **#8** boot lifecycle: `webAppExpand()` runs early in `boot()`;
+  `webAppReady()` runs exactly once AFTER the first visible UI (success and
+  error paths both render before `ready()`).
+
+P1:
+- **#9** atomic `_record_failure()` — closed in a prior V5.1 session.
+- **#10** workout interval invariant — closed in a prior V5.1 session.
+- **#11** modal scroll locking now locks `#view` (the scroll container), not
+  just `body` (`_lockScroll` / `_unlockScroll` in `js/ui.js`).
+- **#12** sheet scrim closes on `pointerdown` (both scrims), not `mousedown`.
+- **#13** English bootstrap fallback: `FALLBACKS = { ru, en }` in
+  `js/state.js`; `STR` bootstraps from the client's `language_code`
+  (`tgLanguage()`), and `state.lang` / `<html lang>` follow it on first
+  paint; `/me`'s stored preference overrides via `setLanguage()`. E2E
+  `i18n-fallback.e2e.ts`: holds `/me` in flight (route gate) so the EN
+  fallback is the ONLY dictionary in play at first paint — asserts
+  `#app-title` = "Assistant", `#nav` aria-label = "Navigation",
+  `document.title` = "Assistant", `<html lang>` = "en"; then releases `/me`
+  and asserts the stored (ru) state.
+- **#14** static shell localized: `syncShellLabels()` owns `#app-title`,
+  `#nav` aria-label, and `document.title`; runs at module scope (first
+  paint) and on every `setLanguage()`. New `miniapp.app_title` /
+  `miniapp.navigation` keys in ru/en (345 keys each).
+
+P2:
+- **#15** "More" nav button gets a visible active state
+  (`.is-active-secondary`, softer accent + `aria-current`) while a
+  secondary tab is open.
+- **#16** Pending Actions view queries `?status=actionable&limit=20`
+  (backend `ActionFilter` closed earlier); the client-side filter is gone.
+- **#17** Today overdue count: only `status === "scheduled" && item.due_at &&
+  due_at < now`.
+- **#18** Actions history view queries `?status=history&limit=100`
+  (backend closed earlier); the client-side filter is gone.
+- **#19** stale-action UX: the 409 detail `action_stale` maps to
+  `miniapp.action_stale` ("Это действие больше не актуально." / "This action
+  is no longer up to date."); E2E `v2-features.e2e.ts` asserts the localized
+  toast.
+
+Verification: full `bash scripts/acceptance.sh` green (22 steps + 1b/1c/21b):
+546 pytest passed (51.00 s), 27 Playwright passed (1.3 m), Ruff clean,
+`uv lock --check` OK, compose valid (local + clean checkout), actionlint
+0 errors, frozen-lock image built, fresh Docker PG + Alembic, worker digest
+scheduling, no test-auth in the image. Environment note: the local repo tree
+was `775` (umask artifact); `chmod -R go+rX .` was applied so the non-root
+actionlint container can read it (git checkouts are 755; CI unaffected).
+
+**V5.1 complete.** All 19 items closed. Remote CI for V5.1: PENDING USER
+PUSH (baseline `93800d5` GREEN, run 36099136501).
 
 ## V5 — Final closeout (baseline `7713777`)
 

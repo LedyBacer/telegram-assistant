@@ -142,6 +142,7 @@ let _sheetCount = 0;
 let _prevOverflow = "";
 let _prevPosition = "";
 let _prevPaddingBottom = "";
+let _prevViewOverflow = "";
 
 function _lockScroll() {
   if (_sheetCount === 0) {
@@ -153,6 +154,13 @@ function _lockScroll() {
     body.style.position = "fixed";
     body.style.width = "100%";
     body.style.paddingBottom = "env(safe-area-inset-bottom)";
+    // The view is the actual scroll container — lock it too (V5.1 P1 #11),
+    // otherwise the content under a sheet can still be scrolled.
+    const view = document.getElementById("view");
+    if (view) {
+      _prevViewOverflow = view.style.overflow;
+      view.style.overflow = "hidden";
+    }
   }
   _sheetCount += 1;
 }
@@ -165,6 +173,9 @@ function _unlockScroll() {
     body.style.position = _prevPosition;
     body.style.width = "";
     body.style.paddingBottom = _prevPaddingBottom;
+    const view = document.getElementById("view");
+    if (view) view.style.overflow = _prevViewOverflow;
+    _prevViewOverflow = "";
   }
 }
 
@@ -253,7 +264,9 @@ export function openSheet({ title, options, value = null, searchable = false, se
       )
     );
     const scrim = el("div", { class: "sheet-scrim" }, panel);
-    scrim.addEventListener("mousedown", (e) => {
+    // pointerdown (not mousedown) so touch taps on the scrim close the
+    // sheet on real clients (V5.1 P1 #12).
+    scrim.addEventListener("pointerdown", (e) => {
       if (e.target === scrim) close(null);
     });
 
@@ -349,7 +362,8 @@ export function confirmDialog(message, confirmLabel, cancelLabel) {
       el("div", { class: "sheet-confirm-actions" }, cancelBtn, confirmBtn)
     );
     const scrim = el("div", { class: "sheet-scrim" }, panel);
-    scrim.addEventListener("mousedown", (e) => {
+    // pointerdown (not mousedown): see openSheet (V5.1 P1 #12).
+    scrim.addEventListener("pointerdown", (e) => {
       if (e.target === scrim) close(false);
     });
     root.appendChild(scrim);

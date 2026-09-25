@@ -44,7 +44,6 @@ from assistant.models.users import User
 from assistant.services.jobs import (
     cancel_job,
     create_job,
-    owns_job,
     revalidate_ownership,
 )
 
@@ -650,12 +649,15 @@ async def _record_failure(
     the main pipeline transaction rolling back on error.
 
     Before stamping the file ``failed`` it re-validates job ownership against
-    PostgreSQL (V5 §3): if the job is no longer ours (lease expired and
-    recovered, or cancelled) a new owner may be re-ingesting this file, so we
-    must not overwrite their in-flight work with a ``failed`` state."""
+    PostgreSQL WITH A ROW LOCK in the same transaction as the failed-state
+    write (V5.1 §26.9): a plain read (``owns_job``) leaves a TOCTOU window in
+    which a concurrent ``complete_job`` / ``recover_abandoned`` re-claim can
+    land between the check and the commit, letting a stale failure overwrite a
+    new owner's in-flight work. ``SELECT ... FOR UPDATE`` closes that window:
+    the check and the write are atomic together."""
     async with get_session_factory()() as failure_session:
         # A new owner (or recovery) owns the job now — leave the file to them.
-        if not await owns_job(failure_session, job_id, owner_token):
+        if await revalidate_ownership(failure_session, job_id, owner_token) is None:
             return
         failed = await failure_session.get(UserFile, file_id)
         if failed is None:

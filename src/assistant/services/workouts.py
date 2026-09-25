@@ -182,12 +182,23 @@ async def schedule_workout(
     The item's ``ends_at`` is an explicit ``ends_at`` when given, otherwise
     derived from ``starts_at`` + ``duration_minutes``. Both are normalized to
     UTC in the user's timezone before being handed to the calendar service.
+
+    The interval itself is validated here (V5.1) with a :class:`LocalizableError`
+    so every surface (bot, Mini App, tests) rejects a zero/negative duration
+    or an inverted start/end before anything is written: the calendar service
+    raises a bare ``ValueError`` for ``ends_at < starts_at`` with a raw
+    English message that is not a locale key.
     """
+    if duration_minutes is not None and duration_minutes <= 0:
+        raise LocalizableError("workouts.err_interval")
     tz = _user_tz(user)
+    starts_utc = _to_utc(starts_at, tz)
     if ends_at is not None:
         effective_end: datetime | None = _to_utc(ends_at, tz)
+        if effective_end < starts_utc:
+            raise LocalizableError("workouts.err_interval")
     elif duration_minutes is not None:
-        effective_end = _to_utc(starts_at, tz) + timedelta(minutes=duration_minutes)
+        effective_end = starts_utc + timedelta(minutes=duration_minutes)
     else:
         effective_end = None
     item = await calendar_service.create_item(

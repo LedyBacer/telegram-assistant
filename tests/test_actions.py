@@ -498,6 +498,56 @@ async def test_list_actions_status_filter_is_ttl_aware(session: AsyncSession) ->
     assert {a.id for a in all_rows} == {fresh.id, overdue.id}
 
 
+async def test_list_actions_actionable_and_history_filters(session: AsyncSession) -> None:
+    """V5.1: the aggregate filters ``actionable`` (live proposed/confirmed,
+    TTL-aware) and ``history`` (terminal, plus overdue proposed/confirmed
+    reported as expired) partition the inbox server-side, so the Mini App
+    never filters client-side."""
+    user = await _user(session)
+    item = await cal.create_item(session, user, title="P")
+    payload = {"item_id": item.id, "title": "P"}
+    proposed = await act.propose_action(
+        session, user, kind="update_item", payload=payload,
+        summary="proposed", expires_in=timedelta(hours=2),
+    )
+    confirmed = await act.propose_action(
+        session, user, kind="update_item", payload=payload,
+        summary="confirmed", expires_in=timedelta(hours=2),
+    )
+    await act.confirm_action(session, user, confirmed.id)
+    rejected = await act.propose_action(
+        session, user, kind="update_item", payload=payload,
+        summary="rejected", expires_in=timedelta(hours=2),
+    )
+    await act.reject_action(session, user, rejected.id)
+    # One overdue row (no durable transition yet) and one durably expired.
+    overdue = await act.propose_action(
+        session, user, kind="update_item", payload=payload,
+        summary="overdue", expires_in=timedelta(seconds=-1),
+    )
+    durable_expired = await act.propose_action(
+        session, user, kind="update_item", payload=payload,
+        summary="expired", expires_in=timedelta(seconds=-1),
+    )
+    await act.expire_actions(session)
+    await session.commit()
+
+    actionable = await act.list_actions(session, user, status="actionable")
+    assert {a.id for a in actionable} == {proposed.id, confirmed.id}
+
+    history = await act.list_actions(session, user, status="history")
+    assert {a.id for a in history} == {
+        rejected.id, overdue.id, durable_expired.id,
+    }
+
+    # The two views are disjoint and exhaustive over the user's actions.
+    assert not ({a.id for a in actionable} & {a.id for a in history})
+    all_rows = await act.list_actions(session, user)
+    assert {a.id for a in all_rows} == (
+        {a.id for a in actionable} | {a.id for a in history}
+    )
+
+
 # ---------------------------------------------------------------------------
 # Atomic confirm + execute (row-locked, double-click safe)
 # ---------------------------------------------------------------------------
