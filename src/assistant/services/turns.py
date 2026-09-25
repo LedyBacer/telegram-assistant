@@ -625,8 +625,10 @@ async def run_turn(
 
     # The final assistant message is the mode's own text (V4 §12-13): an
     # answer's reply, a proposal's reply (proposals-only turns persist no
-    # message), or a clarification's question. A valid turn always names a
-    # mode with its field populated, so there is no blank-turn path.
+    # message), or a clarification's question. A facts-only answer has no
+    # prose (the model may answer "remember that ..." with facts and no
+    # reply — V5.3 live-LLM eval); the blank path below persists no
+    # assistant message, and the bot renders the fact-confirm card.
     if state in (TurnState.DIRECT_REPLY, TurnState.PROPOSAL):
         final = reply
     else:  # TOOL_FOLD (fold already set reply) and CLARIFICATION

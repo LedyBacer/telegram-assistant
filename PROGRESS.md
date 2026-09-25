@@ -5,6 +5,63 @@ the V5.1 baseline. V5.1 remote CI is GREEN (`0c8dd19`, run 36110550934, 4/4
 jobs). V5.2 remote CI is GREEN (`c07fe4c`, run 36129982668, 4/4 jobs). Below is the compact V5.2 handoff, then the V5.1/V5/V4/
 V3/V2 detail. Working tree is committed at each meaningful boundary.
 
+## V5.3 — Real-LLM behavioral evaluation + autonomous hardening (in progress)
+
+Reusable live-LLM harness that drives the **real** production AI stack
+(`build_ai_provider()`, `turns_service.run_turn()`, real PendingAction
+services, `TURN_SYSTEM`/`DRAFT_SYSTEM`) against the configured chat model —
+**no Telegram API** (fake token for config only), isolated DB
+`assistant_llm_eval`, synthetic users `990001+`, file storage under
+`/tmp/telegram-assistant-llm-eval/files`. Model config comes from the
+gitignored root `.env` (key redacted everywhere; never committed).
+
+- `scripts/llm_eval.py` + `eval/{cases,fixtures,assertions}.py`. Modes:
+  `--smoke --full --category --cases --repetitions --reps-high --seed --ab
+  --draft --json-out`. Incremental JSONL under `test-artifacts/llm-eval/`
+  (gitignored). **Not** part of offline CI (needs the live model).
+- Corpus: 64 cases / 23 categories / 82% RU / 21 high-risk / 6 holdout;
+  multi-turn, confirm/execute via real PendingAction services.
+- **Schema hardening** (`src/assistant/ai/schemas.py`):
+  `_infer_missing_mode` `@model_validator(mode="before")` on
+  `AssistantTurn` + `AssistantFold` accepts the 9B model's structured-output
+  variants: (a) missing redundant `mode` key (inferred from the populated
+  field — the systematic calcreate/ambig `AIOutputValidationError` source),
+  (b) top-level `replaces_fact_id` moved into the first fact entry,
+  (c) zero-action `"proposal"` with facts re-labelled `"answer"`,
+  (d) a BARE read-tool request flattened to top level wrapped into
+  `need_data`, (e) an echoed old-fact `"id"` inside a fact entry mapped onto
+  that entry's `replaces_fact_id`. Plus schema-time
+  `_validate_action_payloads` (feeds the provider's one-retry repair loop
+  the exact payload error instead of a silent Phase-C skip), and the
+  facts-only `answer` relaxation (non-blank reply **or** ≥1 fact).
+  Regression tests in `tests/test_turns.py` + `tests/test_ai.py`.
+- **Prompt complement** (`src/assistant/ai/prompts.py`): `TURN_SYSTEM`
+  notes that `replaces_fact_id` is INSIDE the fact object, and that facts
+  are never actions (no invented `update_fact` kind).
+- **Hermetic offline suite** vs the ambient root `.env` + exported shell
+  `CHAT_*`/`EMBEDDING_*`: `tests/test_ai.py` (setitem `env_file=None` +
+  delenv provider vars), `tests/test_thinking_ux.py` (pin thinking fields in
+  `_settings()`), `tests/test_bot_foundation.py` (monkeypatch
+  `turns.get_ai_provider` → `AIProviderError`). Full offline suite:
+  **573 passed**.
+- **P0 refinements** (`eval/assertions.py`): `p0_clarification_on_ambiguity`
+  now measures the safety intent (no mutation + seeks clarification) rather
+  than the mode label — a no-mutation `tool_fold` that reads state then asks
+  for the missing detail is a safe clarification (thinking-ON does this); a
+  guess-execute or confident non-question still fails. `p0_no_fabricated_ids`
+  scores only non-existent ids as P0; cross-user ids (unknowable by the
+  model, blocked at the service layer) are triage-printed.
+- **Oracle/harness fixes** (`eval/cases.py`, `scripts/llm_eval.py`):
+  per-question RAG ground-truth figures, awaited-list TypeError, seeded-row
+  IntegrityError; stale-code artifacts (in-flight process keeps launch-time
+  code) are now ruled out by checking process start vs source mtime before
+  judging any P0.
+- Gates: `ruff check .` clean, `uv lock --check` OK, 573 pytest passed.
+  Live `--full --ab --draft` + post-fix re-runs →
+  `docs/LLM_EVAL_REPORT.md` (merged results, A/B, 10 fixes, residual
+  limitations: ~0.6% stochastic malformed structured output that the bot
+  degrades safely on via the `AIProviderError` fallback).
+
 ## V5.2 — Final corrective patch before real deployment (baseline V5.1 `0c8dd19`)
 
 Goal items numbered per the goal (`§`). V5.1 HEAD `0c8dd19` remote CI: GREEN

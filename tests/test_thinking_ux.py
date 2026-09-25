@@ -55,6 +55,12 @@ def _settings(**overrides: Any) -> Settings:
         "chat_api_key": "chat-key",
         "embedding_base_url": "https://embed.example/v1",
         "embedding_api_key": "embed-key",
+        # Hermetic: pin the thinking profile so a live-eval .env (which sets
+        # CHAT_THINKING_ENABLED / CHAT_THINKING_BUDGET_TOKENS) cannot leak in.
+        # Init kwargs take precedence over the .env file in pydantic-settings.
+        "chat_thinking_enabled": False,
+        "chat_thinking_budget_tokens": None,
+        "chat_reasoning_effort": None,
     }
     base.update(overrides)
     return Settings(**base)

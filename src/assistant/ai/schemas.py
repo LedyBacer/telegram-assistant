@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, conint, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    conint,
+    model_validator,
+)
 
 from assistant.services.reminders import (
     MAX_OFFSET_MINUTES,
@@ -94,6 +101,38 @@ class ActionProposal(BaseModel):
     summary: str = Field(min_length=1, max_length=200)
 
 
+def _validate_action_payloads(actions: list[ActionProposal]) -> None:
+    """Validate action payloads at schema time, not at Phase-C persist time.
+
+    The engine re-validates each payload against the registered kind's
+    schema when storing a ``PendingAction`` and SILENTLY SKIPS a mismatch —
+    leaving a turn that proposes in its reply while nothing is storable.
+    Failing here instead feeds the provider's repair loop one corrective
+    retry with the exact validation error, and rejects invented action
+    kinds (e.g. "update_fact") the same way. The engine keeps its own
+    re-validation as the authority; this makes first-attempt payloads
+    measurably better (V5.3 live-LLM eval).
+    """
+    # Lazy import: assistant.actions self-registers the built-in kinds and
+    # importing it at module load would cycle through assistant.services.
+    from assistant.actions import get_action_kind, registered_kinds  # noqa: PLC0415
+
+    for action in actions:
+        spec = get_action_kind(action.kind)
+        if spec is None:
+            raise ValueError(
+                f"unknown action kind {action.kind!r}; "
+                f"allowed kinds: {registered_kinds()}"
+            )
+        try:
+            spec.payload_schema.model_validate(action.payload)
+        except ValidationError as exc:
+            raise ValueError(
+                f"payload for action kind {action.kind!r} is invalid: "
+                f"{exc.errors()[:3]}"
+            ) from exc
+
+
 class FactProposal(BaseModel):
     """A candidate long-term memory fact the user must confirm (SPEC §14).
 
@@ -110,6 +149,91 @@ class FactProposal(BaseModel):
     # (SPEC §16): the model marks this fact as an update/replacement. The
     # engine revalidates ownership and state before linking it.
     replaces_fact_id: int | None = None
+
+
+def _infer_missing_mode(data: Any) -> Any:
+    """Fill the ``mode`` discriminator from the single populated field.
+
+    The live model frequently omits the redundant ``mode`` key when the
+    populated field already determines the mode — e.g. it emits
+    ``{"clarification": "..."}`` for a clarifying question. Requiring the
+    discriminator in that case rejects a perfectly valid turn, so infer it
+    when (and only when) exactly one mode's field is populated and no
+    explicit ``mode`` was given. A genuinely empty payload still fails the
+    required-field check downstream.
+
+    Also normalizes four shapes the 9B model emits repeatedly (V5.3
+    live-LLM eval), each of which previously died after both repair
+    attempts:
+
+    * a stray TOP-LEVEL ``replaces_fact_id`` (it belongs inside the fact
+      entry) is moved into the first fact entry;
+    * a ``"proposal"`` carrying facts but no actions is re-labelled
+      ``"answer"`` (a zero-action proposal is a facts answer; any
+      lifted-out top-level ``"summary"`` is dropped with it);
+    * a BARE read-tool request (``data_requests[0]`` flattened to the top
+      level, no envelope) is wrapped into ``need_data`` — a top-level
+      ``"tool"`` can never be a valid turn field, so the wrap is
+      unambiguous;
+    * an echoed ``"id"`` INSIDE a fact entry (the old fact's id) is mapped
+      onto that entry's ``"replaces_fact_id"`` — a new fact has no id of
+      its own, so an id there can only refer to the fact being replaced.
+    """
+    if not isinstance(data, dict):
+        return data
+    # The model sometimes returns a BARE read-tool request
+    # ({"tool": ..., "query": ..., "limit": ...}) — data_requests[0]
+    # flattened to the top level, no envelope. A top-level "tool" can never
+    # be a valid turn field, so wrap it unambiguously (V5.3 live-LLM eval).
+    if "tool" in data and not data.get("mode"):
+        data = {"mode": "need_data", "data_requests": [data]}
+    if not data.get("mode"):
+        if data.get("clarification"):
+            data["mode"] = "clarification"
+        elif data.get("actions"):
+            data["mode"] = "proposal"
+        elif data.get("data_requests"):
+            data["mode"] = "need_data"
+        elif data.get("reply"):
+            data["mode"] = "answer"
+    # The model sometimes echoes the old fact's "id" INSIDE the new fact
+    # entry (V5.3 live-LLM eval): a new fact has no id, so it can only be
+    # the existing fact this one replaces — map it onto
+    # "replaces_fact_id" (or drop it when that is already present).
+    if isinstance(data, dict) and data.get("facts"):
+        for fact in data["facts"]:
+            if isinstance(fact, dict) and "id" in fact:
+                if fact.get("replaces_fact_id") is None:
+                    fact["replaces_fact_id"] = fact.pop("id")
+                else:
+                    fact.pop("id")
+    # The 9B model sometimes emits "replaces_fact_id" as a TOP-LEVEL key next
+    # to "facts" instead of inside a fact entry (V5.3 live-LLM eval), which
+    # fails extra="forbid" and is repeated on the repair attempt, killing the
+    # turn. Normalize: move it into the first fact entry that lacks one.
+    if (
+        isinstance(data, dict)
+        and data.get("replaces_fact_id") is not None
+        and data.get("facts")
+    ):
+        for fact in data["facts"]:
+            if isinstance(fact, dict) and fact.get("replaces_fact_id") is None:
+                fact["replaces_fact_id"] = data["replaces_fact_id"]
+                break
+        data.pop("replaces_fact_id")
+    # The model sometimes labels a FACT proposal as "proposal" with no
+    # actions (and occasionally a lifted-out top-level "summary"): a
+    # proposal with zero actions is an answer carrying facts, and facts in
+    # answer mode are valid — re-label it (V5.3 live-LLM eval).
+    if (
+        isinstance(data, dict)
+        and data.get("mode") == "proposal"
+        and not data.get("actions")
+        and data.get("facts")
+    ):
+        data["mode"] = "answer"
+        data.pop("summary", None)
+    return data
 
 
 class AssistantTurn(BaseModel):
@@ -145,13 +269,27 @@ class AssistantTurn(BaseModel):
     facts: list[FactProposal] = Field(default_factory=list, max_length=3)
     clarification: str | None = Field(default=None, max_length=1000)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_mode(cls, data: Any) -> Any:
+        return _infer_missing_mode(data)
+
     @model_validator(mode="after")
     def _mode_is_consistent(self) -> AssistantTurn:
+        _validate_action_payloads(self.actions)
         reply = bool(self.reply and self.reply.strip())
         clar = bool(self.clarification and self.clarification.strip())
         if self.mode == "answer":
-            if not reply:
-                raise ValueError("answer mode requires a non-blank reply")
+            # A facts-only answer (no prose) is valid: the bot renders each
+            # proposed fact with its confirm keyboard even when the reply
+            # text is empty (V5.3 live-LLM eval — the 9B model emits exactly
+            # this shape for "remember that ..." turns, and the engine +
+            # bot handle the blank reply).
+            if not (reply or self.facts):
+                raise ValueError(
+                    "answer mode requires a non-blank reply "
+                    "or at least one fact"
+                )
             if self.data_requests or self.actions or clar:
                 raise ValueError(
                     "answer mode must not carry data_requests, actions, "
@@ -203,13 +341,26 @@ class AssistantFold(BaseModel):
     facts: list[FactProposal] = Field(default_factory=list, max_length=3)
     clarification: str | None = Field(default=None, max_length=1000)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_mode(cls, data: Any) -> Any:
+        return _infer_missing_mode(data)
+
     @model_validator(mode="after")
     def _mode_is_consistent(self) -> AssistantFold:
+        _validate_action_payloads(self.actions)
         reply = bool(self.reply and self.reply.strip())
         clar = bool(self.clarification and self.clarification.strip())
         if self.mode == "answer":
-            if not reply:
-                raise ValueError("answer mode requires a non-blank reply")
+            # Facts-only fold answers are valid (the 9B model emits exactly
+            # this shape for fact-replacement turns; the engine persists no
+            # assistant message and the bot renders the fact-confirm card —
+            # V5.3 live-LLM eval).
+            if not (reply or self.facts):
+                raise ValueError(
+                    "answer mode requires a non-blank reply "
+                    "or at least one fact"
+                )
             if self.actions or clar:
                 raise ValueError(
                     "answer mode must not carry actions or clarification"

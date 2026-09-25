@@ -38,7 +38,7 @@ from assistant.ai import (
     build_ai_provider,
     extract_json_object,
 )
-from assistant.ai.schemas import ActionProposal, AssistantTurn
+from assistant.ai.schemas import ActionProposal, AssistantFold, AssistantTurn
 from assistant.bot import handlers
 from assistant.bot.handlers import on_draft, on_text
 from assistant.bot.states import TaskDraftStates
@@ -360,6 +360,36 @@ def test_turn_schema_rejects_clarification_with_actions() -> None:
     assert len(turn.actions) == 1
 
 
+def test_turn_schema_infers_mode_from_populated_field() -> None:
+    """The live model omits the redundant ``mode`` key when the populated
+    field already determines the mode (e.g. ``{"clarification": ...}``);
+    validation must infer it instead of rejecting a valid turn as
+    ``AIOutputValidationError``."""
+    clar = AssistantTurn.model_validate(
+        {"clarification": "Сегодня или ближайшая пятница?"}
+    )
+    assert clar.mode == "clarification"
+    assert clar.clarification == "Сегодня или ближайшая пятница?"
+
+    answer = AssistantTurn.model_validate({"reply": "Всё, записал."})
+    assert answer.mode == "answer"
+    assert answer.reply == "Всё, записал."
+
+    proposal = AssistantTurn.model_validate(
+        {
+            "actions": [
+                {"kind": "complete_item", "payload": {"item_id": 7}, "summary": "Done"}
+            ]
+        }
+    )
+    assert proposal.mode == "proposal"
+    assert len(proposal.actions) == 1
+
+    fold = AssistantFold.model_validate({"clarification": "Which one?"})
+    assert fold.mode == "clarification"
+    assert fold.clarification == "Which one?"
+
+
 def test_fixture_unknown_tool_name_fails_validation() -> None:
     """A tool name outside the Literal fails schema validation; the repair
     prompt offers no new vocabulary, so an un-repaired model fails safely."""
@@ -466,7 +496,18 @@ def test_build_ai_provider_uses_independent_clients() -> None:
     assert provider._embedding_provider._dimensions == 384
 
 
-def test_settings_fall_back_to_legacy_openai_variables() -> None:
+def test_settings_fall_back_to_legacy_openai_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Hermetic: ignore the .env file and any ambient provider vars so only the
+    # explicit kwargs below apply.
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    for var in (
+        "OPENAI_API_KEY", "OPENAI_BASE_URL",
+        "CHAT_API_KEY", "CHAT_BASE_URL",
+        "EMBEDDING_API_KEY", "EMBEDDING_BASE_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
     settings = Settings(
         database_url="postgresql+asyncpg://u:p@localhost/db",
         public_base_url="https://app.test",
@@ -486,7 +527,18 @@ def test_settings_fall_back_to_legacy_openai_variables() -> None:
     assert provider._embedding_provider._client.api_key == "legacy-key"
 
 
-def test_provider_specific_variables_take_precedence_over_legacy() -> None:
+def test_provider_specific_variables_take_precedence_over_legacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Hermetic: ignore the .env file and any ambient provider vars so only the
+    # explicit kwargs below apply.
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    for var in (
+        "OPENAI_API_KEY", "OPENAI_BASE_URL",
+        "CHAT_API_KEY", "CHAT_BASE_URL",
+        "EMBEDDING_API_KEY", "EMBEDDING_BASE_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
     settings = Settings(
         database_url="postgresql+asyncpg://u:p@localhost/db",
         public_base_url="https://app.test",

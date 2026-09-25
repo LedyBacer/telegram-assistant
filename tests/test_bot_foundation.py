@@ -273,7 +273,9 @@ async def test_upsert_user_creates_then_updates(session) -> None:
 async def test_on_text_stores_chat_message(
     session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from assistant.ai import AIProviderError
     from assistant.bot.handlers import on_text
+    from assistant.services import turns as _turns
 
     # This test asserts a single outgoing message; the thinking status UX
     # is covered in tests/test_thinking_ux.py.
@@ -284,6 +286,14 @@ async def test_on_text_stores_chat_message(
             chat_thinking_enabled=False, public_base_url="https://app.test"
         ),
     )
+    # Hermetic: force the provider-failure path so the test never depends on
+    # ambient credentials. With a live-eval .env present, an unpatched
+    # get_ai_provider() would let run_turn make a real model call and persist
+    # an assistant-reply row too, breaking the single-row assertion below.
+    def _no_provider() -> None:
+        raise AIProviderError("provider disabled in this test")
+
+    monkeypatch.setattr(_turns, "get_ai_provider", _no_provider)
     await _truncate_users(session)
     try:
         message = _fake_message("remember: finish the report")

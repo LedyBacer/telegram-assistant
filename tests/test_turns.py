@@ -214,49 +214,38 @@ async def test_proposal_creates_pending_action_not_executed(
     assert [i.title for i in items] == ["Standup"]
 
 
-async def test_invalid_payload_is_skipped_not_stored(session: AsyncSession) -> None:
-    user = await _user(session)
-    turn = AssistantTurn(
-        mode="proposal",
-        reply="Sure.",
-        actions=[
-            ActionProposal(
-                kind="create_item",
-                payload={"title": ""},  # violates min_length
-                summary="Create task",
-            )
-        ],
-    )
-    provider = _FakeProvider(turn)
-
-    result = await turns_service.run_turn(
-        session, user, "add a task", provider=provider
-    )
-    await session.commit()
-
-    assert result.proposed_actions == []
-    assert len(result.skipped_actions) == 1
-    assert (await session.scalars(select(PendingAction))).all() == []
+async def test_invalid_payload_rejected_at_schema_time() -> None:
+    """A payload violating the registered kind's schema fails turn
+    validation (V5.3: schema-time, not a silent Phase-C skip) so the
+    provider's repair loop gets corrective feedback and nothing that is
+    unexecutable is ever proposed to the user."""
+    with pytest.raises(ValidationError, match="payload for action kind"):
+        AssistantTurn(
+            mode="proposal",
+            reply="Sure.",
+            actions=[
+                ActionProposal(
+                    kind="create_item",
+                    payload={"title": ""},  # violates min_length
+                    summary="Create task",
+                )
+            ],
+        )
 
 
-async def test_unknown_kind_is_skipped(session: AsyncSession) -> None:
-    user = await _user(session)
-    turn = AssistantTurn(
-        mode="proposal",
-        reply="Sure.",
-        actions=[
-            ActionProposal(
-                kind="launch_rocket", payload={}, summary="Do a thing"
-            )
-        ],
-    )
-    provider = _FakeProvider(turn)
-    result = await turns_service.run_turn(
-        session, user, "do a thing", provider=provider
-    )
-    await session.commit()
-    assert result.proposed_actions == []
-    assert len(result.skipped_actions) == 1
+async def test_unknown_kind_rejected_at_schema_time() -> None:
+    """Invented action kinds (e.g. 'launch_rocket') fail turn validation at
+    schema time; the engine's Phase-C skip remains only as defense in depth."""
+    with pytest.raises(ValidationError, match="unknown action kind"):
+        AssistantTurn(
+            mode="proposal",
+            reply="Sure.",
+            actions=[
+                ActionProposal(
+                    kind="launch_rocket", payload={}, summary="Do a thing"
+                )
+            ],
+        )
 
 
 async def test_workout_log_conversational_proposal(session: AsyncSession) -> None:
@@ -1102,14 +1091,90 @@ async def test_fact_superseded_allows_reproposal(session: AsyncSession) -> None:
     assert len(result.proposed_facts) == 1
 
 
-def test_facts_only_turn_is_rejected_by_schema() -> None:
-    """Facts must ride on an answer (reply) or a proposal (action): a
-    facts-only object with no reply and no action is invalid in every
-    mode, so it cannot reach the engine (V4 §12-13)."""
+def test_facts_only_answer_turn_is_valid() -> None:
+    """A facts-only answer (no prose reply) is a valid turn: the 9B model
+    emits exactly this shape for "remember that ..." turns and the bot
+    renders the fact-confirm card even with an empty reply (V5.3 live-LLM
+    eval). A proposal with neither actions nor facts is still invalid."""
+    turn = AssistantTurn(mode="answer", facts=[FactProposal(value="I like running")])
+    assert turn.reply is None and len(turn.facts) == 1
     with pytest.raises(ValidationError):
-        AssistantTurn(mode="answer", facts=[FactProposal(value="I like running")])
+        AssistantTurn(mode="proposal", reply="no actions, no facts")
+
+
+def test_facts_only_fold_is_valid_with_flat_replaces_fact_id() -> None:
+    """The exact payload shape the live model emitted for a fact
+    replacement — no reply, ``replaces_fact_id`` at the TOP level — must
+    validate: the before-validator moves the stray id into the fact entry
+    and answer mode accepts a facts-only fold (V5.3 live-LLM eval)."""
+    fold = AssistantFold.model_validate(
+        {
+            "mode": "answer",
+            "facts": [{"value": "I live in Moscow"}],
+            "replaces_fact_id": 3,
+        }
+    )
+    assert fold.facts[0].replaces_fact_id == 3
     with pytest.raises(ValidationError):
-        AssistantTurn(mode="proposal", facts=[FactProposal(value="I like running")])
+        AssistantFold(mode="answer")  # no reply and no facts
+
+
+def test_fact_entry_with_echoed_id_maps_to_replaces_fact_id() -> None:
+    """The live model echoes the OLD fact's id INSIDE the new fact entry
+    (V5.3 live-LLM eval). A new fact has no id of its own, so the before-
+    validator maps it onto that entry's ``replaces_fact_id`` (or drops it
+    when a replacement is already given)."""
+    fold = AssistantFold.model_validate(
+        {
+            "mode": "answer",
+            "reply": "Готово.",
+            "facts": [{"id": 1, "value": "Я живу в Москве"}],
+        }
+    )
+    assert fold.facts[0].replaces_fact_id == 1
+    dup = AssistantFold.model_validate(
+        {
+            "mode": "answer",
+            "reply": "Готово.",
+            "facts": [
+                {"id": 1, "value": "v", "replaces_fact_id": 2}
+            ],
+        }
+    )
+    assert dup.facts[0].replaces_fact_id == 2
+
+
+def test_bare_read_tool_request_is_wrapped_into_need_data() -> None:
+    """The live model sometimes flattens ``data_requests[0]`` to the top
+    level and returns a BARE read-tool request with no ``mode`` envelope
+    (V5.3 live-LLM eval). A top-level ``tool`` can never be a valid turn
+    field, so the before-validator wraps it into ``need_data``."""
+    turn = AssistantTurn.model_validate(
+        {"tool": "facts", "query": "адрес живу живу", "limit": 5}
+    )
+    assert turn.mode == "need_data"
+    assert len(turn.data_requests) == 1
+    assert turn.data_requests[0].tool == "facts"
+    assert turn.data_requests[0].limit == 5
+
+
+def test_zero_action_fact_proposal_is_relabelled_answer() -> None:
+    """The live model labels a fact proposal as ``"proposal"`` with no
+    actions (sometimes plus a lifted-out top-level ``summary``); the
+    before-validator re-labels it to a valid facts answer (V5.3 live-LLM
+    eval). A proposal with a reply but NEITHER actions NOR facts is still
+    invalid — there is nothing to re-label it into."""
+    turn = AssistantTurn.model_validate(
+        {
+            "mode": "proposal",
+            "reply": "Готов обновить факт. Подтвердить?",
+            "facts": [{"value": "I live in Moscow", "replaces_fact_id": 1}],
+            "summary": "Заменить факт адреса",
+        }
+    )
+    assert turn.mode == "answer" and turn.actions == []
+    with pytest.raises(ValidationError):
+        AssistantTurn(mode="proposal", reply="Just a reply, nothing else")
 
 
 # ---------------------------------------------------------------------------
@@ -1295,32 +1360,23 @@ async def test_no_transaction_spans_provider_calls(session: AsyncSession) -> Non
 # ---------------------------------------------------------------------------
 
 
-async def test_fixture_invalid_enum_payload_skipped_not_stored(
-    session: AsyncSession,
-) -> None:
+async def test_fixture_invalid_enum_payload_rejected_at_schema_time() -> None:
     """A 9B model may emit an enum value outside the schema (e.g.
-    priority "urgent"); the engine must skip the proposal, store nothing,
-    and still deliver the reply."""
-    user = await _user(session)
-    turn = AssistantTurn(
-        mode="proposal",
-        reply="Sure, I'll set it as urgent.",
-        actions=[
-            ActionProposal(
-                kind="create_item",
-                payload={"title": "Gym", "priority": "urgent"},
-                summary="Create task: Gym (urgent)",
-            )
-        ],
-    )
-    result = await turns_service.run_turn(
-        session, user, "gym, urgent", provider=_FakeProvider(turn)
-    )
-    await session.commit()
-    assert result.reply == "Sure, I'll set it as urgent."
-    assert result.proposed_actions == []
-    assert len(result.skipped_actions) == 1
-    assert (await session.scalars(select(PendingAction))).all() == []
+    priority "urgent"); turn validation rejects it at schema time (V5.3)
+    so the provider's repair loop can correct it — nothing unexecutable
+    is ever proposed to the user."""
+    with pytest.raises(ValidationError, match="payload for action kind"):
+        AssistantTurn(
+            mode="proposal",
+            reply="Sure, I'll set it as urgent.",
+            actions=[
+                ActionProposal(
+                    kind="create_item",
+                    payload={"title": "Gym", "priority": "urgent"},
+                    summary="Create task: Gym (urgent)",
+                )
+            ],
+        )
 
 
 async def test_fixture_ambiguous_reference_yields_clarification_no_mutation(
