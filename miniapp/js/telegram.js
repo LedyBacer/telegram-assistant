@@ -88,10 +88,11 @@ export function syncChrome() {
  *    — the insets the content region must respect, which can differ from
  *    the webview-wide `safeAreaInset`,
  *  - a stable viewport height (--tg-viewport-stable-height) from
- *    `viewportStableHeight` (the dedicated SDK property; older clients
- *    fall back to `viewportInfo.contentHeight`) that does not jump when
- *    the on-screen keyboard appears.
- * In a plain browser the CSS env()/100dvh fallbacks apply.
+ *    `viewportStableHeight` (the dedicated SDK property), falling back to
+ *    `viewportHeight` on clients that predate it; when neither is usable
+ *    the CSS `100dvh` fallback applies. `viewportInfo.contentHeight` is
+ *    deliberately NOT used (V5.2 §5): it includes the area under the
+ *    bottom nav / on-screen keyboard and makes content end under the nav.
  */
 export function applyViewport() {
   if (!tg) return;
@@ -122,7 +123,7 @@ export function applyViewport() {
   }
   let h = Number(tg.viewportStableHeight);
   if (!(Number.isFinite(h) && h > 0)) {
-    h = tg.viewportInfo ? Number(tg.viewportInfo.contentHeight) : NaN;
+    h = Number(tg.viewportHeight);
   }
   if (Number.isFinite(h) && h > 0) rootStyle.setProperty("--tg-viewport-stable-height", `${h}px`);
 }

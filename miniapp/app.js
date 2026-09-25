@@ -584,6 +584,16 @@ const ACTION_STATUS_TONES = {
   rejected: "muted",
   expired: "muted",
 };
+// V5.2 §10: the ONLY expiry reasons rendered on an expired action card —
+// bounded server codes → localized strings. Unknown/legacy codes fall back
+// to the generic stale message; raw server text is never displayed.
+const ACTION_REASON_KEYS = {
+  item_changed: "miniapp.action_reason_item_changed",
+  item_missing: "miniapp.action_reason_item_missing",
+  reminder_not_pending: "miniapp.action_reason_reminder_not_pending",
+  action_expired: "miniapp.action_reason_action_expired",
+  invalid_payload: "miniapp.action_reason_invalid_payload",
+};
 
 async function viewActions(view, gen, signal) {
   // §21: Pending (default) / History filter. V5.1 P2 #16/#18: both filters
@@ -625,7 +635,9 @@ function actionCard(a) {
     badge(S(ACTION_STATUS_KEYS[a.status] || a.status), ACTION_STATUS_TONES[a.status] || "muted"));
 
   const target = actionTarget(a);
-  const reason = a.status === "expired" && a.last_error ? a.last_error : null;
+  const reason = a.status === "expired"
+    ? S(ACTION_REASON_KEYS[a.reason_code] || "miniapp.action_stale")
+    : null;
 
   const actions = [];
   if (a.status === "proposed") {
@@ -637,13 +649,12 @@ function actionCard(a) {
             toast(S("miniapp.saved"));
             render();
           } catch (err) {
-            // V5.1 P2 #19: the server returns the stable code "action_stale"
-            // (409) when a proposed action no longer applies — map it to the
-            // localized message instead of surfacing a raw backend string.
-            if (err && err.status === 409 && err.detail === "action_stale") {
+            // V5.2 §10: expected failures (409/400, including the server's
+            // stable "action_stale" code) map to the localized stale message
+            // — the server detail is NEVER rendered; anything else is an
+            // infrastructure failure with the generic message.
+            if (err && (err.status === 409 || err.status === 400)) {
               toast(S("miniapp.action_stale"), "error");
-            } else if (err && (err.status === 409 || err.status === 400)) {
-              toast(S("miniapp.action_stale_detail", { reason: err.detail || err.message }), "error");
             } else {
               toast(S("miniapp.error_generic"), "error");
             }
@@ -1898,11 +1909,11 @@ async function buildProactiveCard(signal) {
     switchRow(S("miniapp.proactive_overdue_nudge"), ps.overdue_nudge_enabled, (v, boxEl, prev) => patchSwitch(boxEl, prev, { overdue_nudge_enabled: v })),
     settingsRow(S("miniapp.proactive_quiet_from"), ps.quiet_hours_start.slice(0, 5), (rowEl) => withButtonGuard(rowEl, async () => {
       const t = await pickTime(ps.quiet_hours_start.slice(0, 5));
-      if (t) patchRow({ quiet_hours_start: `${t}:00` });
+      if (t) await patchRow({ quiet_hours_start: `${t}:00` });
     })),
     settingsRow(S("miniapp.proactive_quiet_until"), ps.quiet_hours_end.slice(0, 5), (rowEl) => withButtonGuard(rowEl, async () => {
       const t = await pickTime(ps.quiet_hours_end.slice(0, 5));
-      if (t) patchRow({ quiet_hours_end: `${t}:00` });
+      if (t) await patchRow({ quiet_hours_end: `${t}:00` });
     })),
     settingsRow(S("miniapp.proactive_max_per_day"), String(ps.max_nudges_per_day), (rowEl) => withButtonGuard(rowEl, async () => {
       const chosen = await openSheet({
@@ -1910,7 +1921,7 @@ async function buildProactiveCard(signal) {
         value: String(ps.max_nudges_per_day),
         options: [...Array(20).keys()].map((i) => ({ value: String(i + 1), label: String(i + 1) })),
       });
-      if (chosen) patchRow({ max_nudges_per_day: Number(chosen) });
+      if (chosen) await patchRow({ max_nudges_per_day: Number(chosen) });
     })),
     settingsRow(S("miniapp.proactive_min_interval"), S("miniapp.minutes_value", { minutes: ps.min_interval_minutes }), (rowEl) => withButtonGuard(rowEl, async () => {
       const chosen = await openSheet({
@@ -1921,7 +1932,7 @@ async function buildProactiveCard(signal) {
           label: n === 0 ? "0" : S("miniapp.minutes_value", { minutes: n }),
         })),
       });
-      if (chosen) patchRow({ min_interval_minutes: Number(chosen) });
+      if (chosen) await patchRow({ min_interval_minutes: Number(chosen) });
     }))
   );
 }

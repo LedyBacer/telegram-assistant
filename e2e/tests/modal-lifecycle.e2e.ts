@@ -144,3 +144,102 @@ test("modal lifecycle: scroll lock, focus trap, escape, focus return, no double 
 
   guard.assertClean();
 });
+
+/**
+ * V5.2 §14: scroll lock on the REAL scroll container (#view). With enough
+ * content to scroll: a pre-open scrollTop is preserved, while the sheet is
+ * open neither programmatic nor wheel scrolling moves the content, and on
+ * close the scrollability is fully restored at the same position.
+ */
+test("sheet scroll-locks the #view container and restores scrollTop on close", async ({
+  page,
+}) => {
+  const guard = await openApp(page, base);
+  const view = page.locator("#view");
+
+  // Create enough items for the Today list to overflow the viewport.
+  const created: number[] = [];
+  try {
+    for (let i = 0; i < 15; i++) {
+      const res = await page.evaluate(async (n) => {
+        const r = await fetch("/api/v1/items", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Telegram-Init-Data": "e2e-init-data",
+          },
+          // Anchored to today (starts_at) so the items land in the Today
+          // day list — items without a date never render there.
+          body: JSON.stringify({
+            title: `Scroll lock item ${n}`,
+            starts_at: new Date().toISOString(),
+          }),
+        });
+        if (!r.ok) throw new Error(`create ${n} → ${r.status}`);
+        return (await r.json()).id;
+      }, i);
+      created.push(res);
+    }
+    // Re-render Today (items were created outside the app).
+    await page.locator('.nav-btn[data-tab="actions"]').click();
+    await page.locator('.nav-btn[data-tab="today"]').click();
+    await view.locator(".item-title", { hasText: "Scroll lock item 14" }).waitFor();
+
+    // The view is genuinely scrollable before anything opens.
+    const pre = await view.evaluate((el) => ({
+      scrollable: el.scrollHeight > el.clientHeight,
+      overflowY: getComputedStyle(el).overflowY,
+    }));
+    expect(pre.scrollable).toBe(true);
+    expect(pre.overflowY).toBe("auto");
+
+    // Scroll partway down; remember the position.
+    await view.evaluate((el) => {
+      el.scrollTop = 300;
+    });
+    const scrolled = await view.evaluate((el) => el.scrollTop);
+    expect(scrolled).toBeGreaterThan(0);
+
+    // Open the More sheet over Today.
+    await page.locator('.nav-btn[data-tab="more"]').click();
+    await page.locator("#sheet-root .sheet").waitFor();
+
+    // While open: #view is overflow-locked; user (wheel) scrolling is
+    // prevented, so the position is unchanged. (A programmatic scrollTop
+    // write is allowed even with overflow:hidden and is not the behavior
+    // under test.)
+    const locked = await view.evaluate((el) => {
+      el.dispatchEvent(new WheelEvent("wheel", { deltaY: 500, bubbles: true }));
+      return {
+        overflowY: getComputedStyle(el).overflowY,
+        scrollTop: el.scrollTop,
+      };
+    });
+    expect(locked.overflowY).toBe("hidden");
+    expect(locked.scrollTop).toBe(scrolled);
+
+    // Close the sheet.
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#sheet-root .sheet")).toHaveCount(0);
+
+    // Restored: scrollable again, at the same position.
+    const after = await view.evaluate((el) => ({
+      overflowY: getComputedStyle(el).overflowY,
+      scrollTop: el.scrollTop,
+    }));
+    expect(after.overflowY).toBe("auto");
+    expect(after.scrollTop).toBe(scrolled);
+  } finally {
+    for (const id of created) {
+      await page
+        .evaluate(async (itemId) => {
+          await fetch(`/api/v1/items/${itemId}`, {
+            method: "DELETE",
+            headers: { "X-Telegram-Init-Data": "e2e-init-data" },
+          });
+        }, id)
+        .catch(() => undefined);
+    }
+    guard.assertClean();
+  }
+});

@@ -28,6 +28,31 @@ test.afterEach(async ({ page }) => {
     data: { language: "ru" },
   });
   expect(restore.status()).toBe(200);
+
+  // Shared-DB isolation contract: delete every row this spec created so
+  // later specs see the same state global-setup left (miniapp.e2e asserts
+  // "fresh DB -> empty today", and Today summary counts are global).
+  const del = (res: { status(): number }) => expect(res.status()).toBe(204);
+  const items = (await (
+    await page.request.get(
+      `${base}/api/v1/items?start=2000-01-01T00:00:00Z&end=2100-01-01T00:00:00Z`,
+    )
+  ).json()) as Array<{ id: number; title: string }>;
+  for (const it of items) {
+    if (it.title === taskTitle) del(await page.request.delete(`${base}/api/v1/items/${it.id}`));
+  }
+  const facts = (await (
+    await page.request.get(`${base}/api/v1/facts`)
+  ).json()) as Array<{ id: number; value: string }>;
+  for (const f of facts) {
+    if (f.value === factText) del(await page.request.delete(`${base}/api/v1/facts/${f.id}`));
+  }
+  const files = (await (
+    await page.request.get(`${base}/api/v1/files`)
+  ).json()) as Array<{ id: number; original_filename: string }>;
+  for (const fl of files) {
+    if (fl.original_filename === fileName) del(await page.request.delete(`${base}/api/v1/files/${fl.id}`));
+  }
 });
 
 test("Mini App end-to-end scenario", async ({ page }) => {

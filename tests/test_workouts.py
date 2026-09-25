@@ -188,3 +188,91 @@ async def test_schedule_workout_explicit_ends_at(session: AsyncSession) -> None:
     assert item.ends_at == ends
     # explicit ends_at wins over an absent duration
     assert item.extra.get("duration_minutes") is None
+
+
+# ---------------------------------------------------------------------------
+# V5.2 §3: authoritative interval validation in schedule_workout
+# ---------------------------------------------------------------------------
+
+_START = datetime(2026, 9, 23, 18, 0)  # naive, user tz is UTC
+
+
+async def test_schedule_workout_duration_and_matching_end_accepted(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    item = await wo.schedule_workout(
+        session,
+        user,
+        name="Run",
+        starts_at=_START,
+        duration_minutes=60,
+        ends_at=datetime(2026, 9, 23, 19, 0),
+    )
+    await session.commit()
+    assert item.starts_at == datetime(2026, 9, 23, 18, 0, tzinfo=UTC)
+    assert item.ends_at == datetime(2026, 9, 23, 19, 0, tzinfo=UTC)
+
+
+async def test_schedule_workout_duration_and_mismatching_end_rejected(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    with pytest.raises(LocalizableError) as exc:
+        await wo.schedule_workout(
+            session,
+            user,
+            name="Run",
+            starts_at=_START,
+            duration_minutes=60,
+            ends_at=datetime(2026, 9, 23, 19, 30),
+        )
+    assert exc.value.key == "workouts.err_interval"
+
+
+async def test_schedule_workout_zero_duration_rejected(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    with pytest.raises(LocalizableError) as exc:
+        await wo.schedule_workout(
+            session, user, name="Run", starts_at=_START, duration_minutes=0
+        )
+    assert exc.value.key == "workouts.err_interval"
+
+
+async def test_schedule_workout_inverted_end_rejected(session: AsyncSession) -> None:
+    user = await _user(session)
+    with pytest.raises(LocalizableError) as exc:
+        await wo.schedule_workout(
+            session,
+            user,
+            name="Run",
+            starts_at=_START,
+            ends_at=datetime(2026, 9, 23, 17, 59),
+        )
+    assert exc.value.key == "workouts.err_interval"
+
+
+async def test_schedule_workout_duration_only_derives_end(
+    session: AsyncSession,
+) -> None:
+    user = await _user(session)
+    item = await wo.schedule_workout(
+        session, user, name="Run", starts_at=_START, duration_minutes=45
+    )
+    await session.commit()
+    assert item.ends_at == datetime(2026, 9, 23, 18, 45, tzinfo=UTC)
+
+
+async def test_schedule_workout_end_only_keeps_end(session: AsyncSession) -> None:
+    user = await _user(session)
+    item = await wo.schedule_workout(
+        session,
+        user,
+        name="Run",
+        starts_at=_START,
+        ends_at=datetime(2026, 9, 23, 19, 15),
+    )
+    await session.commit()
+    assert item.ends_at == datetime(2026, 9, 23, 19, 15, tzinfo=UTC)

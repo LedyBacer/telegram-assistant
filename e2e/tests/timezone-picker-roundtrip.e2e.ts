@@ -54,50 +54,65 @@ test("datetime picker defaults to the user timezone and round-trips without drif
   await setUserTz(page, "Europe/Moscow");
 
   const guard = await openApp(page, base);
+  let createdId: number | undefined;
   await page.locator('.nav-btn[data-tab="new"]').click();
+  try {
+    // 1. An empty datetime picker defaults to the USER's current wall clock
+    //    (20:00 Moscow), not the browser's (19:00 Amsterdam).
+    await startPicker(page).click();
+    const input = pickerInput(page);
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue(MOSCOW_NOW);
+    expect(await input.inputValue()).not.toBe(AMSTERDAM_NOW);
 
-  // 1. An empty datetime picker defaults to the USER's current wall clock
-  //    (20:00 Moscow), not the browser's (19:00 Amsterdam).
-  await startPicker(page).click();
-  const input = pickerInput(page);
-  await expect(input).toBeVisible();
-  await expect(input).toHaveValue(MOSCOW_NOW);
-  expect(await input.inputValue()).not.toBe(AMSTERDAM_NOW);
+    // 2. Choose the value, close, and reopen: it must NOT drift to 19:00.
+    await closePicker(page);
+    const value = await startPicker(page).locator(".picker-value").innerText();
+    expect(value).toContain("20:00");
 
-  // 2. Choose the value, close, and reopen: it must NOT drift to 19:00.
-  await closePicker(page);
-  const value = await startPicker(page).locator(".picker-value").innerText();
-  expect(value).toContain("20:00");
+    await startPicker(page).click();
+    await expect(pickerInput(page)).toHaveValue(MOSCOW_NOW);
+    await closePicker(page);
 
-  await startPicker(page).click();
-  await expect(pickerInput(page)).toHaveValue(MOSCOW_NOW);
-  await closePicker(page);
+    // 3. Save: the backend stores the instant that IS 20:00 Moscow on the 24th
+    //    = 17:00Z, exactly the frozen instant.
+    await page.locator("#view input.field-input").first().fill(ITEM_TITLE);
+    const createRes = await page
+      .locator("#view button.btn-primary")
+      .click()
+      .then(() => page.waitForResponse((r) => r.url().includes("/api/v1/items")));
+    expect(createRes.status()).toBe(201);
+    const created = (await createRes.json()) as { id: number; starts_at: string };
+    createdId = created.id;
+    expect(new Date(created.starts_at).getTime()).toBe(Date.parse(FROZEN_NOW));
 
-  // 3. Save: the backend stores the instant that IS 20:00 Moscow on the 24th
-  //    = 17:00Z, exactly the frozen instant.
-  await page.locator("#view input.field-input").first().fill(ITEM_TITLE);
-  const createRes = await page
-    .locator("#view button.btn-primary")
-    .click()
-    .then(() => page.waitForResponse((r) => r.url().includes("/api/v1/items")));
-  expect(createRes.status()).toBe(201);
-  const created = await createRes.json();
-  expect(new Date(created.starts_at).getTime()).toBe(Date.parse(FROZEN_NOW));
+    // 4. Reload: the item renders at 20:00 (user TZ), not 19:00 (browser TZ).
+    await page.reload();
+    await page
+      .locator("#view .calendar, #view .state-error")
+      .first()
+      .waitFor({ state: "visible", timeout: 20_000 });
+    const item = page.locator("#view .item-title", { hasText: ITEM_TITLE });
+    await expect(item).toBeVisible();
+    const meta = (await item.locator("xpath=ancestor::div[contains(@class,'card')]").locator(".item-meta").first().innerText()).replace(/\s+/g, " ");
+    expect(meta).toContain("20:00");
+    expect(meta).not.toContain("19:00");
 
-  // 4. Reload: the item renders at 20:00 (user TZ), not 19:00 (browser TZ).
-  await page.reload();
-  await page
-    .locator("#view .calendar, #view .state-error")
-    .first()
-    .waitFor({ state: "visible", timeout: 20_000 });
-  const item = page.locator("#view .item-title", { hasText: ITEM_TITLE });
-  await expect(item).toBeVisible();
-  const meta = (await item.locator("xpath=ancestor::div[contains(@class,'card')]").locator(".item-meta").first().innerText()).replace(/\s+/g, " ");
-  expect(meta).toContain("20:00");
-  expect(meta).not.toContain("19:00");
-
-  guard.assertClean();
-  await setUserTz(page, "UTC");
+    guard.assertClean();
+  } finally {
+    // Shared-DB isolation contract: delete the created item and restore the
+    // shared deterministic test user's default timezone — even on failure.
+    if (createdId !== undefined) {
+      await page
+        .request.delete(`${base}/api/v1/items/${createdId}`)
+        .then((r) => expect(r.status()).toBe(204))
+        .catch(() => undefined);
+    }
+    await page
+      .request.patch(`${base}/api/v1/settings`, { data: { timezone: "UTC" } })
+      .then((r) => expect(r.status()).toBe(200))
+      .catch(() => undefined);
+  }
 });
 
 test("datetime picker uses the user timezone's date across midnight", async ({ page }) => {

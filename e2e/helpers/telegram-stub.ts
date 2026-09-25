@@ -88,6 +88,7 @@ const STUB_SOURCE = `
   const CURRENT = { name: "light" };
 
   const counters = { ready: 0, expand: 0, haptic: 0 };
+  const lifecycle = [];
   const chromeCalls = { setHeaderColor: [], setBottomBarColor: [] };
   const closing = { enabled: false, enable: 0, disable: 0 };
   const events = {};
@@ -128,8 +129,11 @@ const STUB_SOURCE = `
     version: "8.5.0",
     colorScheme: PRESETS.light.colorScheme,
     themeParams: PRESETS.light.params,
-    viewportInfo: { contentTop: 0, contentBottom: 0, contentWidth: 390, contentHeight: 844, strokeWidth: 0 },
+    // V5.2 §5: no viewportInfo — the app must not fall back to
+    // contentHeight. viewportStableHeight is preferred; viewportHeight is the
+    // client-side fallback property (the app reads it when stable is absent).
     viewportStableHeight: 844,
+    viewportHeight: 844,
     // V5.1 P0 #7: NON-ZERO, realistic insets (top = Dynamic Island, bottom =
     // home indicator) so specs can prove the client values reach :root.
     safeAreaInset: { top: 59, right: 0, bottom: 34, left: 0 },
@@ -140,8 +144,16 @@ const STUB_SOURCE = `
     isClosing: "regular",
     isVerticalSwipesEnabled: false,
 
-    ready() { counters.ready += 1; },
-    expand() { counters.expand += 1; },
+    // V5.2 §8: boot-lifecycle recording — order of expand/ready plus whether
+    // a visible view was already on screen when ready() fired.
+    ready() {
+      counters.ready += 1;
+      lifecycle.push({
+        event: "ready",
+        hasVisibleView: Boolean(document.querySelector("#view > :not([hidden])")),
+      });
+    },
+    expand() { counters.expand += 1; lifecycle.push({ event: "expand" }); },
     onEvent(name, cb) { (events[name] = events[name] || []).push(cb); },
     offEvent(name, cb) {
       events[name] = (events[name] || []).filter((f) => f !== cb);
@@ -185,6 +197,7 @@ const STUB_SOURCE = `
 
   window.__tg = {
     counters,
+    lifecycle,
     chromeCalls,
     presets: PRESETS,
     currentName() { return CURRENT.name; },
@@ -198,7 +211,13 @@ const STUB_SOURCE = `
       return preset;
     },
     fireBackButton() { if (backButton.handler) backButton.handler(); },
-    setLanguage(lang) { webApp.language = lang; webApp.user.language_code = lang; },
+    setLanguage(lang) {
+      // tgLanguage() prefers initDataUnsafe.user.language_code, so update
+      // all three surfaces.
+      webApp.language = lang;
+      webApp.user.language_code = lang;
+      webApp.initDataUnsafe.user.language_code = lang;
+    },
     backButtonShown() { return backButton.shown; },
     closingConfirmation() { return Object.assign({}, closing); },
     // Runtime metric changes: update the reported value AND emit the event,
@@ -213,6 +232,10 @@ const STUB_SOURCE = `
     },
     setViewportStableHeight(h) {
       webApp.viewportStableHeight = h;
+      (events.viewportChanged || []).forEach((cb) => cb());
+    },
+    setViewportHeight(h) {
+      webApp.viewportHeight = h;
       (events.viewportChanged || []).forEach((cb) => cb());
     },
   };

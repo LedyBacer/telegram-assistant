@@ -32,6 +32,11 @@ from assistant.services.reminders import (
 # Raised by an executor when the target entity no longer exists, is no
 # longer owned by the user, or is in a state that makes the mutation
 # meaningless. The service transitions the action to ``expired``.
+#
+# ``reason`` is a BOUNDED STABLE CODE (V5.2 §10), never human text: the API
+# serializes it as ``reason_code`` and clients map it to their own localized
+# message, so no server-language string is ever shown to the user.
+# Known codes: item_missing, item_changed, reminder_not_pending.
 class ActionStaleError(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -169,7 +174,7 @@ async def _require_item(
 ) -> Any:
     item = await calendar_service.get_item(session, user, item_id)
     if item is None:
-        raise ActionStaleError("calendar item no longer exists")
+        raise ActionStaleError("item_missing")
     # Load current state in the async context (avoids a lazy refresh on an
     # expired identity-mapped instance) so the stale + drift checks see the
     # real, committed row.
@@ -198,7 +203,7 @@ async def _item_baseline(
 def _assert_not_drifted(item: Any, expected_updated_at: datetime | None) -> None:
     """Reject a mutation whose target changed since the proposal was made."""
     if expected_updated_at is not None and item.updated_at != expected_updated_at:
-        raise ActionStaleError("calendar item changed since the proposal")
+        raise ActionStaleError("item_changed")
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +357,7 @@ async def exec_update_item(
         ItemStatus.scheduled.value,
         ItemStatus.completed.value,
     ):
-        raise ActionStaleError(f"item is {item.status}, not updatable")
+        raise ActionStaleError("item_changed")
     fields = payload.model_dump(exclude={"item_id", "expected_updated_at"})
     present = payload.model_fields_set
     update_kwargs = {}
@@ -377,7 +382,7 @@ async def exec_complete_item(
     item = await _require_item(session, user, payload.item_id)
     _assert_not_drifted(item, payload.expected_updated_at)
     if item.status != ItemStatus.scheduled.value:
-        raise ActionStaleError(f"item is {item.status}, not schedulable")
+        raise ActionStaleError("item_changed")
     completed = await calendar_service.complete_item(session, user, item.id)
     assert completed is not None
     return {"item_id": item.id, "status": completed.status}
@@ -389,7 +394,7 @@ async def exec_cancel_item(
     item = await _require_item(session, user, payload.item_id)
     _assert_not_drifted(item, payload.expected_updated_at)
     if item.status != ItemStatus.scheduled.value:
-        raise ActionStaleError(f"item is {item.status}, not cancellable")
+        raise ActionStaleError("item_changed")
     cancelled = await calendar_service.cancel_item(session, user, item.id)
     assert cancelled is not None
     return {"item_id": item.id, "status": cancelled.status}
@@ -402,7 +407,7 @@ async def exec_delete_item(
     _assert_not_drifted(item, payload.expected_updated_at)
     deleted = await calendar_service.delete_item(session, user, item.id)
     if not deleted:
-        raise ActionStaleError("calendar item no longer exists")
+        raise ActionStaleError("item_missing")
     return {"item_id": item.id, "deleted": True}
 
 
@@ -422,20 +427,18 @@ async def exec_cancel_reminder(
 
     reminder = await session.get(Reminder, payload.reminder_id)
     if reminder is None or reminder.user_id != user.id:
-        raise ActionStaleError("reminder no longer exists")
+        raise ActionStaleError("reminder_not_pending")
     await session.refresh(reminder)
     # V5 §5.3: only a *pending* reminder is cancellable. If it was already
     # sent or cancelled (e.g. it fired while the action was pending), the
     # action is stale — the service's idempotent cancel must not mask that.
     if reminder.status != "pending":
-        raise ActionStaleError(
-            f"reminder is {reminder.status}, not cancellable"
-        )
+        raise ActionStaleError("reminder_not_pending")
     cancelled = await reminders_service.cancel_reminder(
         session, user, payload.reminder_id
     )
     if cancelled is None:
-        raise ActionStaleError("reminder no longer exists")
+        raise ActionStaleError("reminder_not_pending")
     return {"reminder_id": reminder.id, "status": cancelled.status}
 
 

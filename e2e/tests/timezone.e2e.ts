@@ -43,41 +43,50 @@ test("dates and times follow the user timezone, not the browser timezone", async
     data: { title: ITEM_TITLE, kind: "task", starts_at: "2026-09-25T00:30:00+03:00" },
   });
   expect(itemRes.status()).toBe(201);
+  const itemId = (await itemRes.json()) as { id: number };
 
   const guard = await openApp(page, base);
+  try {
+    // "Today" is the user's today (25th), not the browser's (24th).
+    const todayCell = page.locator("#view .cal-day.is-today");
+    await expect(todayCell).toHaveAttribute("data-date", MOSCOW_TODAY);
+    await expect(page.locator(`#view .cal-day[data-date="${AMSTERDAM_TODAY}"].is-today`)).toHaveCount(0);
 
-  // "Today" is the user's today (25th), not the browser's (24th).
-  const todayCell = page.locator("#view .cal-day.is-today");
-  await expect(todayCell).toHaveAttribute("data-date", MOSCOW_TODAY);
-  await expect(page.locator(`#view .cal-day[data-date="${AMSTERDAM_TODAY}"].is-today`)).toHaveCount(0);
+    // The month range query must cover the Moscow month slice: the 25th cell
+    // carries the event dot.
+    await expect(page.locator(`#view .cal-day[data-date="${MOSCOW_TODAY}"]`)).toHaveClass(/has-events/);
 
-  // The month range query must cover the Moscow month slice: the 25th cell
-  // carries the event dot.
-  await expect(page.locator(`#view .cal-day[data-date="${MOSCOW_TODAY}"]`)).toHaveClass(/has-events/);
+    // The selected day (user's today) lists the item ...
+    const item = page.locator("#view .item-title", { hasText: ITEM_TITLE });
+    await expect(item).toBeVisible();
 
-  // The selected day (user's today) lists the item ...
-  const item = page.locator("#view .item-title", { hasText: ITEM_TITLE });
-  await expect(item).toBeVisible();
+    // ... with the time in Moscow wall clock (00:30), not Amsterdam (23:30).
+    const card = item.locator("xpath=ancestor::div[contains(@class,'card')]");
+    const meta = (await card.locator(".item-meta").first().innerText()).replace(/\s+/g, " ");
+    expect(meta).toContain("00:30");
+    expect(meta).not.toContain("23:30");
 
-  // ... with the time in Moscow wall clock (00:30), not Amsterdam (23:30).
-  const card = item.locator("xpath=ancestor::div[contains(@class,'card')]");
-  const meta = (await card.locator(".item-meta").first().innerText()).replace(/\s+/g, " ");
-  expect(meta).toContain("00:30");
-  expect(meta).not.toContain("23:30");
+    // The day header shows the user's date (25), not the browser's (24).
+    // `.last()`: V3 P37 inserts the "Итоги дня" summary card (also a
+    // .view-subtitle) above the calendar; the day header is the last one.
+    const header = (await page.locator("#view .view-subtitle").last().innerText()).trim();
+    expect(header).toContain("25");
+    expect(header).not.toMatch(/^24\b/);
 
-  // The day header shows the user's date (25), not the browser's (24).
-  // `.last()`: V3 P37 inserts the "Итоги дня" summary card (also a
-  // .view-subtitle) above the calendar; the day header is the last one.
-  const header = (await page.locator("#view .view-subtitle").last().innerText()).trim();
-  expect(header).toContain("25");
-  expect(header).not.toMatch(/^24\b/);
-
-  guard.assertClean();
-
-  // Restore the shared deterministic test user's default timezone so later
-  // tests (which assume UTC) don't inherit Moscow day boundaries.
-  const restore = await page.request.patch(`${base}/api/v1/settings`, {
-    data: { timezone: "UTC" },
-  });
-  expect(restore.status()).toBe(200);
+    guard.assertClean();
+  } finally {
+    // Shared-DB isolation contract: delete the item and restore the shared
+    // deterministic test user's default timezone (later specs assume UTC)
+    // — even when this test fails mid-way.
+    await page
+      .request
+      .delete(`${base}/api/v1/items/${itemId.id}`)
+      .then((r) => expect(r.status()).toBe(204))
+      .catch(() => undefined);
+    await page
+      .request
+      .patch(`${base}/api/v1/settings`, { data: { timezone: "UTC" } })
+      .then((r) => expect(r.status()).toBe(200))
+      .catch(() => undefined);
+  }
 });

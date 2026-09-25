@@ -182,7 +182,11 @@ export const FALLBACKS = {
   "miniapp.actions_empty_history": "История пуста.",
   "miniapp.action_expires": "истекает {when}",
   "miniapp.action_stale": "Это действие больше не актуально.",
-  "miniapp.action_stale_detail": "Действие неактуально: {reason}",
+  "miniapp.action_reason_item_changed": "Запись изменилась после предложения.",
+  "miniapp.action_reason_item_missing": "Запись больше не существует.",
+  "miniapp.action_reason_reminder_not_pending": "Напоминание больше не ожидает.",
+  "miniapp.action_reason_action_expired": "Действие истекло.",
+  "miniapp.action_reason_invalid_payload": "Данные действия больше не действительны.",
   "miniapp.action_target_item": "Цель: запись №{id}",
   "miniapp.action_target_reminder": "Цель: напоминание №{id}",
   "miniapp.action_proposed": "ожидает",
@@ -368,7 +372,11 @@ export const FALLBACKS = {
   "miniapp.actions_empty_history": "No history yet.",
   "miniapp.action_expires": "expires {when}",
   "miniapp.action_stale": "This action no longer applies to current data.",
-  "miniapp.action_stale_detail": "Action no longer applies: {reason}",
+  "miniapp.action_reason_item_changed": "The item changed after the proposal.",
+  "miniapp.action_reason_item_missing": "The item no longer exists.",
+  "miniapp.action_reason_reminder_not_pending": "The reminder is no longer pending.",
+  "miniapp.action_reason_action_expired": "The action expired.",
+  "miniapp.action_reason_invalid_payload": "The action data is no longer valid.",
   "miniapp.action_target_item": "Target: item #{id}",
   "miniapp.action_target_reminder": "Target: reminder #{id}",
   "miniapp.action_proposed": "pending",
@@ -401,16 +409,28 @@ export const FALLBACKS = {
 };
 
 /**
+ * Map any client-reported language tag to the UI language (V5.2 §9): the
+ * primary subtag `en` (en, en-US, en-GB, ...) → "en", everything else →
+ * "ru" (the supported fallback). Single source of truth for the bootstrap
+ * dict, state.lang, and <html lang> — no duplicated detection.
+ */
+export function normalizeUiLanguage(raw) {
+  const primary = String(raw || "").split("-")[0].toLowerCase();
+  return primary === "en" ? "en" : "ru";
+}
+
+/**
  * Flat locale dictionary for the active language. Bootstrapped with the
  * client-language fallback (V5.1 P1 #13: the Telegram client's reported
  * `language_code` is all we know before /me resolves the stored
  * preference), then replaced by the API dict.
  */
-export let STR = { ...FALLBACKS[tgLanguage() === "en" ? "en" : "ru"] };
+const bootLang = normalizeUiLanguage(tgLanguage());
+export let STR = { ...FALLBACKS[bootLang] };
 
 // The client language is also the <html> lang and state.lang on first paint;
 // /me's stored preference overrides both via setLanguage().
-state.lang = tgLanguage() === "en" ? "en" : "ru";
+state.lang = bootLang;
 document.documentElement.lang = state.lang;
 
 /**

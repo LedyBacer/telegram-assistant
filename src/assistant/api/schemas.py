@@ -196,6 +196,22 @@ class FactSupersede(BaseModel):
     category: str | None = Field(default=None, max_length=64)
 
 
+# The ONLY expiry reasons a client may render (V5.2 §10): bounded stable
+# codes, mapped to localized mini-app strings. Anything else (legacy rows,
+# free-form executor errors) serializes as ``reason_code=None`` and the
+# client falls back to the generic stale message — raw ``last_error`` text
+# is never displayed.
+ACTION_REASON_CODES = frozenset(
+    {
+        "item_changed",
+        "item_missing",
+        "reminder_not_pending",
+        "action_expired",
+        "invalid_payload",
+    }
+)
+
+
 class ActionOut(ORMModel):
     id: int
     kind: str
@@ -204,6 +220,9 @@ class ActionOut(ORMModel):
     payload: dict
     last_result: dict | None
     last_error: str | None
+    # Derived at serialization time (no DB change): ``last_error`` if it is
+    # one of the bounded codes, else None.
+    reason_code: str | None = None
     created_at: datetime
     expires_at: datetime | None
     confirmed_at: datetime | None
@@ -222,6 +241,13 @@ class ActionOut(ORMModel):
             and self.expires_at <= datetime.now(UTC)
         ):
             self.status = "expired"
+        return self
+
+    @model_validator(mode="after")
+    def _derive_reason_code(self) -> ActionOut:
+        self.reason_code = (
+            self.last_error if self.last_error in ACTION_REASON_CODES else None
+        )
         return self
 
 

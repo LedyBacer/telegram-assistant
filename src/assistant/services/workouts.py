@@ -183,11 +183,12 @@ async def schedule_workout(
     derived from ``starts_at`` + ``duration_minutes``. Both are normalized to
     UTC in the user's timezone before being handed to the calendar service.
 
-    The interval itself is validated here (V5.1) with a :class:`LocalizableError`
-    so every surface (bot, Mini App, tests) rejects a zero/negative duration
-    or an inverted start/end before anything is written: the calendar service
-    raises a bare ``ValueError`` for ``ends_at < starts_at`` with a raw
-    English message that is not a locale key.
+    The interval itself is validated authoritatively here (V5.2 §3) with a
+    :class:`LocalizableError` so every surface (bot, Mini App, tests) rejects
+    a zero/negative duration, an inverted start/end, or a duration that does
+    not match the explicit end before anything is written: the calendar
+    service raises a bare ``ValueError`` for ``ends_at < starts_at`` with a
+    raw English message that is not a locale key.
     """
     if duration_minutes is not None and duration_minutes <= 0:
         raise LocalizableError("workouts.err_interval")
@@ -196,6 +197,14 @@ async def schedule_workout(
     if ends_at is not None:
         effective_end: datetime | None = _to_utc(ends_at, tz)
         if effective_end < starts_utc:
+            raise LocalizableError("workouts.err_interval")
+        if (
+            duration_minutes is not None
+            and effective_end
+            != starts_utc + timedelta(minutes=duration_minutes)
+        ):
+            # Both given and contradicting each other — the interval is
+            # internally inconsistent, so neither value can be trusted.
             raise LocalizableError("workouts.err_interval")
     elif duration_minutes is not None:
         effective_end = starts_utc + timedelta(minutes=duration_minutes)
@@ -209,7 +218,7 @@ async def schedule_workout(
         # App / calendar can render a distinct workout visual.
         title=name.strip(),
         kind=ItemKind.task,
-        starts_at=starts_at,
+        starts_at=starts_utc,
         ends_at=effective_end,
         source="workout",
         extra={"duration_minutes": duration_minutes} if duration_minutes else {},

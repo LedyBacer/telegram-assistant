@@ -32,6 +32,13 @@
   --divider: color-mix(in srgb, var(--tg-theme-text-color) 10%, transparent);
   --radius: 14px;
   --nav-height: 56px;
+  /* Bottom-nav footprint (V5.2 §6): the ONE token for the vertical space
+     the fixed bottom nav occupies — bar height + its bottom safe-area
+     padding + the 1px top border. Everything that must clear the nav uses
+     --nav-footprint and never re-adds a safe inset on top (that
+     double-counted the inset). */
+  --nav-safe-bottom: var(--safe-bottom);
+  --nav-footprint: calc(var(--nav-height) + var(--nav-safe-bottom) + 1px);
   /* Safe-area tokens (V5 §11): the four edges. Plain-browser fallbacks use
      the CSS env() insets; inside Telegram the client overrides all four with
      px values at runtime (js/telegram.js applyViewport, on viewportChanged). */
@@ -51,8 +58,9 @@
   --tg-content-safe-bottom: env(safe-area-inset-bottom, 0px);
   --tg-content-safe-left: env(safe-area-inset-left, 0px);
   /* Stable viewport height (V5 §12): 100dvh in a plain browser; the client
-     overrides with viewportInfo.contentHeight (px) so the app height stays
-     fixed while the on-screen keyboard appears (no jump / reflow). */
+     overrides with viewportStableHeight (px, falling back to viewportHeight
+     on older clients) so the app height stays fixed while the on-screen
+     keyboard appears (no jump / reflow). */
   --tg-viewport-stable-height: 100dvh;
 }
 
@@ -132,14 +140,20 @@ body {
   flex: 1;
   min-height: 0;
   /* The view is the content region — it consumes the CONTENT safe-area
-     insets (V5.1 P0 #5), not the webview-wide --safe-* chrome insets. */
+     insets (V5.1 P0 #5), not the webview-wide --safe-* chrome insets.
+     The bottom clearance is the single nav-footprint token (V5.2 §6): the
+     fixed nav occupies exactly --nav-footprint, so content never ends
+     under it and no inset is counted twice. */
   padding: 12px calc(16px + var(--tg-content-safe-right))
-          calc(var(--nav-height) + var(--tg-content-safe-bottom) + 16px)
+          calc(var(--nav-footprint) + 16px)
           calc(16px + var(--tg-content-safe-left));
   overflow-y: auto;
   overflow-x: hidden;
 }
 
+/* The bar's rendered height is exactly --nav-footprint (V5.2 §6): the
+   buttons give the --nav-height part, the container's bottom padding gives
+   the safe-area part. The content region clears it via --nav-footprint. */
 .bottomnav {
   position: fixed;
   left: 0;
@@ -147,11 +161,12 @@ body {
   bottom: 0;
   z-index: 20;
   display: flex;
+  min-height: var(--nav-height);
   background: var(--tg-theme-section-bg-color);
   border-top: 1px solid var(--divider);
   padding-left: var(--safe-left);
   padding-right: var(--safe-right);
-  padding-bottom: var(--safe-bottom);
+  padding-bottom: var(--nav-safe-bottom);
 }
 
 .nav-btn {
@@ -810,7 +825,7 @@ textarea.field-input {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: calc(var(--nav-height) + var(--safe-bottom) + 16px);
+  bottom: calc(var(--nav-footprint) + 16px);
   transform: translateX(-50%);
   z-index: 60;
   max-width: calc(100% - 32px);

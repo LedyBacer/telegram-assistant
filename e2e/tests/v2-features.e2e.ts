@@ -113,6 +113,51 @@ async function assertCleanText(page: Page): Promise<void> {
   expect(text).not.toContain("null");
 }
 
+// Shared-DB isolation contract: this spec seeds rows directly in the DB and
+// creates items through the UI — delete all of them afterwards so later
+// specs see the state global-setup left.
+test.afterEach(() => {
+  runDbScript(`
+import asyncio, json
+import asyncpg
+
+RUN = "${run}"
+
+async def main():
+    conn = await asyncpg.connect("${e2eDbUrl}")
+    try:
+        await conn.execute(
+            "DELETE FROM reminders WHERE calendar_item_id IN "
+            "(SELECT id FROM calendar_items WHERE title IN ($1, $2))",
+            "${ACTION_TITLE}",
+            "${WORKOUT_NAME}",
+        )
+        await conn.execute(
+            "DELETE FROM calendar_items WHERE title IN ($1, $2)",
+            "${ACTION_TITLE}",
+            "${WORKOUT_NAME}",
+        )
+        await conn.execute(
+            "DELETE FROM pending_actions WHERE summary LIKE '%' || $1 || '%'",
+            RUN,
+        )
+        await conn.execute(
+            "DELETE FROM user_facts WHERE value LIKE '%' || $1 || '%'",
+            RUN,
+        )
+        await conn.execute(
+            "DELETE FROM user_files WHERE storage_key = $1",
+            "${FILE_KEY}",
+        )
+        import pathlib
+        pathlib.Path("storage/e2e-files/${FILE_KEY}").unlink(missing_ok=True)
+    finally:
+        await conn.close()
+
+asyncio.run(main())
+`);
+});
+
 test("V2 features: actions inbox, fact supersede, workout schedule, file retry, proactive settings", async ({
   page,
 }) => {

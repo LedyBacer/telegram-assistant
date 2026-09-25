@@ -272,7 +272,7 @@ async def execute_action(
     except ValidationError as exc:
         action.status = ActionStatus.expired.value
         action.expired_at = _now()
-        action.last_error = "payload no longer valid"[:1000]
+        action.last_error = "invalid_payload"
         await session.flush()
         raise ValueError("Action payload is no longer valid.") from exc
 

@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openApp } from "../helpers/app";
+import { openApp, assertNoHorizontalOverflow } from "../helpers/app";
 import { THEME_PRESETS } from "../helpers/telegram-stub";
 
 // V5 §11–13 + V5.1 P0 #4/#5/#6/#7: the four safe-area tokens AND the four
@@ -108,6 +108,99 @@ test("safe-area + content-safe + stable-height tokens; chrome colors sync", asyn
     expect(chrome2.setBottomBarColor).toContain(dark.params.section_bg_color);
     const meta = await page.locator('meta[name="theme-color"]').getAttribute("content");
     expect(meta).toBe(dark.params.bg_color);
+  } finally {
+    guard.assertClean();
+  }
+});
+
+// V5.2 §5: when viewportStableHeight is unavailable, the height token falls
+// back to the dedicated `viewportHeight` property — never to
+// `viewportInfo.contentHeight` (the stub does not even expose viewportInfo,
+// so a contentHeight fallback in the app could not resolve at all).
+test("stable-height falls back to viewportHeight, not viewportInfo", async ({
+  page,
+}: {
+  page: Page;
+}) => {
+  const guard = await openApp(page, base);
+  try {
+    // The stub has no viewportInfo: a contentHeight fallback is impossible.
+    expect(await page.evaluate(() => (window as any).Telegram.WebApp.viewportInfo))
+      .toBeUndefined();
+
+    // Stable unavailable (0) + viewportHeight 720 -> 720px.
+    await page.evaluate(() => {
+      const tg = (window as any).__tg;
+      tg.setViewportStableHeight(0);
+      tg.setViewportHeight(720);
+    });
+    let vars = await readVars(page);
+    expect(vars.height).toBe("720px");
+
+    // Preferred case: stable 700 beats viewportHeight 760 -> 700px.
+    await page.evaluate(() => {
+      const tg = (window as any).__tg;
+      tg.setViewportHeight(760);
+      tg.setViewportStableHeight(700);
+    });
+    vars = await readVars(page);
+    expect(vars.height).toBe("700px");
+  } finally {
+    guard.assertClean();
+  }
+});
+
+// V5.2 §6: the bottom nav's footprint is a SINGLE token
+// (--nav-height + --nav-safe-bottom). With deliberately different insets
+// (safe bottom 40 vs content-safe bottom 8, landscape-like left/right 90),
+// the nav fills exactly its footprint, the scrollable content ends ABOVE
+// the nav (never under it), and the side insets cause no horizontal
+// overflow.
+test("nav footprint: content never ends under the fixed bottom nav", async ({
+  page,
+}: {
+  page: Page;
+}) => {
+  const guard = await openApp(page, base);
+  try {
+    await page.evaluate(() => {
+      const tg = (window as any).__tg;
+      tg.setSafeAreaInset({ top: 59, right: 90, bottom: 40, left: 90 });
+      tg.setContentSafeAreaInset({ top: 59, right: 8, bottom: 8, left: 8 });
+    });
+
+    const geo = await page.evaluate(() => {
+      const nav = (document.querySelector(".bottomnav") as HTMLElement).getBoundingClientRect();
+      const view = (document.querySelector("#view") as HTMLElement).getBoundingClientRect();
+      const viewCS = getComputedStyle(document.querySelector("#view") as HTMLElement);
+      const navCS = getComputedStyle(document.querySelector(".bottomnav") as HTMLElement);
+      return {
+        navTop: nav.top,
+        navBottom: nav.bottom,
+        navPaddingBottom: navCS.paddingBottom,
+        viewPaddingBottom: viewCS.paddingBottom,
+        contentBottom: view.bottom - Number.parseFloat(viewCS.paddingBottom),
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+      };
+    });
+
+    // Nav: min-height 56 + safe bottom 40 + 1px top border = the 97px
+    // rendered bar (exactly --nav-footprint),
+    // anchored to the viewport bottom.
+    expect(geo.navPaddingBottom).toBe("40px");
+    expect(geo.navBottom).toBe(geo.innerHeight);
+    expect(geo.navBottom - geo.navTop).toBe(97);
+
+    // .view clearance is the footprint + the 16px margin (112px) — the
+    // content-safe bottom (8) is NOT double-counted into this token.
+    expect(geo.viewPaddingBottom).toBe("113px");
+
+    // The scrollable content ends ABOVE the fixed nav (with margin).
+    expect(geo.contentBottom).toBeLessThanOrEqual(geo.navTop);
+
+    // Landscape-like side insets: no horizontal overflow.
+    await assertNoHorizontalOverflow(page);
   } finally {
     guard.assertClean();
   }

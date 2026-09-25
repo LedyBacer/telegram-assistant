@@ -347,7 +347,7 @@ async def test_corrupted_payload_expires_action(session: AsyncSession) -> None:
     fresh = await act.get_action(session, user, action.id)
     assert fresh is not None
     assert fresh.status == ActionStatus.expired.value
-    assert fresh.last_error == "payload no longer valid"
+    assert fresh.last_error == "invalid_payload"
 
 
 # ---------------------------------------------------------------------------
