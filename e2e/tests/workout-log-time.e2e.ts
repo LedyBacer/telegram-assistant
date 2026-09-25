@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openApp } from "../helpers/app";
+import { openApp, goTab } from "../helpers/app";
 
 // V3 P29: the workout-log form must submit the picked datetime (a naive
 // user-TZ wall clock), not silently fall back to "now". Here the browser is
@@ -17,7 +17,7 @@ const WALL_DISPLAY = "20 сент., 18:30";
 const STORED_UTC = "2026-09-20T15:30:00Z";
 
 async function goWorkouts(page: import("@playwright/test").Page) {
-  await page.locator('.nav-btn[data-tab="workouts"]').click();
+  await goTab(page, "workouts");
   await page
     .locator("#view .item-title, #view .state-empty")
     .first()

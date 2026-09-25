@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { openApp } from "../helpers/app";
+import { openApp, goTab } from "../helpers/app";
 import type { ThemeName } from "../helpers/telegram-stub";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -37,14 +37,14 @@ test("capture reference screenshots (390x844)", async ({ page }) => {
   await page.screenshot({ path: path.join(outDir, "calendar-light.png") });
 
   // settings-dark — Settings, dark theme.
-  await page.locator(".nav-btn[data-tab=\"settings\"]").click();
+  await goTab(page, "settings");
   await setTheme(page, "dark");
   await expect(page.locator("#view .settings-row").first()).toBeVisible();
   await page.screenshot({ path: path.join(outDir, "settings-dark.png") });
 
   // facts-populated — a confirmed-looking fact list, light theme.
   await setTheme(page, "light");
-  await page.locator(".nav-btn[data-tab=\"facts\"]").click();
+  await goTab(page, "facts");
   await page.locator("#view .card input.field-input").first().fill(factText);
   await page.locator("#view .card .btn-primary").first().click();
   await expect(page.locator("#view .fact-value").first()).toContainText(factText);

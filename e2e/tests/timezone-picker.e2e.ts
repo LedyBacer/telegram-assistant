@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openApp } from "../helpers/app";
+import { openApp, goTab } from "../helpers/app";
 
 // V3 P35: the Mini App timezone setting is a searchable picker over the full
 // canonical IANA list (Intl.supportedValuesOf), not a hardcoded 15-zone array.
@@ -8,7 +8,7 @@ const base = "http://127.0.0.1:" + (process.env.E2E_PORT ?? 8123);
 
 test("timezone picker: searchable IANA list, pick persists", async ({ page }) => {
   const guard = await openApp(page, base);
-  await page.locator('.nav-btn[data-tab="settings"]').click();
+  await goTab(page, "settings");
 
   const tzRow = page.locator("button.settings-row", { hasText: "Часовой пояс" });
   await expect(tzRow).toHaveCount(1);

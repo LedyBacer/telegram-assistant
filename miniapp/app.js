@@ -51,13 +51,17 @@ const viewEl = document.getElementById("view");
 const navEl = document.getElementById("nav");
 const whoEl = document.getElementById("who");
 
+// Primary bottom-nav tabs (V5 §16). The rest live in the "More" sheet so the
+// bar stays at five touch targets instead of eight.
 const TABS = [
   ["today", "miniapp.tab_today"],
   ["actions", "miniapp.tab_actions"],
-  ["upcoming", "miniapp.tab_upcoming"],
   ["new", "miniapp.tab_new"],
-  ["workouts", "miniapp.tab_workouts"],
   ["files", "miniapp.tab_files"],
+];
+const MORE_TABS = [
+  ["upcoming", "miniapp.tab_upcoming"],
+  ["workouts", "miniapp.tab_workouts"],
   ["facts", "miniapp.tab_facts"],
   ["settings", "miniapp.tab_settings"],
 ];
@@ -110,33 +114,60 @@ const PRIORITY_LABELS = {
 /* ------------------------------------------------------------------ */
 
 function buildNav() {
-  navEl.replaceChildren(
-    ...TABS.map(([key, keyStr]) =>
-      el(
-        "button",
-        {
-          type: "button",
-          class: `nav-btn${key === state.tab ? " is-active" : ""}`,
-          "aria-current": key === state.tab ? "page" : null,
-          "data-tab": key,
-          onclick: () => {
-            if (state.tab === key) return;
-            navigate(key);
-          },
+  const buttons = TABS.map(([key, keyStr]) =>
+    el(
+      "button",
+      {
+        type: "button",
+        class: `nav-btn${key === state.tab ? " is-active" : ""}`,
+        "aria-current": key === state.tab ? "page" : null,
+        "data-tab": key,
+        onclick: () => {
+          if (state.tab === key) return;
+          navigate(key);
         },
-        el("span", { class: "nav-icon", "aria-hidden": "true" }, iconFor(key)),
-        el("span", { class: "nav-label" }, S(keyStr))
-      )
+      },
+      el("span", { class: "nav-icon", "aria-hidden": "true" }, iconFor(key)),
+      el("span", { class: "nav-label" }, S(keyStr))
     )
   );
+  // The "More" launcher opens a sheet of the secondary tabs (V5 §16). It is a
+  // launcher, not a view: it never becomes state.tab, so it is never active.
+  buttons.push(
+    el(
+      "button",
+      {
+        type: "button",
+        class: "nav-btn",
+        "data-tab": "more",
+        "aria-haspopup": "true",
+        "aria-label": S("miniapp.tab_more"),
+        onclick: () => openMoreSheet(),
+      },
+      el("span", { class: "nav-icon", "aria-hidden": "true" }, iconFor("more")),
+      el("span", { class: "nav-label" }, S("miniapp.tab_more"))
+    )
+  );
+  navEl.replaceChildren(...buttons);
   updateBackButton();
 }
 
 /** Emojis are part of the localized tab strings; keep an iconless fallback. */
 function iconFor(key) {
+  if (key === "more") return "⋮";
   const label = S(TABS.find(([k]) => k === key)?.[1] ?? key);
   const match = label.match(/^(\p{Extended_Pictographic}+)/u);
   return match ? match[1] : "•";
+}
+
+/** Open the "More" sheet of secondary tabs; navigate when one is picked. */
+async function openMoreSheet() {
+  const chosen = await openSheet({
+    title: S("miniapp.tab_more"),
+    options: MORE_TABS.map(([key, keyStr]) => ({ value: key, label: S(keyStr) })),
+    value: state.tab,
+  });
+  if (chosen) navigate(chosen);
 }
 
 function updateBackButton() {

@@ -1,7 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { openApp, assertNoHorizontalOverflow } from "../helpers/app";
+import {
+  openApp,
+  goTab,
+  assertNoHorizontalOverflow,
+} from "../helpers/app";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const base = "http://127.0.0.1:" + (process.env.E2E_PORT ?? 8123);
@@ -17,16 +21,6 @@ const taskTitle = `Audit-${run}: review spec`;
  * (loading/empty/populated states), user strings must appear as text (never
  * stringified DOM nodes), and no forbidden literals may leak into the UI.
  */
-
-async function goTab(page: Page, tab: string): Promise<void> {
-  await page.locator(`.nav-btn[data-tab="${tab}"]`).click();
-  // Leaving a dirty New/Edit form pops a discard confirmation (V5 §15); these
-  // navigation tests don't care about the unsaved form, so confirm it away.
-  const dialog = page.locator('[role="alertdialog"]');
-  if (await dialog.isVisible().catch(() => false)) {
-    await dialog.locator(".btn", { hasText: "Покинуть" }).click();
-  }
-}
 
 /** No rendering-bug literals in the visible view text. */
 async function assertCleanText(page: Page): Promise<void> {

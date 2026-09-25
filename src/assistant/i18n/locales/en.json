@@ -182,6 +182,7 @@
   "miniapp.tab_files": "📁 Files",
   "miniapp.tab_facts": "🧠 Facts",
   "miniapp.tab_settings": "⚙️ Settings",
+  "miniapp.tab_more": "More",
   "miniapp.status_auth": "Authentication failed — reopen the app from the bot.",
   "miniapp.status_open": "Open this page inside Telegram to continue.",
   "miniapp.empty_today": "Nothing scheduled for today.",

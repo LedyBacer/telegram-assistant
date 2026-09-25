@@ -32,6 +32,33 @@ export async function openApp(page: Page, base: string) {
   return guard;
 }
 
+/**
+ * Top-level tabs that live in the bottom nav (V5 §16). The remaining tabs
+ * (upcoming, workouts, facts, settings) are secondary and reached through
+ * the "More" launcher's sheet.
+ */
+const PRIMARY_TABS = new Set(["today", "actions", "new", "files"]);
+
+/**
+ * Navigate to any top-level tab, routing secondary tabs through the "More"
+ * sheet (V5 §16). Auto-confirms the dirty-form discard dialog (V5 §15) so
+ * navigation helpers don't each re-implement it.
+ */
+export async function goTab(page: Page, tab: string): Promise<void> {
+  if (PRIMARY_TABS.has(tab)) {
+    await page.locator(`.nav-btn[data-tab="${tab}"]`).click();
+  } else {
+    await page.locator('.nav-btn[data-tab="more"]').click();
+    const sheet = page.locator(".sheet");
+    await sheet.waitFor({ state: "visible" });
+    await sheet.locator(`.sheet-row[data-value="${tab}"]`).click();
+  }
+  const dialog = page.locator('[role="alertdialog"]');
+  if (await dialog.isVisible().catch(() => false)) {
+    await dialog.locator(".btn", { hasText: "Покинуть" }).click();
+  }
+}
+
 /** Assert the 390px viewport has no horizontal overflow. */
 export async function assertNoHorizontalOverflow(page: Page): Promise<void> {
   const { scrollWidth, innerWidth } = await page.evaluate(() => ({

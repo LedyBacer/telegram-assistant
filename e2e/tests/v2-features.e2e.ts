@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   openApp,
+  goTab,
   assertNoHorizontalOverflow,
   assertNoLeakedDom,
 } from "../helpers/app";
@@ -18,16 +19,6 @@ const FACT_OLD = `V2-${run}: drink green tea`;
 const FACT_NEW = `V2-${run}: drink matcha`;
 const FILE_NAME = `v2-failed-${run}.txt`;
 const FILE_KEY = `e2e-v2-${run}.txt`;
-
-async function goTab(page: Page, tab: string): Promise<void> {
-  await page.locator(`.nav-btn[data-tab="${tab}"]`).click();
-  // Leaving a dirty New/Edit form pops a discard confirmation (V5 §15); these
-  // navigation tests don't care about the unsaved form, so confirm it away.
-  const dialog = page.locator('[role="alertdialog"]');
-  if (await dialog.isVisible().catch(() => false)) {
-    await dialog.locator(".btn", { hasText: "Покинуть" }).click();
-  }
-}
 
 /**
  * Seed V2 state that no UI flow can create for the deterministic test user

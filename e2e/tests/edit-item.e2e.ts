@@ -61,9 +61,9 @@ test("edit view: change + clear via tri-state PATCH, reminder cancel, ends_at on
   const item = (await createRes.json()) as ItemOut;
   itemId = item.id;
 
-  const { openApp } = await import("../helpers/app");
+  const { openApp, goTab } = await import("../helpers/app");
   const guard = await openApp(page, base);
-  await page.locator('.nav-btn[data-tab="upcoming"]').click();
+  await goTab(page, "upcoming");
   const card = page.locator("#view .card", { hasText: OLD_TITLE }).first();
   await card.waitFor({ timeout: 15_000 });
 
@@ -132,7 +132,7 @@ test("edit view: change + clear via tri-state PATCH, reminder cancel, ends_at on
     .locator("#view .calendar, #view .state-error")
     .first()
     .waitFor({ state: "visible", timeout: 20_000 });
-  await page.locator('.nav-btn[data-tab="upcoming"]').click();
+  await goTab(page, "upcoming");
   const reloadedCard = page.locator("#view .card", { hasText: NEW_TITLE }).first();
   await expect(reloadedCard.locator(".item-meta")).not.toContainText("Конец");
   await expect(reloadedCard.locator(".item-head .badge")).toHaveText("Высокий");

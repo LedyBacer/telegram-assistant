@@ -1,5 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
-import { openApp } from "../helpers/app";
+import { test, expect } from "@playwright/test";
+import { openApp, goTab } from "../helpers/app";
 
 // V3 P27 regression: an async view that resolves AFTER the user switched
 // tabs must not overwrite the newer screen (stale-render race). The Today
@@ -8,16 +8,6 @@ import { openApp } from "../helpers/app";
 
 const base = "http://127.0.0.1:" + (process.env.E2E_PORT ?? 8123);
 const DELAY_MS = 1500;
-
-async function goTab(page: Page, tab: string): Promise<void> {
-  await page.locator(`.nav-btn[data-tab="${tab}"]`).click();
-  // Leaving a dirty New/Edit form pops a discard confirmation (V5 §15); these
-  // navigation tests don't care about the unsaved form, so confirm it away.
-  const dialog = page.locator('[role="alertdialog"]');
-  if (await dialog.isVisible().catch(() => false)) {
-    await dialog.locator(".btn", { hasText: "Покинуть" }).click();
-  }
-}
 
 test("rapid tab switching never renders a stale view", async ({ page }) => {
   const guard = await openApp(page, base);
@@ -61,9 +51,9 @@ test("rapid tab switching never renders a stale view", async ({ page }) => {
   await expect(page.locator("#view .state-loading")).toHaveCount(0);
   await page.waitForTimeout(DELAY_MS + 800);
   await expect(page.locator("#view .calendar")).toHaveCount(0);
-  await expect(page.locator('#nav .nav-btn[data-tab="upcoming"]')).toHaveClass(
-    /is-active/,
-  );
+  // Upcoming is a secondary tab behind the "More" sheet (V5 §16): the sheet
+  // closed on selection, so the delayed Today calendar did not clobber it.
+  await expect(page.locator(".sheet")).toHaveCount(0);
 
   // 4) With the delay route removed, Today renders normally again — the
   //    generation mechanism did not break the happy path.

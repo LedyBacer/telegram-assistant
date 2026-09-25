@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openApp } from "../helpers/app";
+import { openApp, goTab } from "../helpers/app";
 
 const base = "http://127.0.0.1:" + (process.env.E2E_PORT ?? 8123);
 
@@ -7,11 +7,12 @@ test("accessibility basics", async ({ page }) => {
   await openApp(page, base);
 
   // Navigation: real <button> elements, each with a non-empty accessible name.
+  // V5 §16: four primary tabs + a "More" launcher (secondary tabs live in a sheet).
   const navBtns = page.locator(".bottomnav .nav-btn");
-  await expect(navBtns).toHaveCount(8);
+  await expect(navBtns).toHaveCount(5);
   const navTags = await navBtns.evaluateAll((els) => els.map((e) => e.tagName));
   expect(navTags.every((t) => t === "BUTTON")).toBe(true);
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 5; i++) {
     const name = await navBtns.nth(i).innerText();
     expect(name.trim(), `nav button ${i} has a visible label`).not.toBe("");
   }
@@ -60,7 +61,7 @@ test("accessibility basics", async ({ page }) => {
   await expect(page.locator("#sheet-root .sheet")).toHaveCount(0);
 
   // Confirm dialog uses role=alertdialog with real (enabled) buttons.
-  await page.locator(".nav-btn[data-tab=\"facts\"]").click();
+  await goTab(page, "facts");
   // No fact exists yet, so there is no confirm to trigger; instead verify the
   // destructive-action button type on the empty form's primary is a button.
   const propose = page.locator("#view .card .btn-primary").first();

@@ -30,6 +30,7 @@ export const FALLBACK_RU = {
   "miniapp.tab_files": "📁 Файлы",
   "miniapp.tab_facts": "🧠 Факты",
   "miniapp.tab_settings": "⚙️ Настройки",
+  "miniapp.tab_more": "Ещё",
   "miniapp.status_auth": "Не удалось пройти проверку — открой приложение заново из бота.",
   "miniapp.status_open": "Открой эту страницу внутри Telegram, чтобы продолжить.",
   "miniapp.empty_today": "На сегодня ничего не запланировано.",
