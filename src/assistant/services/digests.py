@@ -233,13 +233,15 @@ async def _handle_digest_send(session: AsyncSession, job: BackgroundJob) -> None
 
     # Do not send from a stale lease (V5 §3): PostgreSQL is the source of
     # truth for ownership, and the in-memory flag can lag it. This fresh DB
-    # check runs in its own short transaction that ended (committed) after
-    # Phase A, so no transaction is held during the Telegram HTTP round-trip.
-    # If we no longer own the job (recovered / re-claimed / cancelled) a new
-    # owner will deliver it — delivery is durable at-least-once, so skipping
-    # just avoids a duplicate.
-    if not await jobs_service.owns_job(session, job.id, job.locked_by):
+    # check runs on an INDEPENDENT short-lived session (V5.2 §2): the
+    # handler session must not auto-begin a transaction here that would
+    # span the Telegram HTTP round-trip. If we no longer own the job
+    # (recovered / re-claimed / cancelled) a new owner will deliver it —
+    # delivery is durable at-least-once, so skipping just avoids a
+    # duplicate.
+    if not await jobs_service.owns_job_now(job.id, job.locked_by):
         return
+    assert not session.in_transaction()
 
     # Phase B — Telegram send, with no transaction held.
     await notifications.send_text(chat_id, content)

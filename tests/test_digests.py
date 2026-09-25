@@ -299,6 +299,64 @@ async def test_digest_handler_missing_delivery_is_safe(
     assert calls == []
 
 
+async def test_digest_send_runs_with_no_transaction_open(
+    session: AsyncSession, monkeypatch
+) -> None:
+    """V5.2 §2: no application transaction may be open while the digest
+    Telegram send is in flight. The fake sender records the handler
+    session's transaction state at the moment of the call."""
+    user = await _user(session)
+    calls: list[tuple[int, bool]] = []
+
+    async def send(chat_id: int, text: str) -> None:
+        calls.append((chat_id, session.in_transaction()))
+
+    monkeypatch.setattr(notifications, "send_text", AsyncMock(side_effect=send))
+    _, _ = await digests.schedule_todays_digest(session, user)
+    await session.commit()
+
+    job = await jobs_service.claim_job(session, worker_id="test-worker")
+    await session.commit()
+    assert job is not None
+    await registry.handlers[digests.DIGEST_JOB_TYPE](session, job)
+    await session.commit()
+
+    assert len(calls) == 1
+    assert calls[0][0] == user.id
+    assert calls[0][1] is False
+
+
+async def test_digest_handler_with_expired_lease_does_not_send(
+    session: AsyncSession, monkeypatch
+) -> None:
+    """V5.2 §2: a stale (expired) lease must suppress the digest send; the
+    new owner delivers. The delivery is not stamped."""
+    user = await _user(session)
+    sender, calls = _fake_sender()
+    monkeypatch.setattr(notifications, "send_text", sender)
+    _, _ = await digests.schedule_todays_digest(session, user)
+    await session.commit()
+
+    job = (
+        await session.scalars(
+            select(BackgroundJob).where(
+                BackgroundJob.type == digests.DIGEST_JOB_TYPE
+            )
+        )
+    ).one()
+    job.status = JobStatus.running.value
+    job.locked_by = "test-worker"
+    job.lease_until = datetime.now(UTC) - timedelta(minutes=1)
+    await session.commit()
+
+    await registry.handlers[digests.DIGEST_JOB_TYPE](session, job)
+    await session.commit()
+
+    assert calls == []
+    delivery = (await session.scalars(select(DigestDelivery))).one()
+    assert delivery.sent_at is None
+
+
 # ---------------------------------------------------------------------------
 # Motivation
 # ---------------------------------------------------------------------------

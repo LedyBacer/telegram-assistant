@@ -222,6 +222,22 @@ async def owns_job(
     )
 
 
+async def owns_job_now(job_id: int, owner_token: str) -> bool:
+    """Authoritative lease check on an INDEPENDENT short-lived session.
+
+    Job handlers must use this — not :func:`owns_job` on their own handler
+    session — immediately before a network send. A SELECT on the handler
+    session after ``commit()`` auto-begins a new transaction, which would
+    then span the entire Telegram HTTP round-trip. This helper opens and
+    closes its own session, so when it returns the caller's session is
+    guaranteed to have no transaction open (V5.2 §2).
+    """
+    from assistant.db.engine import get_session_factory
+
+    async with get_session_factory()() as lease_session:
+        return await owns_job(lease_session, job_id, owner_token)
+
+
 async def revalidate_ownership(
     session: AsyncSession, job_id: int, owner_token: str
 ) -> BackgroundJob | None:

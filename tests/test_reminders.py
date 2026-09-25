@@ -175,7 +175,9 @@ async def _run_handler(session: AsyncSession, job: BackgroundJob) -> None:
     # V5 §3: the handler now re-validates DB ownership before sending, so the
     # simulated job must carry a live lease (locked_by + future lease_until).
     job.lease_until = datetime.now(UTC) + timedelta(minutes=5)
-    await session.flush()
+    # V5.2 §2: the ownership check runs on an independent session, so the
+    # lease must be committed (a flush would only be visible here).
+    await session.commit()
     await handler(session, job)
     await session.flush()
 
@@ -239,6 +241,57 @@ async def test_handler_missing_payload_raises(session: AsyncSession) -> None:
     with pytest.raises(ValueError, match="reminder_id"):
         await _run_handler(session, job)
     await session.rollback()
+
+
+async def test_handler_sends_with_no_transaction_open(
+    session: AsyncSession, _stub_sender: AsyncMock
+) -> None:
+    """V5.2 §2: the handler session must not hold a transaction while the
+    Telegram HTTP send is in flight. The fake sender records the handler
+    session's transaction state at the moment of the call."""
+    user = await _user(session)
+    reminder = await rem.create_reminder(
+        session, user, fire_at=FIRE_AT, message="x"
+    )
+    job = await session.get(BackgroundJob, reminder.job_id)
+    await session.commit()
+
+    observed: list[bool] = []
+
+    async def spy(chat_id: int, text: str) -> None:
+        observed.append(session.in_transaction())
+
+    _stub_sender.side_effect = spy
+    await _run_handler(session, job)
+    await session.commit()
+
+    assert _stub_sender.call_count == 1
+    assert observed == [False]
+
+
+async def test_handler_with_expired_lease_does_not_send(
+    session: AsyncSession, _stub_sender: AsyncMock
+) -> None:
+    """V5.2 §2: a stale lease (expired / re-claimed by another worker) must
+    suppress the send; the new owner delivers. The reminder stays pending."""
+    user = await _user(session)
+    reminder = await rem.create_reminder(
+        session, user, fire_at=FIRE_AT, message="x"
+    )
+    job = await session.get(BackgroundJob, reminder.job_id)
+    job.status = JobStatus.running.value
+    job.locked_by = "test-worker"
+    job.lease_until = datetime.now(UTC) - timedelta(minutes=1)
+    await session.commit()
+
+    from assistant.worker import registry
+
+    await registry.handlers["reminder_send"](session, job)
+    await session.commit()
+
+    assert _stub_sender.call_count == 0
+    assert reminder.status == ReminderStatus.pending.value
+    assert reminder.sent_at is None
 
 
 async def test_reminder_send_handler_registered() -> None:
