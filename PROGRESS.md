@@ -75,14 +75,29 @@ Goal items are tracked by their `§` number. Committed on `main`; full pytest
     null-filtering wrapped nodes in an array; without spread, Chromium
     stringified it as `[object HTMLDivElement],...`).
   New E2E `settings-consistency.e2e.ts` covers all four sub-items.
+- **§19** (`655203b`, HEAD) form validation + structured errors + schedule
+  end time:
+  - §19.1: client-side `ends_at >= starts_at` validation before submit in
+    New and Edit views (toast, no API call).
+  - §19.2: `ApiError` carries the parsed `detail` (string or Pydantic 422
+    array) from the response body; stale-action toast uses `err.detail` for
+    a human-readable server reason.
+  - §19.3: description field is a `<textarea rows="3">` (not a one-line
+    input) in New + Edit forms.
+  - §19.4: workout log stores effort in a real `let effort = null` variable
+    (no text parsing); positive-minutes validation before submit.
+  - §19.5: workout schedule form gains an optional explicit end datetime
+    picker; setting end clears duration and entering duration clears end
+    (mutual exclusion); end < start rejected client-side.
+  E2E updates: a11y/screens-audit count textarea alongside inputs;
+  create-event-start-end asserts client-side toast (not API 400);
+  v2-features targets `.picker-field` `.first()` in schedule card.
 
 Verified at HEAD: `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q` →
 542 passed; `npx playwright test --config=e2e/playwright.config.ts` →
 24 passed; `uv run ruff check .` clean.
 
-**Remaining (in order):** §19 (form validation:
-ends>=starts pre-submit, structured ApiError, description textarea, real
-effort variable, workout end/duration exclusion), §20 (Files bounded
+**Remaining (in order):** §20 (Files bounded
 foreground polling), §21 (Actions Pending/History filter, default Pending),
 §22 (shared modal lifecycle: scroll lock, focus trap, Escape, focus return,
 no double sheets), §23 (visible picker-unavailable error on CDN failure),

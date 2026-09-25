@@ -1427,17 +1427,48 @@ async function viewFiles(view, gen, signal) {
     if (e.key === "Enter") doSearch();
   });
 
+  // §20: bounded foreground polling — refresh the file list every 2.5 s while
+  // any file is in a non-terminal state; stop when all are terminal, the
+  // generation goes stale, or the signal is aborted.
+  const TERMINAL_STATES = new Set(["indexed", "failed", "rejected"]);
+  const listEl = el("div", { class: "list" });
+  const renderList = (fileArr) => {
+    listEl.replaceChildren(
+      ...(fileArr.length
+        ? fileArr.map(fileCard)
+        : [empty(S("miniapp.files_empty"))])
+    );
+  };
+  renderList(files);
+
   view.replaceChildren(
     card(
       el("h2", { class: "view-title" }, S("miniapp.my_files")),
       el("div", { class: "search-row" }, searchInput, searchBtn),
       searchResults,
       el("div", { class: "upload-row" }, uploadBtn, fileInput),
-      files.length
-        ? el("div", { class: "list" }, ...files.map(fileCard))
-        : empty(S("miniapp.files_empty"))
+      listEl
     )
   );
+
+  const hasActive = (arr) => arr.some((f) => !TERMINAL_STATES.has(f.state));
+  if (hasActive(files)) {
+    (async () => {
+      while (!isStale(gen) && !signal.aborted) {
+        await new Promise((r) => setTimeout(r, 2500));
+        if (isStale(gen) || signal.aborted) return;
+        try {
+          const updated = await api("/api/v1/files?limit=20", "GET", undefined, signal);
+          if (isStale(gen) || signal.aborted) return;
+          renderList(updated);
+          if (!hasActive(updated)) return;
+        } catch {
+          // network blip or abort — stop polling silently
+          return;
+        }
+      }
+    })();
+  }
 }
 
 function searchResultCard(r) {
