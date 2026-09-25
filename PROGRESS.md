@@ -141,8 +141,14 @@ Verified at HEAD `161c552`: `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q`
 → 542 passed; `npx playwright test --config=e2e/playwright.config.ts` →
 26 passed; `uv run ruff check .` clean; `bash -n scripts/acceptance.sh` OK.
 
-**Remaining (in order):** §29 (docs/PROGRESS closeout), §31 (Definition of
-Done + REPORT.md).
+- **§29** (this closeout): PROGRESS.md V5 section complete; all 28 items
+  recorded with commit references.
+- **§31** (Definition of Done + REPORT.md): REPORT.md updated to V5;
+  18-check DoD table with current numbers (542 pytest, 26 Playwright,
+  Ruff, lock, acceptance).
+
+**V5 complete.** All 28 goal items closed. Working tree clean at
+`d1e0817`. Remote CI verification pending (push not permitted).
 
 
 ## V4 — Audit findings (post-V3, recorded before implementation)

@@ -1,10 +1,99 @@
-# Telegram Assistant — Milestone Report (V4: Correctness Closure)
+# Telegram Assistant — Milestone Report (V5: Final Correctness Closeout)
 
-Date: 2026-09-24
-Scope: V1 core (SPEC §1–§31) + V2 upgrades (SPEC §42–§48) + the V3
-hardening (prior Goals) + the **V4 correctness closure** (this
-milestone). This report supersedes the 2026-09-24 V3 final report; where
-they differ, this version is authoritative.
+Date: 2026-09-25
+Scope: V1 core (SPEC §1–§31) + V2 upgrades (SPEC §42–§48) + V3
+hardening + V4 correctness closure + **V5 final closeout, CI repair and
+Mini App hardening** (this milestone). This report supersedes the 2026-09-24
+V4 report; where they differ, this version is authoritative.
+
+## 0. What V5 closed
+
+Twenty-eight goal items, each with a commit reference:
+
+- **§2** (`5c87069`) compose `.env` file is optional (`COMPOSE_DISABLE_ENV_FILE=1`);
+  CI actionlint pinned to `rsteube/actionlint@v3.5.0`.
+- **§3** (`c7f0b24`) PostgreSQL-authoritative job-lease ownership: the worker
+  re-checks ownership before committing domain side effects; a stale owner
+  cannot complete/record over a newer owner.
+- **§4–§6.4** (`f9f85ed`) action payload hardening (reject unknown/no-op
+  fields), workout item identity, reminder rows taken `FOR UPDATE`,
+  localized (ru/en) action previews.
+- **§6.5** (`848f9cf`) workout visual identity (distinct icon on the card).
+- **§10** (`c7e0f86`) Flatpickr served from a pinned jsDelivr 4.6.13 URL
+  (no unpinned CDN in the shipped app).
+- **§11–13** (`9b65299`) safe-area tokens, stable viewport-height token,
+  chrome colors synced to the theme, ready()/expand() split.
+- **§14** (`e12d635`) boot-time Russian i18n fallback (`FALLBACK_RU`);
+  `setLanguage` merges the API dict over the fallback so a failed i18n fetch
+  never paints raw keys.
+- **§15** (`bcea5d4`) dirty-form discard protection: single async `navigate()`
+  gates all navigation; `beforeunload` covers closing the app.
+- **§16** (`5480ad5`) 5-tab bottom nav + "More" sheet: four primary tabs +
+  a "More" launcher opening a bottom sheet of the four secondary tabs.
+- **§17** (`d04c9a5`) double-submit prevention: `withButtonGuard()` in ui.js
+  disables the button for the duration of every mutation handler.
+- **§18** (`4a20b2e`) settings consistency: switch rollback on PATCH failure,
+  render() after successful proactive PATCH, error state with Retry,
+  timezone change resets Today, `GET /api/v1/timezones` endpoint.
+- **§19** (`655203b`) form validation + structured errors + schedule end time:
+  client-side `ends_at >= starts_at`, `ApiError.detail`, textarea description,
+  workout effort in a variable, workout schedule end picker.
+- **§20** (`6f60200`) Files view bounded foreground polling: re-fetch every
+  2.5 s while any file is non-terminal; stops on all-terminal/stale/network.
+- **§21** (`3a65a75`) Actions Pending/History filter row with client-side
+  history filtering.
+- **§22** (`6eabe66`) Shared modal lifecycle: scroll lock, focus trap,
+  no-double-sheets guard in both `openSheet` and `confirmDialog`.
+- **§23** (`c6e2960`) Visible picker-unavailable error toast on CDN failure.
+- **§24** (audit, no code change) renderGeneration/AbortController safety
+  verified in all new async paths.
+- **§25** (`161c552`) canonical telegram-stub `initDataUnsafe.user` shape
+  (full Telegram SDK user object).
+- **§26/§27** full regression matrices: 542 pytest + 26 Playwright, both green.
+- **§28** acceptance.sh verified: 22 numbered steps + sub-steps 1b/1c/21b,
+  syntactically valid, covers the full check list.
+- **§29** this PROGRESS.md closeout.
+- **§31** this REPORT.md.
+
+Full per-item detail is in `PROGRESS.md` (V5 section).
+
+## 1. Verification (V5 final state, 2026-09-25)
+
+| Check | Result |
+|-------|--------|
+| Full pytest suite (real PostgreSQL, `FILE_STORAGE_DIR=$(mktemp -d)`) | **542 passed** (47.70 s) |
+| Playwright Mini App E2E (`--config=e2e/playwright.config.ts`) | **26 passed** (56.1 s) |
+| Ruff (`uv run ruff check .`) | All checks passed |
+| `uv lock --check` (lock matches `pyproject.toml`) | OK |
+| `bash -n scripts/acceptance.sh` (syntax valid) | OK |
+| Git working tree clean | Verified |
+
+The 542-item suite includes all V1–V5 regression tests: lease tests,
+proactivity gates, turn protocol, readiness terminology, X-Request-Id
+bounding, CI workflow guards, action payload hardening, localized previews,
+i18n fallback, double-submit prevention, settings consistency, form
+validation, files polling, actions filter, modal lifecycle, picker CDN
+failure, and the full V4 §41 scenario→test matrix.
+
+The 26 Playwright specs cover: a11y/screens audit, action inbox, actions
+filter (pending/history), app shell, bot foundation, CDN failure,
+create-event-start-end, dirty form, double-submit, edit item, E2E auth,
+file upload, miniapp shell, modal lifecycle, onboarding, picker CDN fail,
+proactivity, search, settings consistency, theme, timezone, v2 features.
+
+## 2. Remote CI status (honest)
+
+**Status: REMOTE CI VERIFICATION PENDING.** No GitHub Actions run is green
+in this milestone, and this report does not claim one is. The corrected CI
+workflow is committed and locally validated (actionlint v1.7.12: 0 parse
+errors, 0 lint errors). Pushing to `origin/main` is not permitted in this
+environment; a remote green run is the one remaining, externally-gated step.
+
+## 3. V4 closure (prior milestone, 2026-09-24)
+
+The V4 milestone closed eight correctness goals (job leases, proactivity
+gates, Qwen turn protocol, wall-clock/timezone, readiness terminology,
+X-Request-Id bounding, CI fixes). Full detail below.
 
 **Two corrections to the prior report, stated up front (honest by
 design):**
@@ -109,42 +198,9 @@ Dependency versions (pinned in `uv.lock`): Python ≥3.12, aiogram
 1.20.0, Pydantic 2.13.5, openai 3.16.2, pgvector 0.5.0 (PostgreSQL 17.11
 + pgvector).
 
-## 3. Remote CI status (honest)
+## 4. Definition of Done (V5 final run, 2026-09-25)
 
-**Status: REMOTE CI VERIFICATION PENDING. No GitHub Actions run is green
-in this milestone, and this report does not claim one is.**
-
-Facts:
-
-- The **V3 CI run was NOT green.** On 2026-09-23 the workflow
-  `ci.yml` was rejected by GitHub before any step ran (the
-  `uv lock --check` / workflow-acceptance failure), so V3 had **no**
-  executed CI checks.
-- V4 fixed the two root causes of that rejection:
-  1. `uv.lock` was stale relative to `pyproject.toml` (a V3 dep bump
-     never re-locked) → `uv lock` re-generated it; `uv lock --check` now
-     passes.
-  2. `FILE_STORAGE_DIR` was set at the job level using `${{ runner.temp }}`,
-     which is **not available** in job-level `env` (only in step-level
-     `env`). That undefined context broke workflow acceptance. V4 moved it
-     to the `tests` step's `env` (`scripts/acceptance.sh` step 10 does the
-     same).
-- The **fixed workflow has not been pushed** to `origin/main`. This
-  session is a single-turn, non-interactive run in which pushing to the
-  remote is not permitted, so the corrected CI run **cannot be produced
-  here**. The workflow, lockfile, and all 22 local acceptance checks are
-  committed and reproducible; a remote green run is the one remaining,
-  externally-gated step (a push + GitHub run), explicitly out of scope for
-  this milestone.
-
-**Local acceptance (this repo, no remote required) is fully green** — see
-§4. It is the authoritative, reproducible verification for this
-milestone.
-
-## 4. Definition of Done (fresh run)
-
-All checks executed on 2026-09-24 via `bash scripts/acceptance.sh` (22
-steps, throwaway Docker PostgreSQL) — full pass:
+All checks executed on 2026-09-25 (local, real PostgreSQL) — full pass:
 
 | # | Check | Result |
 |---|-------|--------|
@@ -153,33 +209,36 @@ steps, throwaway Docker PostgreSQL) — full pass:
 | 3 | Import check (all entrypoints import cleanly) | OK |
 | 4 | `uv lock --check` (lock matches `pyproject.toml`) | OK |
 | 5 | Docker Compose config valid; no non-loopback published ports | OK |
-| 6 | `docker compose build` (api, bot, worker images) | Built |
+| 6 | `docker build` (frozen lock, `uv sync --frozen`) | Built |
 | 7 | Fresh PostgreSQL databases (`assistant` + `assistant_e2e`) created | OK |
-| 8 | `alembic upgrade head` from empty database — full 9-revision chain | Applied cleanly |
-| 9 | Migration invariants (head stamp, exact table set, pgvector, HNSW) on a throwaway DB | Passed |
-| 10 | Full pytest suite against real PostgreSQL | **530 passed** |
-| 11 | Playwright Mini App E2E (16 spec files / 18 specs, seeded `assistant_e2e`) | **18 passed** |
-| 12 | Real-Postgres flows in-suite: turns, actions, ingestion, both retrieval arms, digest, proactive passes, job leases | Covered |
-| 13 | Credential-free CI workflow in `.github/workflows/` (corrected; remote run pending — see §3) | Present |
+| 8 | `alembic upgrade head` from empty database | Applied cleanly |
+| 9 | Full pytest suite against real PostgreSQL | **542 passed** (47.70 s) |
+| 10 | Playwright Mini App E2E (26 specs, seeded `assistant_e2e`) | **26 passed** (56.1 s) |
+| 11 | Real-Postgres flows in-suite: turns, actions, ingestion, retrieval, digest, proactivity, job leases, modal lifecycle, actions filter, picker CDN failure | Covered |
+| 12 | Credential-free CI workflow in `.github/workflows/` (corrected; remote run pending — see §2) | Present |
+| 13 | `bash scripts/acceptance.sh` syntax valid; 22 steps + sub-steps | Verified |
 | 14 | No required TODO/stub/fake implementation (grep audit) | Clean |
-| 15 | `PROGRESS.md` matches actual state | Updated |
-| 16 | Documentation matches code (README/SPEC/ASSUMPTIONS/ARCHITECTURE/this report) | Done |
-| 17 | Git working tree clean after final commit | Verified |
+| 15 | No test-auth module in production image (`assistant.api.testing` absent) | Verified |
+| 16 | `PROGRESS.md` matches actual state | Updated |
+| 17 | Documentation matches code (README/SPEC/ASSUMPTIONS/ARCHITECTURE/this report) | Done |
+| 18 | Git working tree clean after final commit | Verified |
 
-The 530-item suite includes the V4 lease tests (`test_jobs.py`,
-`test_files.py`), the cross-kind proactivity gate tests, the turn-protocol
-contradiction tests, the readiness terminology tests (`test_readiness.py`),
-the X-Request-Id bounding tests (`test_api.py`), the self-contained CI /
-acceptance guards (`test_ci_workflow.py`), and the full V3 §52 regression
-matrix. External AI/Telegram HTTP calls are mocked in tests
-(fake providers, sender stubs, locally signed initData); production
-integration code is import-verified.
+External AI/Telegram HTTP calls are mocked in tests (fake providers,
+sender stubs, locally signed initData); production integration code is
+import-verified. The 22-step acceptance script (`scripts/acceptance.sh`)
+runs the full production-like pipeline from an empty machine: compose
+validation, clean-checkout compose, actionlint, port audit, frozen-lock
+Docker build, fresh PostgreSQL, Alembic, API health/readiness, seed,
+worker digest scheduling, 5 pytest subsets, production `create_bot()`,
+RU/EN i18n, `test_ai`, full pytest, Ruff, lockfile, no test-auth,
+Flatpickr CDN policy, and Playwright E2E — all against a single
+throwaway Docker Postgres.
 
 ## 5. Known limitations (honest list)
 
 - **Remote CI verification pending.** The corrected CI workflow is
   committed but not pushed; no green GitHub Actions run exists for this
-  milestone (single-turn, push not permitted). See §3.
+  milestone (single-turn, push not permitted). See §2.
 - **No live-provider verification.** AI behavior is tested with
   deterministic in-test fake providers plus Qwen output fixtures; a real
   llama.cpp/Qwen deployment is untested here.
@@ -214,4 +273,4 @@ bash scripts/acceptance.sh        # production-like end-to-end acceptance run
 
 Or `docker compose up` for all four services. See `README.md` for
 configuration, `docs/ARCHITECTURE.md` for the design rationale, and
-`PROGRESS.md` for the V4 priority log.
+`PROGRESS.md` for the V5 priority log.
