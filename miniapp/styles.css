@@ -366,6 +366,12 @@ body {
   cursor: not-allowed;
 }
 
+/* §17: a guarded mutation in flight — disabled already greys the button; this
+   class is a stable hook for asserting the busy state (and blocks taps). */
+.btn.is-busy {
+  pointer-events: none;
+}
+
 .btn-block {
   display: block;
   width: 100%;

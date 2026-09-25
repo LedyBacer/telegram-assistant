@@ -66,6 +66,29 @@ export function btn(label, onClick, { variant = "ghost", disabled = false, ariaL
   );
 }
 
+/**
+ * §17: guard a mutating action against double-submission. Disables the source
+ * button while `fn` runs and re-enables it afterwards (even on error), so a
+ * rapid second tap cannot fire a duplicate request. If a previous guard on the
+ * same button is still in flight the call is dropped entirely. `fn` may
+ * re-render and replace the button; the re-enable is then a no-op on the
+ * detached node. `button` may be null (a non-button trigger), in which case
+ * `fn` just runs. Returns `fn`'s result.
+ */
+export async function withButtonGuard(button, fn) {
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  button.classList.add("is-busy");
+  try {
+    return await fn();
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.classList.remove("is-busy");
+    }
+  }
+}
+
 export function field(labelText, ...controls) {
   return el("label", { class: "field" }, el("span", { class: "field-label" }, labelText), ...controls);
 }

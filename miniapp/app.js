@@ -36,6 +36,7 @@ import {
   pickDateTime,
   pickTime,
   fmtBytes,
+  withButtonGuard,
 } from "./js/ui.js";
 import {
   wallParts,
@@ -262,39 +263,46 @@ function itemCard(item) {
       })
     );
     actions.push(
-      btn(S("miniapp.btn_done"), async () => {
-        try {
-          await api(`/api/v1/items/${item.id}/complete`, "POST");
-          toast(S("miniapp.saved"));
-          render();
-        } catch {
-          toast(S("miniapp.error_generic"), "error");
-        }
-      }, { variant: "primary" })
+      btn(S("miniapp.btn_done"), (e) =>
+        withButtonGuard(e.currentTarget, async () => {
+          try {
+            await api(`/api/v1/items/${item.id}/complete`, "POST");
+            toast(S("miniapp.saved"));
+            render();
+          } catch {
+            toast(S("miniapp.error_generic"), "error");
+          }
+        }), { variant: "primary" })
     );
     actions.push(
-      btn(S("miniapp.btn_cancel"), async () => {
-        try {
-          await api(`/api/v1/items/${item.id}/cancel`, "POST");
-          toast(S("miniapp.saved"));
-          render();
-        } catch {
-          toast(S("miniapp.error_generic"), "error");
-        }
-      })
+      btn(S("miniapp.btn_cancel"), (e) =>
+        withButtonGuard(e.currentTarget, async () => {
+          try {
+            await api(`/api/v1/items/${item.id}/cancel`, "POST");
+            toast(S("miniapp.saved"));
+            render();
+          } catch {
+            toast(S("miniapp.error_generic"), "error");
+          }
+        }))
     );
   }
   actions.push(
-    btn(S("miniapp.btn_delete"), async () => {
-      const ok = await confirmDialog(S("miniapp.confirm_delete", { title: item.title }));
-      if (!ok) return;
-      try {
-        await api(`/api/v1/items/${item.id}`, "DELETE");
-        toast(S("miniapp.deleted"));
-        render();
-      } catch {
-        toast(S("miniapp.error_generic"), "error");
-      }
+    btn(S("miniapp.btn_delete"), (e) => {
+      const btnEl = e.currentTarget; // capture before the await (currentTarget resets post-dispatch)
+      (async () => {
+        const ok = await confirmDialog(S("miniapp.confirm_delete", { title: item.title }));
+        if (!ok) return;
+        withButtonGuard(btnEl, async () => {
+          try {
+            await api(`/api/v1/items/${item.id}`, "DELETE");
+            toast(S("miniapp.deleted"));
+            render();
+          } catch {
+            toast(S("miniapp.error_generic"), "error");
+          }
+        });
+      })();
     }, { variant: "danger" })
   );
 
@@ -403,13 +411,17 @@ async function viewToday(view, gen, signal) {
     }).format(new Date(hy, hm - 1, hd))
   );
 
+  // replaceChildren(stringifies null to a literal "null" text node), so drop
+  // the null summary (an empty day) before populating the view.
   view.replaceChildren(
-    daySummary(dayItems),
-    grid,
-    dayHeader,
-    dayItems.length
-      ? el("div", { class: "list" }, ...dayItems.map(itemCard))
-      : empty(S("miniapp.calendar_empty_day"))
+    [
+      daySummary(dayItems),
+      grid,
+      dayHeader,
+      dayItems.length
+        ? el("div", { class: "list" }, ...dayItems.map(itemCard))
+        : empty(S("miniapp.calendar_empty_day")),
+    ].filter((node) => node !== null)
   );
 }
 
@@ -564,32 +576,34 @@ function actionCard(a) {
   const actions = [];
   if (a.status === "proposed") {
     actions.push(
-      btn(S("miniapp.confirm"), async () => {
-        try {
-          await api(`/api/v1/actions/${a.id}/confirm`, "POST");
-          toast(S("miniapp.saved"));
-          render();
-        } catch (e) {
-          // 409 = stale target (server already expired the action): surface
-          // the server reason and refresh so the card shows "expired".
-          // 400 = payload no longer valid (same outcome).
-          if (e && (e.status === 409 || e.status === 400)) {
-            toast(S("miniapp.action_stale_detail", { reason: e.message }), "error");
-          } else {
+      btn(S("miniapp.confirm"), (e) =>
+        withButtonGuard(e.currentTarget, async () => {
+          try {
+            await api(`/api/v1/actions/${a.id}/confirm`, "POST");
+            toast(S("miniapp.saved"));
+            render();
+          } catch (err) {
+            // 409 = stale target (server already expired the action): surface
+            // the server reason and refresh so the card shows "expired".
+            // 400 = payload no longer valid (same outcome).
+            if (err && (err.status === 409 || err.status === 400)) {
+              toast(S("miniapp.action_stale_detail", { reason: err.message }), "error");
+            } else {
+              toast(S("miniapp.error_generic"), "error");
+            }
+            render();
+          }
+        }), { variant: "primary" }),
+      btn(S("miniapp.reject"), (e) =>
+        withButtonGuard(e.currentTarget, async () => {
+          try {
+            await api(`/api/v1/actions/${a.id}/reject`, "POST");
+            toast(S("miniapp.saved"));
+            render();
+          } catch {
             toast(S("miniapp.error_generic"), "error");
           }
-          render();
-        }
-      }, { variant: "primary" }),
-      btn(S("miniapp.reject"), async () => {
-        try {
-          await api(`/api/v1/actions/${a.id}/reject`, "POST");
-          toast(S("miniapp.saved"));
-          render();
-        } catch {
-          toast(S("miniapp.error_generic"), "error");
-        }
-      })
+        }))
     );
   }
 
@@ -800,34 +814,33 @@ async function viewNew(view) {
     }
   });
 
-  const saveBtn = btn(S("miniapp.save"), async () => {
-    formState.title = titleInput.value.trim();
-    formState.description = descInput.value.trim();
-    if (!formState.title) {
-      toast(S("miniapp.new_title_required"), "error");
-      titleInput.focus();
-      return;
-    }
-    saveBtn.disabled = true;
-    try {
-      await api("/api/v1/items", "POST", {
-        title: formState.title,
-        kind: formState.kind,
-        description: formState.description || null,
-        starts_at: formState.startsAt,
-        ends_at: formState.endsAt,
-        due_at: formState.dueAt,
-        priority: formState.priority,
-        remind_offsets_minutes: remindPicker.get(),
-      });
-      toast(S("miniapp.saved"));
-      formDirty = false; // just persisted — nothing left to discard
-      navigate("today");
-    } catch (e) {
-      toast(e && e.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
-      saveBtn.disabled = false;
-    }
-  }, { variant: "primary" });
+  const saveBtn = btn(S("miniapp.save"), (e) =>
+    withButtonGuard(e.currentTarget, async () => {
+      formState.title = titleInput.value.trim();
+      formState.description = descInput.value.trim();
+      if (!formState.title) {
+        toast(S("miniapp.new_title_required"), "error");
+        titleInput.focus();
+        return;
+      }
+      try {
+        await api("/api/v1/items", "POST", {
+          title: formState.title,
+          kind: formState.kind,
+          description: formState.description || null,
+          starts_at: formState.startsAt,
+          ends_at: formState.endsAt,
+          due_at: formState.dueAt,
+          priority: formState.priority,
+          remind_offsets_minutes: remindPicker.get(),
+        });
+        toast(S("miniapp.saved"));
+        formDirty = false; // just persisted — nothing left to discard
+        navigate("today");
+      } catch (err) {
+        toast(err && err.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
+      }
+    }), { variant: "primary" });
 
   view.replaceChildren(
     card(
@@ -971,16 +984,17 @@ async function viewEdit(view, gen, signal) {
                 r.offset_minutes
                   ? S("miniapp.reminder_offset", { n: r.offset_minutes })
                   : S("miniapp.reminder_at_start")),
-              btn(S("miniapp.btn_cancel"), async () => {
-                try {
-                  await api(`/api/v1/reminders/${r.id}/cancel`, "POST");
-                  toast(S("miniapp.reminder_cancelled"));
-                  reminders = reminders.filter((x) => x.id !== r.id);
-                  renderReminders();
-                } catch {
-                  toast(S("miniapp.error_generic"), "error");
-                }
-              })
+              btn(S("miniapp.btn_cancel"), (e) =>
+                withButtonGuard(e.currentTarget, async () => {
+                  try {
+                    await api(`/api/v1/reminders/${r.id}/cancel`, "POST");
+                    toast(S("miniapp.reminder_cancelled"));
+                    reminders = reminders.filter((x) => x.id !== r.id);
+                    renderReminders();
+                  } catch {
+                    toast(S("miniapp.error_generic"), "error");
+                  }
+                }))
             ))
         : [el("p", { class: "reminder-none" }, S("miniapp.reminders_empty"))])
     );
@@ -990,33 +1004,31 @@ async function viewEdit(view, gen, signal) {
   // Add reminders to the existing item (V4 §28): the same shared picker as
   // the New view; the server re-validates and caps the item's total.
   const remindPicker = reminderPicker();
-  const addReminderBtn = btn(S("miniapp.reminder_save"), async () => {
-    const selected = remindPicker.get();
-    if (!selected.length) return;
-    if (!item.starts_at) {
-      toast(S("miniapp.reminder_needs_start"), "error");
-      return;
-    }
-    addReminderBtn.disabled = true;
-    try {
-      const created = await api(
-        `/api/v1/items/${id}/reminders`,
-        "POST",
-        { offsets_minutes: selected },
-        signal,
-      );
-      toast(S("miniapp.reminder_added"));
-      reminders.push(...created);
-      renderReminders();
-      remindPicker.clear();
-    } catch {
-      toast(S("miniapp.error_generic"), "error");
-    } finally {
-      addReminderBtn.disabled = false;
-    }
-  });
+  const addReminderBtn = btn(S("miniapp.reminder_save"), (e) =>
+    withButtonGuard(e.currentTarget, async () => {
+      const selected = remindPicker.get();
+      if (!selected.length) return;
+      if (!item.starts_at) {
+        toast(S("miniapp.reminder_needs_start"), "error");
+        return;
+      }
+      try {
+        const created = await api(
+          `/api/v1/items/${id}/reminders`,
+          "POST",
+          { offsets_minutes: selected },
+          signal,
+        );
+        toast(S("miniapp.reminder_added"));
+        reminders.push(...created);
+        renderReminders();
+        remindPicker.clear();
+      } catch {
+        toast(S("miniapp.error_generic"), "error");
+      }
+    }));
 
-  const saveBtn = btn(S("miniapp.save"), async () => {
+  const saveBtn = btn(S("miniapp.save"), (e) => withButtonGuard(e.currentTarget, async () => {
     const title = titleInput.value.trim();
     const description = descInput.value.trim();
     if (!title) {
@@ -1033,18 +1045,16 @@ async function viewEdit(view, gen, signal) {
     if (formState.endsAt !== original.endsAt) body.ends_at = formState.endsAt;
     if (formState.dueAt !== original.dueAt) body.due_at = formState.dueAt;
     if (formState.priority !== original.priority) body.priority = formState.priority;
-    saveBtn.disabled = true;
     try {
       await api(`/api/v1/items/${id}`, "PATCH", body, signal);
       toast(S("miniapp.saved"));
       formDirty = false;
       navigate(state.editReturn || "today");
-    } catch (e) {
+    } catch (err) {
       if (isStale(gen)) return;
-      toast(e && e.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
-      saveBtn.disabled = false;
+      toast(err && err.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
     }
-  }, { variant: "primary" });
+  }), { variant: "primary" });
 
   view.replaceChildren(
     card(
@@ -1136,14 +1146,13 @@ async function viewWorkouts(view, gen, signal) {
         chosen === "" ? S("miniapp.not_set") : `${chosen} / 10`;
   });
 
-  const logBtn = btn(S("miniapp.log"), async () => {
+  const logBtn = btn(S("miniapp.log"), (e) => withButtonGuard(e.currentTarget, async () => {
     const name = nameInput.value.trim();
     if (!name) {
       toast(S("miniapp.workout_name_required"), "error");
       nameInput.focus();
       return;
     }
-    logBtn.disabled = true;
     try {
       await api("/api/v1/workouts", "POST", {
         name,
@@ -1155,14 +1164,13 @@ async function viewWorkouts(view, gen, signal) {
       render();
     } catch {
       toast(S("miniapp.error_generic"), "error");
-      logBtn.disabled = false;
     }
     function effortValue() {
       const v = effortBtn.querySelector(".picker-value").textContent;
       const match = v.match(/^(\d+)/);
       return match ? Number(match[1]) : null;
     }
-  }, { variant: "primary" });
+  }), { variant: "primary" });
 
   const logCard = card(
     el("h2", { class: "view-title" }, S("miniapp.workout_log")),
@@ -1192,7 +1200,7 @@ async function viewWorkouts(view, gen, signal) {
     "aria-label": S("miniapp.minutes"),
     inputmode: "numeric",
   });
-  const schedBtn = btn(S("miniapp.schedule"), async () => {
+  const schedBtn = btn(S("miniapp.schedule"), (e) => withButtonGuard(e.currentTarget, async () => {
     const name = schedNameInput.value.trim();
     if (!name) {
       toast(S("miniapp.workout_name_required"), "error");
@@ -1203,7 +1211,6 @@ async function viewWorkouts(view, gen, signal) {
       toast(S("miniapp.when_required"), "error");
       return;
     }
-    schedBtn.disabled = true;
     try {
       await api("/api/v1/workouts/schedule", "POST", {
         name,
@@ -1214,9 +1221,8 @@ async function viewWorkouts(view, gen, signal) {
       render();
     } catch {
       toast(S("miniapp.error_generic"), "error");
-      schedBtn.disabled = false;
     }
-  }, { variant: "primary" });
+  }), { variant: "primary" });
 
   const scheduleCard = card(
     el("h2", { class: "view-title" }, S("miniapp.workout_schedule")),
@@ -1291,21 +1297,21 @@ async function viewFiles(view, gen, signal) {
     id: "file-upload-input",
     "aria-label": S("miniapp.upload"),
   });
-  fileInput.addEventListener("change", async () => {
+  fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];
     if (!file) return;
-    uploadBtn.disabled = true;
-    uploadLabel.textContent = S("miniapp.uploading");
-    try {
-      await apiUpload("/api/v1/files", file);
-      toast(S("miniapp.uploaded", { name: file.name }));
-      render();
-    } catch {
-      toast(S("miniapp.upload_failed"), "error");
-      uploadBtn.disabled = false;
-      uploadLabel.textContent = S("miniapp.upload");
-      fileInput.value = "";
-    }
+    withButtonGuard(uploadBtn, async () => {
+      uploadLabel.textContent = S("miniapp.uploading");
+      try {
+        await apiUpload("/api/v1/files", file);
+        toast(S("miniapp.uploaded", { name: file.name }));
+        render();
+      } catch {
+        toast(S("miniapp.upload_failed"), "error");
+        uploadLabel.textContent = S("miniapp.upload");
+        fileInput.value = "";
+      }
+    });
   });
   const uploadLabel = el("span", { class: "btn-label" }, S("miniapp.upload"));
   const uploadBtn = el(
@@ -1323,35 +1329,29 @@ async function viewFiles(view, gen, signal) {
   });
   const searchBtn = btn(S("miniapp.search"), null, { variant: "primary" });
   const searchResults = el("div", { class: "search-results" });
-  let searchBusy = false;
-  const doSearch = async () => {
+  const doSearch = () => {
     const q = searchInput.value.trim();
-    if (!q || searchBusy) return;
-    searchBusy = true;
-    searchBtn.disabled = true;
-    searchResults.replaceChildren(loading());
-    try {
-      const results = await api(
-        `/api/v1/files/search?q=${encodeURIComponent(q)}&top_k=10`,
-        "GET",
-        undefined,
-        signal,
-      );
-      if (isStale(gen)) return;
-      searchResults.replaceChildren(
-        results.length
-          ? el("div", { class: "list" }, ...results.map(searchResultCard))
-          : empty(S("miniapp.search_empty"))
-      );
-    } catch {
-      if (isStale(gen)) return;
-      searchResults.replaceChildren(errorState(S("miniapp.error_load"), doSearch));
-    } finally {
-      if (!isStale(gen)) {
-        searchBusy = false;
-        searchBtn.disabled = false;
+    if (!q) return;
+    withButtonGuard(searchBtn, async () => {
+      searchResults.replaceChildren(loading());
+      try {
+        const results = await api(
+          `/api/v1/files/search?q=${encodeURIComponent(q)}&top_k=10`,
+          "GET",
+          undefined,
+          signal,
+        );
+        if (isStale(gen)) return;
+        searchResults.replaceChildren(
+          results.length
+            ? el("div", { class: "list" }, ...results.map(searchResultCard))
+            : empty(S("miniapp.search_empty"))
+        );
+      } catch {
+        if (isStale(gen)) return;
+        searchResults.replaceChildren(errorState(S("miniapp.error_load"), doSearch));
       }
-    }
+    });
   };
   searchBtn.onclick = doSearch;
   searchInput.addEventListener("keydown", (e) => {
@@ -1394,7 +1394,7 @@ function fileCard(f) {
     f.error ? el("p", { class: "item-error" }, f.error) : null,
     el("div", { class: "item-actions" },
       f.state === "failed"
-        ? btn(S("miniapp.file_retry"), async () => {
+        ? btn(S("miniapp.file_retry"), (e) => withButtonGuard(e.currentTarget, async () => {
             try {
               await api(`/api/v1/files/${f.id}/retry`, "POST");
               toast(S("miniapp.saved"));
@@ -1402,18 +1402,23 @@ function fileCard(f) {
             } catch {
               toast(S("miniapp.error_generic"), "error");
             }
-          }, { variant: "primary" })
+          }), { variant: "primary" })
         : null,
-      btn(S("miniapp.btn_delete"), async () => {
-        const ok = await confirmDialog(S("miniapp.confirm_delete", { title: f.original_filename }));
-        if (!ok) return;
-        try {
-          await api(`/api/v1/files/${f.id}`, "DELETE");
-          toast(S("miniapp.deleted"));
-          render();
-        } catch {
-          toast(S("miniapp.error_generic"), "error");
-        }
+      btn(S("miniapp.btn_delete"), (e) => {
+        const btnEl = e.currentTarget; // capture before the await (currentTarget resets post-dispatch)
+        (async () => {
+          const ok = await confirmDialog(S("miniapp.confirm_delete", { title: f.original_filename }));
+          if (!ok) return;
+          withButtonGuard(btnEl, async () => {
+            try {
+              await api(`/api/v1/files/${f.id}`, "DELETE");
+              toast(S("miniapp.deleted"));
+              render();
+            } catch {
+              toast(S("miniapp.error_generic"), "error");
+            }
+          });
+        })();
       }, { variant: "danger" })
     )
   );
@@ -1448,14 +1453,13 @@ async function viewFacts(view, gen, signal) {
     placeholder: S("miniapp.facts_category_ph"),
     "aria-label": S("miniapp.facts_category"),
   });
-  const proposeBtn = btn(S("miniapp.propose"), async () => {
+  const proposeBtn = btn(S("miniapp.propose"), (e) => withButtonGuard(e.currentTarget, async () => {
     const value = valueInput.value.trim();
     if (!value) {
       toast(S("miniapp.fact_value_required"), "error");
       valueInput.focus();
       return;
     }
-    proposeBtn.disabled = true;
     try {
       await api("/api/v1/facts", "POST", {
         value,
@@ -1465,9 +1469,8 @@ async function viewFacts(view, gen, signal) {
       render();
     } catch {
       toast(S("miniapp.error_generic"), "error");
-      proposeBtn.disabled = false;
     }
-  }, { variant: "primary" });
+  }), { variant: "primary" });
 
   view.replaceChildren(
     card(
@@ -1505,7 +1508,7 @@ function factCard(f, byId) {
   const actions = [];
   if (f.status === "proposed") {
     actions.push(
-      btn(S("miniapp.confirm"), async () => {
+      btn(S("miniapp.confirm"), (e) => withButtonGuard(e.currentTarget, async () => {
         try {
           await api(`/api/v1/facts/${f.id}/confirm`, "POST");
           toast(S("miniapp.saved"));
@@ -1513,8 +1516,8 @@ function factCard(f, byId) {
         } catch {
           toast(S("miniapp.error_generic"), "error");
         }
-      }, { variant: "primary" }),
-      btn(S("miniapp.reject"), async () => {
+      }), { variant: "primary" }),
+      btn(S("miniapp.reject"), (e) => withButtonGuard(e.currentTarget, async () => {
         try {
           await api(`/api/v1/facts/${f.id}/reject`, "POST");
           toast(S("miniapp.saved"));
@@ -1522,7 +1525,7 @@ function factCard(f, byId) {
         } catch {
           toast(S("miniapp.error_generic"), "error");
         }
-      })
+      }))
     );
   }
   if (replaceable) {
@@ -1534,16 +1537,21 @@ function factCard(f, byId) {
     );
   }
   actions.push(
-    btn(S("miniapp.btn_delete"), async () => {
-      const ok = await confirmDialog(S("miniapp.confirm_delete", { title: f.value }));
-      if (!ok) return;
-      try {
-        await api(`/api/v1/facts/${f.id}`, "DELETE");
-        toast(S("miniapp.deleted"));
-        render();
-      } catch {
-        toast(S("miniapp.error_generic"), "error");
-      }
+    btn(S("miniapp.btn_delete"), (e) => {
+      const btnEl = e.currentTarget; // capture before the await (currentTarget resets post-dispatch)
+      (async () => {
+        const ok = await confirmDialog(S("miniapp.confirm_delete", { title: f.value }));
+        if (!ok) return;
+        withButtonGuard(btnEl, async () => {
+          try {
+            await api(`/api/v1/facts/${f.id}`, "DELETE");
+            toast(S("miniapp.deleted"));
+            render();
+          } catch {
+            toast(S("miniapp.error_generic"), "error");
+          }
+        });
+      })();
     }, { variant: "danger" })
   );
 
@@ -1590,14 +1598,13 @@ function replaceForm(f) {
     placeholder: S("miniapp.fact_replace_ph"),
     "aria-label": S("miniapp.fact_replace_ph"),
   });
-  const save = btn(S("miniapp.save"), async () => {
+  const save = btn(S("miniapp.save"), (e) => withButtonGuard(e.currentTarget, async () => {
     const value = inputNode.value.trim();
     if (!value) {
       toast(S("miniapp.fact_value_required"), "error");
       inputNode.focus();
       return;
     }
-    save.disabled = true;
     try {
       await api(`/api/v1/facts/${f.id}/supersede`, "POST", { value });
       supersedingFactId = null;
@@ -1605,9 +1612,8 @@ function replaceForm(f) {
       render();
     } catch {
       toast(S("miniapp.error_generic"), "error");
-      save.disabled = false;
     }
-  }, { variant: "primary" });
+  }), { variant: "primary" });
   return el("div", { class: "replace-form" },
     inputNode,
     el("div", { class: "item-actions" },
@@ -1640,7 +1646,7 @@ async function viewSettings(view, gen, signal) {
   view.replaceChildren(
     card(
       el("h2", { class: "view-title" }, S("miniapp.settings")),
-      settingsRow(S("miniapp.settings_language"), S(settings.language === "en" ? "miniapp.lang_en" : "miniapp.lang_ru"), async () => {
+      settingsRow(S("miniapp.settings_language"), S(settings.language === "en" ? "miniapp.lang_en" : "miniapp.lang_ru"), (rowEl) => withButtonGuard(rowEl, async () => {
         const languages = await api("/api/v1/i18n/languages");
         const chosen = await openSheet({
           title: S("miniapp.settings_language"),
@@ -1654,8 +1660,8 @@ async function viewSettings(view, gen, signal) {
         await setLanguage(saved.language);
         toast(S("miniapp.settings_saved"));
         render();
-      }),
-      settingsRow(S("miniapp.settings_timezone"), settings.timezone, async () => {
+      })),
+      settingsRow(S("miniapp.settings_timezone"), settings.timezone, (rowEl) => withButtonGuard(rowEl, async () => {
         const chosen = await openSheet({
           title: S("miniapp.settings_timezone"),
           value: settings.timezone,
@@ -1668,21 +1674,21 @@ async function viewSettings(view, gen, signal) {
         state.me.settings = saved;
         toast(S("miniapp.settings_saved"));
         render();
-      }),
-      settingsRow(S("miniapp.settings_digest"), (settings.digest_time || "08:00").slice(0, 5), async () => {
+      })),
+      settingsRow(S("miniapp.settings_digest"), (settings.digest_time || "08:00").slice(0, 5), (rowEl) => withButtonGuard(rowEl, async () => {
         const chosen = await pickTime((settings.digest_time || "08:00:00").slice(0, 5));
         if (!chosen) return;
         const saved = await api("/api/v1/settings", "PATCH", { digest_time: `${chosen}:00` });
         state.me.settings = saved;
         toast(S("miniapp.settings_saved"));
         render();
-      }),
-      switchRow(S("miniapp.settings_motivation"), settings.motivation_enabled, async (next) => {
+      })),
+      switchRow(S("miniapp.settings_motivation"), settings.motivation_enabled, (next, boxEl) => withButtonGuard(boxEl, async () => {
         const saved = await api("/api/v1/settings", "PATCH", { motivation_enabled: next });
         state.me.settings = saved;
         toast(S("miniapp.settings_saved"));
         render();
-      })
+      }))
     ),
     proactiveCard
   );
@@ -1696,37 +1702,39 @@ async function buildProactiveCard(signal) {
     undefined,
     signal
   );
-  const patch = async (body) => {
-    try {
-      await api("/api/v1/proactive-settings", "PATCH", body);
-      toast(S("miniapp.settings_saved"));
-    } catch {
-      toast(S("miniapp.error_generic"), "error");
-    }
+  const patch = async (elRef, body) => {
+    await withButtonGuard(elRef, async () => {
+      try {
+        await api("/api/v1/proactive-settings", "PATCH", body);
+        toast(S("miniapp.settings_saved"));
+      } catch {
+        toast(S("miniapp.error_generic"), "error");
+      }
+    });
   };
   return card(
     el("h2", { class: "view-title" }, S("miniapp.proactive_title")),
-    switchRow(S("miniapp.proactive_enabled"), ps.enabled, (v) => patch({ enabled: v })),
-    switchRow(S("miniapp.proactive_weekly_review"), ps.weekly_review_enabled, (v) => patch({ weekly_review_enabled: v })),
-    switchRow(S("miniapp.proactive_workout_nudge"), ps.workout_nudge_enabled, (v) => patch({ workout_nudge_enabled: v })),
-    switchRow(S("miniapp.proactive_overdue_nudge"), ps.overdue_nudge_enabled, (v) => patch({ overdue_nudge_enabled: v })),
-    settingsRow(S("miniapp.proactive_quiet_from"), ps.quiet_hours_start.slice(0, 5), async () => {
+    switchRow(S("miniapp.proactive_enabled"), ps.enabled, (v, boxEl) => patch(boxEl, { enabled: v })),
+    switchRow(S("miniapp.proactive_weekly_review"), ps.weekly_review_enabled, (v, boxEl) => patch(boxEl, { weekly_review_enabled: v })),
+    switchRow(S("miniapp.proactive_workout_nudge"), ps.workout_nudge_enabled, (v, boxEl) => patch(boxEl, { workout_nudge_enabled: v })),
+    switchRow(S("miniapp.proactive_overdue_nudge"), ps.overdue_nudge_enabled, (v, boxEl) => patch(boxEl, { overdue_nudge_enabled: v })),
+    settingsRow(S("miniapp.proactive_quiet_from"), ps.quiet_hours_start.slice(0, 5), (rowEl) => withButtonGuard(rowEl, async () => {
       const t = await pickTime(ps.quiet_hours_start.slice(0, 5));
-      if (t) patch({ quiet_hours_start: `${t}:00` });
-    }),
-    settingsRow(S("miniapp.proactive_quiet_until"), ps.quiet_hours_end.slice(0, 5), async () => {
+      if (t) patch(rowEl, { quiet_hours_start: `${t}:00` });
+    })),
+    settingsRow(S("miniapp.proactive_quiet_until"), ps.quiet_hours_end.slice(0, 5), (rowEl) => withButtonGuard(rowEl, async () => {
       const t = await pickTime(ps.quiet_hours_end.slice(0, 5));
-      if (t) patch({ quiet_hours_end: `${t}:00` });
-    }),
-    settingsRow(S("miniapp.proactive_max_per_day"), String(ps.max_nudges_per_day), async () => {
+      if (t) patch(rowEl, { quiet_hours_end: `${t}:00` });
+    })),
+    settingsRow(S("miniapp.proactive_max_per_day"), String(ps.max_nudges_per_day), (rowEl) => withButtonGuard(rowEl, async () => {
       const chosen = await openSheet({
         title: S("miniapp.proactive_max_per_day"),
         value: String(ps.max_nudges_per_day),
         options: [...Array(20).keys()].map((i) => ({ value: String(i + 1), label: String(i + 1) })),
       });
-      if (chosen) patch({ max_nudges_per_day: Number(chosen) });
-    }),
-    settingsRow(S("miniapp.proactive_min_interval"), S("miniapp.minutes_value", { minutes: ps.min_interval_minutes }), async () => {
+      if (chosen) patch(rowEl, { max_nudges_per_day: Number(chosen) });
+    })),
+    settingsRow(S("miniapp.proactive_min_interval"), S("miniapp.minutes_value", { minutes: ps.min_interval_minutes }), (rowEl) => withButtonGuard(rowEl, async () => {
       const chosen = await openSheet({
         title: S("miniapp.proactive_min_interval"),
         value: String(ps.min_interval_minutes),
@@ -1735,8 +1743,8 @@ async function buildProactiveCard(signal) {
           label: n === 0 ? "0" : S("miniapp.minutes_value", { minutes: n }),
         })),
       });
-      if (chosen) patch({ min_interval_minutes: Number(chosen) });
-    })
+      if (chosen) patch(rowEl, { min_interval_minutes: Number(chosen) });
+    }))
   );
 }
 
@@ -1748,9 +1756,9 @@ function settingsRow(label, valueText, onTap) {
       type: "button",
       class: "settings-row",
       "aria-haspopup": "dialog",
-      onclick: () => {
+      onclick: (e) => {
         haptic();
-        onTap();
+        onTap(e.currentTarget);
       },
     },
     el("span", { class: "settings-row-label" }, label),
@@ -1768,7 +1776,7 @@ function switchRow(label, checked, onChange) {
     "aria-label": label,
     checked: checked ? "checked" : null,
   });
-  box.addEventListener("change", () => onChange(box.checked));
+  box.addEventListener("change", () => onChange(box.checked, box));
   return el("div", { class: "settings-row settings-row-static" },
     el("span", { class: "settings-row-label" }, label),
     el("label", { class: "switch-wrap" }, box));
