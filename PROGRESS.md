@@ -37,12 +37,34 @@ Goal items are tracked by their `§` number. Committed on `main`; full pytest
   strings (ru/en + `FALLBACK_RU`). E2E `dirty-form.e2e.ts` (cancel keeps the
   form, confirm leaves). The shared `goTab` test helper now confirms any
   discard dialog it triggers.
+- **§16** (`5480ad5`, HEAD) 5-tab bottom nav + "More" sheet: the bottom nav
+  is four primary tabs (today, actions, new, files) plus a "More" launcher
+  (`data-tab="more"`, `aria-haspopup`) that opens a bottom sheet of the four
+  secondary tabs (upcoming, workouts, facts, settings); the More button is a
+  launcher, never `state.tab`, so it is never active. New `miniapp.tab_more`
+  string (ru/en + `FALLBACK_RU`). The shared E2E `goTab` helper now routes
+  secondary tabs through the More sheet, and specs that asserted a secondary
+  bottom-nav button (a11y count, stale-render is-active, screenshots) were
+  updated to the launcher/sheet model.
+- **§17** (`d04c9a5`, HEAD) double-submit prevention: `withButtonGuard(button,
+  fn)` in ui.js disables the button (plus a `.is-busy` class with
+  `pointer-events:none`) for the duration of `fn`, re-enabling it in `finally`
+  only while connected. Every mutation handler in app.js routes through it
+  (item complete/cancel/delete, action confirm/reject, New + Edit save,
+  reminder add/cancel, workout log/schedule, file upload/search/retry/delete,
+  fact propose/confirm/reject/supersede/delete, settings language/timezone/
+  digest rows, motivation switch, and the eight proactive rows). Delete
+  handlers capture `e.currentTarget` before `await confirmDialog(...)` because
+  `currentTarget` is null after an `await` (else the guard is bypassed).
+  Fixing the empty-day render path exposed a pre-existing bug: viewToday
+  passed a `null` summary to `replaceChildren` (a literal "null" text node),
+  now filtered. New E2E `double-submit.e2e.ts`: a double click on a delayed
+  save fires exactly one POST /items.
 
 Verified at HEAD: `FILE_STORAGE_DIR=$(mktemp -d) uv run pytest -q` →
-542 passed; `npm run test:e2e` → 22 passed; `uv run ruff check .` clean.
+542 passed; `npm run test:e2e` → 23 passed; `uv run ruff check .` clean.
 
-**Remaining (in order):** §16 (5-tab bottom nav + "More" sheet), §17
-(guarded-async mutation helper / double-submit prevention), §18 (Settings
+**Remaining (in order):** §18 (Settings
 consistency: switch rollback, value refresh, Retry card, tz-change calendar
 reset, IANA list via `zoneinfo.available_timezones()`), §19 (form validation:
 ends>=starts pre-submit, structured ApiError, description textarea, real
