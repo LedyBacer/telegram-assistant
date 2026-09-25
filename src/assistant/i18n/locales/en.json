@@ -226,6 +226,8 @@
   "miniapp.reminder_needs_start": "Set a start time before adding reminders.",
   "miniapp.save": "Save",
   "miniapp.saved": "Saved.",
+  "miniapp.discard_confirm": "Leave without saving? Unsaved changes will be lost.",
+  "miniapp.discard": "Leave",
   "miniapp.workouts_stats": "Stats",
   "miniapp.stats_total": "total workouts",
   "miniapp.stats_minutes": "total minutes",

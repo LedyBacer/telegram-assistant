@@ -254,7 +254,7 @@ class WorkoutSchedule(BaseModel):
     ends_at: datetime | None = None
 
     @model_validator(mode="after")
-    def _validate_interval(self) -> "WorkoutSchedule":
+    def _validate_interval(self) -> WorkoutSchedule:
         # V5 §6.4: API parity with the schedule_workout action payload —
         # reject an inverted interval and contradictory end representations.
         if (

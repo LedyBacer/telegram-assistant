@@ -21,6 +21,12 @@ const FILE_KEY = `e2e-v2-${run}.txt`;
 
 async function goTab(page: Page, tab: string): Promise<void> {
   await page.locator(`.nav-btn[data-tab="${tab}"]`).click();
+  // Leaving a dirty New/Edit form pops a discard confirmation (V5 §15); these
+  // navigation tests don't care about the unsaved form, so confirm it away.
+  const dialog = page.locator('[role="alertdialog"]');
+  if (await dialog.isVisible().catch(() => false)) {
+    await dialog.locator(".btn", { hasText: "Покинуть" }).click();
+  }
 }
 
 /**

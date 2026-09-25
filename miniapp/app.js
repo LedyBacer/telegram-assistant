@@ -121,10 +121,7 @@ function buildNav() {
           "data-tab": key,
           onclick: () => {
             if (state.tab === key) return;
-            if (state.tab === "edit") state.editId = null;
-            state.tab = key;
-            haptic();
-            render();
+            navigate(key);
           },
         },
         el("span", { class: "nav-icon", "aria-hidden": "true" }, iconFor(key)),
@@ -143,8 +140,10 @@ function iconFor(key) {
 }
 
 function updateBackButton() {
-  if (state.tab === "today") backButtonHide();
-  else backButtonShow();
+  // V5 §15: the Telegram BackButton is a nested-nav affordance — shown only on
+  // the Edit view (pushed from a list), not on the top-level tabs.
+  if (state.tab === "edit") backButtonShow();
+  else backButtonHide();
 }
 
 /* ------------------------------------------------------------------ */
@@ -191,6 +190,33 @@ async function render() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Dirty-form protection (V5 §15)                                      */
+/* ------------------------------------------------------------------ */
+
+// True while the user has edited the New/Edit form since it last rendered.
+let formDirty = false;
+function markDirty() {
+  formDirty = true;
+}
+const isFormView = (tab) => tab === "new" || tab === "edit";
+
+// The single navigation path (V5 §15): the bottom nav, an item's "Edit"
+// button, the Telegram BackButton and a successful save all route through
+// here. Leaving a dirty form asks for a discard confirmation; `force`
+// bypasses it (used right after a successful save, when nothing is unsaved).
+async function navigate(tab, { force = false } = {}) {
+  if (tab === state.tab) return;
+  if (!force && isFormView(state.tab) && formDirty) {
+    if (!(await confirmDialog(S("miniapp.discard_confirm"), S("miniapp.discard"), S("miniapp.btn_cancel")))) return;
+  }
+  if (state.tab === "edit") state.editId = null;
+  formDirty = false;
+  haptic();
+  state.tab = tab;
+  render();
+}
+
+/* ------------------------------------------------------------------ */
 /* Items (shared card)                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -201,9 +227,7 @@ function itemCard(item) {
       btn(S("miniapp.btn_edit"), () => {
         state.editReturn = state.tab === "edit" ? "today" : state.tab;
         state.editId = item.id;
-        state.tab = "edit";
-        haptic();
-        render();
+        navigate("edit");
       })
     );
     actions.push(
@@ -679,6 +703,11 @@ async function viewNew(view) {
   // Reminder-offset picker (V3 P31, shared with the Edit view, V4 §28).
   const remindPicker = reminderPicker();
 
+  // V5 §15: a freshly rendered form is clean; typing marks it dirty.
+  formDirty = false;
+  titleInput.addEventListener("input", markDirty);
+  descInput.addEventListener("input", markDirty);
+
   const kindBtn = pickerBtn(S("miniapp.new_kind"), S("miniapp.new_task"), async () => {
     const chosen = await openSheet({
       title: S("miniapp.new_kind"),
@@ -690,6 +719,7 @@ async function viewNew(view) {
     });
     if (chosen) {
       formState.kind = chosen;
+      markDirty();
       kindBtn.querySelector(".picker-value").textContent =
         chosen === "task" ? S("miniapp.new_task") : S("miniapp.new_event");
     }
@@ -706,6 +736,7 @@ async function viewNew(view) {
     });
     if (chosen) {
       formState.priority = chosen;
+      markDirty();
       priorityBtn.querySelector(".picker-value").textContent = S(PRIORITY_LABELS[chosen]);
     }
   });
@@ -715,6 +746,7 @@ async function viewNew(view) {
     const wall = await pickDateTime(formState.startsAt);
     if (wall) {
       formState.startsAt = wall;
+      markDirty();
       startsBtn.querySelector(".picker-value").textContent = fmtWall(wall);
     }
   });
@@ -722,6 +754,7 @@ async function viewNew(view) {
     const wall = await pickDateTime(formState.dueAt);
     if (wall) {
       formState.dueAt = wall;
+      markDirty();
       dueBtn.querySelector(".picker-value").textContent = fmtWall(wall);
     }
   });
@@ -731,6 +764,7 @@ async function viewNew(view) {
     const wall = await pickDateTime(formState.endsAt);
     if (wall) {
       formState.endsAt = wall;
+      markDirty();
       endBtn.querySelector(".picker-value").textContent = fmtWall(wall);
     }
   });
@@ -756,8 +790,8 @@ async function viewNew(view) {
         remind_offsets_minutes: remindPicker.get(),
       });
       toast(S("miniapp.saved"));
-      state.tab = "today";
-      render();
+      formDirty = false; // just persisted — nothing left to discard
+      navigate("today");
     } catch (e) {
       toast(e && e.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
       saveBtn.disabled = false;
@@ -797,6 +831,7 @@ function whenField(labelKey, get, set) {
           const wall = await pickDateTime(value);
           if (wall) {
             set(wall);
+            markDirty();
             refresh();
           }
         }),
@@ -808,6 +843,7 @@ function whenField(labelKey, get, set) {
               onclick: () => {
                 haptic();
                 set(null);
+                markDirty();
                 refresh();
               },
             }, "✕")
@@ -863,6 +899,11 @@ async function viewEdit(view, gen, signal) {
     placeholder: S("miniapp.new_description_ph"),
   });
 
+  // V5 §15: a freshly rendered form is clean; typing marks it dirty.
+  formDirty = false;
+  titleInput.addEventListener("input", markDirty);
+  descInput.addEventListener("input", markDirty);
+
   const priorityBtn = pickerBtn(
     S("miniapp.new_priority"),
     S(PRIORITY_LABELS[item.priority] || PRIORITY_LABELS.normal),
@@ -878,6 +919,7 @@ async function viewEdit(view, gen, signal) {
       });
       if (chosen) {
         formState.priority = chosen;
+        markDirty();
         priorityBtn.querySelector(".picker-value").textContent = S(PRIORITY_LABELS[chosen]);
       }
     }
@@ -964,9 +1006,8 @@ async function viewEdit(view, gen, signal) {
     try {
       await api(`/api/v1/items/${id}`, "PATCH", body, signal);
       toast(S("miniapp.saved"));
-      state.editId = null;
-      state.tab = state.editReturn || "today";
-      render();
+      formDirty = false;
+      navigate(state.editReturn || "today");
     } catch (e) {
       if (isStale(gen)) return;
       toast(e && e.status === 422 ? S("miniapp.new_title_required") : S("miniapp.error_generic"), "error");
@@ -1718,13 +1759,15 @@ async function boot() {
     // Safe-area / stable-height tokens are re-applied inside the handler.
   });
   backButtonOn(() => {
-    if (state.tab === "edit") {
-      state.tab = state.editReturn || "today";
-      state.editId = null;
-    } else {
-      state.tab = "today";
+    navigate(state.tab === "edit" ? (state.editReturn || "today") : "today");
+  });
+  // Closing the whole app (not just navigating) — native confirmation when a
+  // form has unsaved changes (V5 §15).
+  window.addEventListener("beforeunload", (e) => {
+    if (isFormView(state.tab) && formDirty) {
+      e.preventDefault();
+      e.returnValue = "";
     }
-    render();
   });
   try {
     const me = await loadMe();

@@ -226,6 +226,8 @@
   "miniapp.reminder_needs_start": "Сначала задайте время начала.",
   "miniapp.save": "Сохранить",
   "miniapp.saved": "Сохранено.",
+  "miniapp.discard_confirm": "Покинуть без сохранения? Несохранённые изменения будут потеряны.",
+  "miniapp.discard": "Покинуть",
   "miniapp.workouts_stats": "Статистика",
   "miniapp.stats_total": "всего тренировок",
   "miniapp.stats_minutes": "всего минут",
