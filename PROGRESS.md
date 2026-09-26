@@ -194,7 +194,14 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   partial kept as `final-20260926-r2.partial-oracle-fix.jsonl` (evidence
   only, never merged); THE ONE production run is the relaunch under fresh
   tag **`final-20260926-r3`** (header verified 4096/thinking ON), 988
-  executions, ~4–5 h. Then the matched `--ab` ON/OFF run and P9 docs.
+  executions, ~4–5 h. Offline gates re-verified 2026-09-26 while r3 runs:
+  `uv lock --check` OK, `ruff check .` clean, pytest **607 passed**
+  (`FILE_STORAGE_DIR=$(mktemp -d)`), `npm ci` + `npm run build:miniapp` +
+  `npm run test:e2e` **41 passed** (built-output lane). P9 report
+  analyzer ready at `.qwen/tmp/p9-analyze.py` (corpus stats, per-category,
+  P0 evaluated/pass/fail/not-evaluable, error breakdown, holdout, A/B
+  thinking split, failure detail — validated on the r3 partial). Then the
+  matched `--ab` ON/OFF run and P9 docs.
 - **§29-P2 (done, `0da809b`)** evaluator correctness:
   `find_and_confirm` newest-first (`created_at.desc(), id.desc()`) + post-commit
   discard, plus:
