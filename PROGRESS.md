@@ -202,6 +202,17 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   P0 evaluated/pass/fail/not-evaluable, error breakdown, holdout, A/B
   thinking split, failure detail — validated on the r3 partial). Then the
   matched `--ab` ON/OFF run and P9 docs.
+  - **e2e time-bomb fix (this session, `996c112`)**: `edit-item.e2e.ts`
+    seeded a hard-coded 2026-09-26 date, but the upcoming view is
+    server-clock driven (`anchor >= now` in `list_upcoming`), so the card
+    vanished once the server clock passed the seeded start and
+    `card.waitFor` timed out (suite went 40/41). Re-anchored the seed to
+    real `Date.now() + 1 day` (UTC = the test user's tz) and derived every
+    expected display string with the same `Intl.DateTimeFormat("ru-RU",
+    {timeZone:"UTC", ...})` format the app's `fmtDT`/`fmtWall` use, so
+    expectations can never drift. Full suite re-verified **41 passed**.
+    Product behavior was always correct; only the test rotted (no production
+    change).
 - **§29-P2 (done, `0da809b`)** evaluator correctness:
   `find_and_confirm` newest-first (`created_at.desc(), id.desc()`) + post-commit
   discard, plus:
@@ -260,8 +271,9 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
 - **Next:** P8 (in progress) — one complete production run
   `CHAT_THINKING_BUDGET_TOKENS=4096 uv run python scripts/llm_eval.py --full
   --tag final-20260926-r3` (running, log `.qwen/tmp/p8-final-full.log`;
-  watch for the `=== Summary ===` block; if a Goal-turn budget kill cancels
-  it again, mv the partial aside and relaunch under ANOTHER fresh tag).
+  at **553/988** as of this update, healthy, 0 P0 fails so far; watch for
+  the `=== Summary ===` block; if a Goal-turn budget kill cancels it again,
+  mv the partial aside and relaunch under ANOTHER fresh tag).
   When r3 completes, the matched `--ab` thinking ON/OFF run (separate tag,
   never merged into the production table). The A/B subset is the runner's
   own `AB_IDS` (24 cases spanning 15 categories, ≈215 runs ≈ 1–1.5 h):
