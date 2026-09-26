@@ -190,6 +190,152 @@ def test_chat_structured_wraps_api_errors() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Structured-event counters (V5.4 §22): every tolerant normalization and
+# every validation retry / final failure increments a safe, fixed-name
+# counter. Only schema name / attempt index are recorded — no content.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_structured_event_counters():
+    from assistant.ai import structured_events
+
+    structured_events.reset_structured_event_counts()
+    yield
+    structured_events.reset_structured_event_counts()
+
+
+def test_structured_bare_tool_wrap_counted() -> None:
+    from assistant.ai import structured_events
+
+    turn = AssistantTurn.model_validate({"tool": "calendar", "limit": 3})
+    assert turn.mode == "need_data"
+    assert structured_events.structured_event_counts() == {
+        "structured_bare_tool_wrapped": 1
+    }
+
+
+def test_structured_missing_mode_inferred_counted() -> None:
+    from assistant.ai import structured_events
+
+    for payload in (
+        {"reply": "ok"},
+        {"clarification": "which day?"},
+    ):
+        AssistantTurn.model_validate(payload)
+    counts = structured_events.structured_event_counts()
+    assert counts == {"structured_missing_mode_inferred": 2}
+
+
+def test_structured_fact_id_normalized_counted() -> None:
+    from assistant.ai import structured_events
+
+    turn = AssistantTurn.model_validate(
+        {"mode": "answer", "reply": "ok", "facts": [{"value": "v", "id": 7}]}
+    )
+    assert turn.facts[0].replaces_fact_id == 7
+    assert structured_events.structured_event_counts() == {
+        "structured_fact_id_normalized": 1
+    }
+
+
+def test_structured_top_level_replaces_fact_id_counted() -> None:
+    from assistant.ai import structured_events
+
+    turn = AssistantTurn.model_validate(
+        {
+            "mode": "answer",
+            "reply": "ok",
+            "facts": [{"value": "v"}],
+            "replaces_fact_id": 5,
+        }
+    )
+    assert turn.facts[0].replaces_fact_id == 5
+    assert structured_events.structured_event_counts() == {
+        "structured_top_level_replaces_fact_id_normalized": 1
+    }
+
+
+def test_structured_facts_only_proposal_counted() -> None:
+    from assistant.ai import structured_events
+
+    turn = AssistantTurn.model_validate(
+        {"mode": "proposal", "facts": [{"value": "v"}], "summary": "s"}
+    )
+    assert turn.mode == "answer"
+    assert structured_events.structured_event_counts() == {
+        "structured_facts_only_proposal_normalized": 1
+    }
+
+
+def test_structured_fold_normalization_counted_with_fold_schema_name() -> None:
+    from assistant.ai import structured_events
+
+    fold = AssistantFold.model_validate({"reply": "done"})
+    assert fold.mode == "answer"
+    assert structured_events.structured_event_counts() == {
+        "structured_missing_mode_inferred": 1
+    }
+
+
+def test_structured_validation_retry_and_final_failure_counted() -> None:
+    from assistant.ai import structured_events
+
+    provider, create = _chat_provider_with_fake_client()
+    create.side_effect = [
+        _fake_completion("not json at all"),
+        _fake_completion("still not json"),
+    ]
+    with pytest.raises(AIOutputValidationError, match="schema validation"):
+        asyncio.run(
+            provider.chat_structured(
+                system="S",
+                messages=[{"role": "user", "content": "x"}],
+                schema=AITaskDraft,
+            )
+        )
+    counts = structured_events.structured_event_counts()
+    assert counts == {
+        "structured_validation_retry": 1,
+        "structured_validation_final_failure": 1,
+    }
+
+
+def test_structured_first_attempt_success_counts_nothing() -> None:
+    from assistant.ai import structured_events
+
+    provider, _ = _chat_provider_with_fake_client()
+    asyncio.run(
+        provider.chat_structured(
+            system="S",
+            messages=[{"role": "user", "content": "x"}],
+            schema=AITaskDraft,
+        )
+    )
+    assert structured_events.structured_event_counts() == {}
+
+
+def test_structured_event_names_reject_unknown() -> None:
+    from assistant.ai import structured_events
+
+    with pytest.raises(ValueError, match="unknown structured event"):
+        structured_events.count_structured_event("structured_something_new")
+
+
+def test_structured_event_log_never_contains_content(caplog: pytest.LogCaptureFixture) -> None:
+    from assistant.ai import structured_events
+
+    with caplog.at_level("INFO", logger="assistant.ai"):
+        structured_events.count_structured_event(
+            "structured_missing_mode_inferred", schema="AssistantTurn"
+        )
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "structured_missing_mode_inferred" in joined
+    assert "AssistantTurn" in joined
+    assert "secret" not in joined
+
+
+# ---------------------------------------------------------------------------
 # Sampling profiles (V5.4 §4): the model-card family must apply by an
 # explicit profile (not the alias string) and be independent of thinking mode.
 # ---------------------------------------------------------------------------

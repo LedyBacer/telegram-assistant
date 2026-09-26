@@ -21,6 +21,8 @@ from typing import Protocol, TypeVar, runtime_checkable
 from openai import APIError, APITimeoutError, AsyncOpenAI, Timeout
 from pydantic import BaseModel, ValidationError
 
+from assistant.ai.structured_events import count_structured_event
+
 logger = logging.getLogger("assistant.ai")
 
 T = TypeVar("T", bound=BaseModel)
@@ -372,6 +374,11 @@ class OpenAIChatProvider:
                     type(exc).__name__,
                 )
                 if attempt < self._max_attempts:
+                    count_structured_event(
+                        "structured_validation_retry",
+                        schema=schema.__name__,
+                        attempt=attempt,
+                    )
                     # Corrective feedback so the next attempt can self-repair.
                     conversation = [
                         *messages,
@@ -386,6 +393,11 @@ class OpenAIChatProvider:
                             ),
                         },
                     ]
+        count_structured_event(
+            "structured_validation_final_failure",
+            schema=schema.__name__,
+            attempts=self._max_attempts,
+        )
         raise AIOutputValidationError(
             f"model output failed schema validation after "
             f"{self._max_attempts} attempts"

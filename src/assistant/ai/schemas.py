@@ -14,6 +14,7 @@ from pydantic import (
     model_validator,
 )
 
+from assistant.ai.structured_events import count_structured_event
 from assistant.services.reminders import (
     MAX_OFFSET_MINUTES,
     MAX_REMINDERS_PER_ITEM,
@@ -151,7 +152,7 @@ class FactProposal(BaseModel):
     replaces_fact_id: int | None = None
 
 
-def _infer_missing_mode(data: Any) -> Any:
+def _infer_missing_mode(data: Any, *, schema: str = "AssistantTurn") -> Any:
     """Fill the ``mode`` discriminator from the single populated field.
 
     The live model frequently omits the redundant ``mode`` key when the
@@ -178,6 +179,10 @@ def _infer_missing_mode(data: Any) -> Any:
     * an echoed ``"id"`` INSIDE a fact entry (the old fact's id) is mapped
       onto that entry's ``"replaces_fact_id"`` — a new fact has no id of
       its own, so an id there can only refer to the fact being replaced.
+
+    Every normalization increments a safe process-wide counter and logs a
+    fixed-name event (V5.4 §22); only the schema class name is logged,
+    never the payload content.
     """
     if not isinstance(data, dict):
         return data
@@ -187,15 +192,26 @@ def _infer_missing_mode(data: Any) -> Any:
     # be a valid turn field, so wrap it unambiguously (V5.3 live-LLM eval).
     if "tool" in data and not data.get("mode"):
         data = {"mode": "need_data", "data_requests": [data]}
+        count_structured_event("structured_bare_tool_wrapped", schema=schema)
     if not data.get("mode"):
-        if data.get("clarification"):
-            data["mode"] = "clarification"
-        elif data.get("actions"):
-            data["mode"] = "proposal"
-        elif data.get("data_requests"):
-            data["mode"] = "need_data"
-        elif data.get("reply"):
-            data["mode"] = "answer"
+        mode = next(
+            (
+                inferred
+                for field, inferred in (
+                    ("clarification", "clarification"),
+                    ("actions", "proposal"),
+                    ("data_requests", "need_data"),
+                    ("reply", "answer"),
+                )
+                if data.get(field)
+            ),
+            None,
+        )
+        if mode is not None:
+            data["mode"] = mode
+            count_structured_event(
+                "structured_missing_mode_inferred", schema=schema
+            )
     # The model sometimes echoes the old fact's "id" INSIDE the new fact
     # entry (V5.3 live-LLM eval): a new fact has no id, so it can only be
     # the existing fact this one replaces — map it onto
@@ -207,6 +223,7 @@ def _infer_missing_mode(data: Any) -> Any:
                     fact["replaces_fact_id"] = fact.pop("id")
                 else:
                     fact.pop("id")
+                count_structured_event("structured_fact_id_normalized", schema=schema)
     # The 9B model sometimes emits "replaces_fact_id" as a TOP-LEVEL key next
     # to "facts" instead of inside a fact entry (V5.3 live-LLM eval), which
     # fails extra="forbid" and is repeated on the repair attempt, killing the
@@ -221,6 +238,9 @@ def _infer_missing_mode(data: Any) -> Any:
                 fact["replaces_fact_id"] = data["replaces_fact_id"]
                 break
         data.pop("replaces_fact_id")
+        count_structured_event(
+            "structured_top_level_replaces_fact_id_normalized", schema=schema
+        )
     # The model sometimes labels a FACT proposal as "proposal" with no
     # actions (and occasionally a lifted-out top-level "summary"): a
     # proposal with zero actions is an answer carrying facts, and facts in
@@ -233,6 +253,9 @@ def _infer_missing_mode(data: Any) -> Any:
     ):
         data["mode"] = "answer"
         data.pop("summary", None)
+        count_structured_event(
+            "structured_facts_only_proposal_normalized", schema=schema
+        )
     return data
 
 
@@ -272,7 +295,7 @@ class AssistantTurn(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _fill_mode(cls, data: Any) -> Any:
-        return _infer_missing_mode(data)
+        return _infer_missing_mode(data, schema=cls.__name__)
 
     @model_validator(mode="after")
     def _mode_is_consistent(self) -> AssistantTurn:
@@ -344,7 +367,7 @@ class AssistantFold(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _fill_mode(cls, data: Any) -> Any:
-        return _infer_missing_mode(data)
+        return _infer_missing_mode(data, schema=cls.__name__)
 
     @model_validator(mode="after")
     def _mode_is_consistent(self) -> AssistantFold:

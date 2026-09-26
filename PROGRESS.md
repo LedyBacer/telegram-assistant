@@ -225,6 +225,35 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   - `run.refused` + `run.per_turn` surfaced in the JSONL evidence record.
   - Verified: `ruff check .` clean; full pytest **594 passed**.
   - (matched A/B + genuine holdout are now covered by the P4 corpus and P8.)
+- **§22 (done, this session)** safe structured-output counters/log events:
+  - `src/assistant/ai/structured_events.py` — process-wide thread-safe
+    counter over the seven fixed event names
+    (`structured_missing_mode_inferred`, `structured_bare_tool_wrapped`,
+    `structured_fact_id_normalized`,
+    `structured_top_level_replaces_fact_id_normalized`,
+    `structured_facts_only_proposal_normalized`,
+    `structured_validation_retry`,
+    `structured_validation_final_failure`);
+    `count_structured_event(name, **safe_fields)` increments + logs
+    `structured_event name=... schema=... [attempt=...]` at INFO;
+    unknown names raise; accessors `structured_event_counts()` /
+    `reset_structured_event_counts()` (tests).
+  - Instrumented: `schemas.py::_infer_missing_mode` (now takes
+    `schema=`, both `_fill_mode` validators pass `cls.__name__`) fires the
+    five normalization events; `provider.py::chat_structured` fires
+    `structured_validation_retry` on the corrective re-attempt and
+    `structured_validation_final_failure` when both attempts are exhausted.
+    Only schema class name / attempt index are logged — never model
+    content, user text, or credentials.
+  - 9 new tests in `tests/test_ai.py` (each normalization path counted,
+    fold schema name, retry+final-failure, first-attempt success counts
+    nothing, unknown-name rejection, log content never leaks).
+  - Additive: the running r3 process was started before this change, so
+    r3's JSONL carries no counters — r3's first-attempt vs repair split is
+    recoverable from its log lines (`structured ok ... attempt=N/2` /
+    `structured output rejected ... attempt=N/2`); the A/B run (started
+    after this commit) is counted directly. The P9 report states both
+    sources honestly.
 - **Next:** P8 (in progress) — one complete production run
   `CHAT_THINKING_BUDGET_TOKENS=4096 uv run python scripts/llm_eval.py --full
   --tag final-20260926-r3` (running, log `.qwen/tmp/p8-final-full.log`;
