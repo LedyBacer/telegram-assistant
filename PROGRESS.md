@@ -231,17 +231,21 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   watch for the `=== Summary ===` block; if a Goal-turn budget kill cancels
   it again, mv the partial aside and relaunch under ANOTHER fresh tag).
   When r3 completes, the matched `--ab` thinking ON/OFF run (separate tag,
-  never merged into the production table) — exact command (7 high-value
-  categories, 294 matched runs ≈ 1.5–2.5 h; same cases/reps/state/sampling,
-  only the thinking toggle differs):
-  `--category` takes ONE value (runner line ~370), so use a loop appending
-  to one fresh JSONL (runner opens it in append mode — rm it first):
+  never merged into the production table). The A/B subset is the runner's
+  own `AB_IDS` (24 cases spanning 15 categories, ≈215 runs ≈ 1–1.5 h):
+  every category case runs thinking ON (arm tag `final-20260926-ab`) and
+  the `AB_IDS` cases additionally run thinking OFF (arm tag
+  `final-20260926-ab-off`) — same cases/reps/state/sampling, only the
+  toggle differs. `--category` takes ONE value (runner line ~370), so loop
+  over the 15 AB categories, appending to one fresh JSONL (runner opens it
+  in append mode — rm it first):
   `rm -f test-artifacts/llm-eval/final-20260926-ab.jsonl && for c in
-  ambiguity deep_memory reminder_vs_task entity_resolution reschedule
-  data_management russian_robustness; do CHAT_THINKING_BUDGET_TOKENS=4096
-  uv run python scripts/llm_eval.py --ab --category $c --json-out
-  test-artifacts/llm-eval/final-20260926-ab.jsonl --tag final-20260926-ab;
-  done > .qwen/tmp/p8-ab.log 2>&1`
+  ambiguity calendar_create cancel_lifecycle confirmation_safety
+  fact_replacement hallucinated_ids language lookup_mutation multi_intent
+  prompt_injection pronouns rag relative_time reminders session_multi; do
+  CHAT_THINKING_BUDGET_TOKENS=4096 uv run python scripts/llm_eval.py --ab
+  --category $c --json-out test-artifacts/llm-eval/final-20260926-ab.jsonl
+  --tag final-20260926-ab; done > .qwen/tmp/p8-ab.log 2>&1`
   Then P9: `uv run python .qwen/tmp/p9-analyze.py <r3.jsonl> <ab.jsonl>`,
   rewrite `docs/LLM_EVAL_REPORT.md` per SPEC §24 + final `REPORT.md`
   (SPEC §34 20-item checklist), re-run offline gates, commit.
