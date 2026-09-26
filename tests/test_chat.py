@@ -337,6 +337,8 @@ def _fake_text_message(text: str, user_id: int = 71) -> SimpleNamespace:
         from_user=SimpleNamespace(
             id=user_id, first_name="F", last_name=None, username=None, is_bot=False
         ),
+        chat=SimpleNamespace(id=100),
+        bot=SimpleNamespace(id=777, send_chat_action=AsyncMock()),
         answer=AsyncMock(),
     )
 

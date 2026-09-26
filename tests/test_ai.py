@@ -888,7 +888,13 @@ def _fake_tg_user(user_id: int = 31) -> SimpleNamespace:
 
 
 def _fake_message(text: str) -> SimpleNamespace:
-    return SimpleNamespace(text=text, from_user=_fake_tg_user(), answer=AsyncMock())
+    return SimpleNamespace(
+        text=text,
+        from_user=_fake_tg_user(),
+        chat=SimpleNamespace(id=100),
+        bot=SimpleNamespace(id=777, send_chat_action=AsyncMock()),
+        answer=AsyncMock(),
+    )
 
 
 def _fake_state(state_value: str | None = None, data: dict | None = None) -> SimpleNamespace:

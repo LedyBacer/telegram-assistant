@@ -24,6 +24,12 @@ class ItemCallback(CallbackData, prefix="item"):
     item_id: int
 
 
+class DataCallback(CallbackData, prefix="data"):
+    """/data management actions (V5.4 P6): confirm, then execute delete-all."""
+
+    action: str
+
+
 class DraftCallback(CallbackData, prefix="draft"):
     """Confirm/cancel a structured draft before it is persisted (SPEC §6)."""
 

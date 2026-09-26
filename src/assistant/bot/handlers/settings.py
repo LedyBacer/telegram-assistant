@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.bot.callbacks import LanguageCallback, SettingsCallback
 from assistant.bot.handlers.common import _ensure_user, _user_lang
-from assistant.bot.keyboards import language_kb, settings_kb
+from assistant.bot.keyboards import language_kb, reply_kb, settings_kb
 from assistant.bot.states import SettingsStates
 from assistant.i18n import is_supported, t
 
@@ -65,5 +65,11 @@ async def on_language(
     await callback.message.edit_text(
         t(code, "settings.language_changed", label=t(code, f"settings.language_{code}")),
         reply_markup=settings_kb(code),
+    )
+    # Reply keyboards can only be attached to a fresh message: re-send the
+    # persistent panel in the new language (V5.4 P6).
+    await callback.message.answer(
+        t(code, "settings.language_changed", label=t(code, f"settings.language_{code}")),
+        reply_markup=reply_kb(code),
     )
     await callback.answer()

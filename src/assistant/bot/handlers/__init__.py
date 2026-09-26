@@ -62,10 +62,12 @@ cmd_help = commands.cmd_help
 cmd_remember = commands.cmd_remember
 cmd_facts = commands.cmd_facts
 cmd_language = commands.cmd_language
+cmd_data = commands.cmd_data
 on_fact = facts.on_fact
 on_menu = menu.on_menu
 on_settings = settings.on_settings
 on_language = settings.on_language
+on_data = commands.on_data
 on_draft = draft.on_draft
 on_action = actions.on_action
 on_item = items.on_item
@@ -85,10 +87,12 @@ __all__ = [
     "cmd_remember",
     "cmd_facts",
     "cmd_language",
+    "cmd_data",
     "on_fact",
     "on_menu",
     "on_settings",
     "on_language",
+    "on_data",
     "on_draft",
     "on_action",
     "on_item",

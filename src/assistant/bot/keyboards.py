@@ -6,10 +6,17 @@ language; no user-visible string is hard-coded here.
 
 from collections.abc import Sequence
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    WebAppInfo,
+)
 
 from assistant.bot.callbacks import (
     ActionCallback,
+    DataCallback,
     DraftCallback,
     FactCallback,
     ItemCallback,
@@ -54,6 +61,50 @@ def main_menu_kb(language: str, base_url: str | None = None) -> InlineKeyboardMa
             )
     rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def reply_kb(language: str) -> ReplyKeyboardMarkup:
+    """Persistent reply keyboard (bottom of the screen) with the main
+    sections as plain buttons. The Mini App section is excluded: it needs a
+    WebAppInfo URL and only exists as an inline button (V5.4 P6)."""
+    labels = [
+        t(language, key) for section, key in SECTIONS if section != "miniapp"
+    ]
+    rows = [
+        [KeyboardButton(text=label) for label in labels[i : i + 2]]
+        for i in range(0, len(labels), 2)
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def data_kb(language: str, *, confirm: bool = False) -> InlineKeyboardMarkup:
+    """/data action buttons (V5.4 P6): the delete-all button, or the
+    explicit two-step confirm/cancel before it is executed."""
+    if not confirm:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=t(language, "data.delete_all"),
+                        callback_data=DataCallback(action="confirm").pack(),
+                    )
+                ]
+            ]
+        )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t(language, "data.confirm_button"),
+                    callback_data=DataCallback(action="execute").pack(),
+                ),
+                InlineKeyboardButton(
+                    text=t(language, "data.cancel"),
+                    callback_data=DataCallback(action="cancelled").pack(),
+                ),
+            ]
+        ]
+    )
 
 
 def settings_kb(language: str) -> InlineKeyboardMarkup:

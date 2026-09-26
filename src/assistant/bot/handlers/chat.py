@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aiogram import F, Router
 from aiogram.fsm.state import State
 from aiogram.types import Message
+from aiogram.utils.chat_action import ChatActionSender
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.ai import AIProviderError, AITaskDraft, get_ai_provider
@@ -71,11 +72,16 @@ async def on_text(
             await session.commit()
             thinking_status = await _send_thinking(message, lang)
             try:
-                ai = await get_ai_provider().chat_structured(
-                    system=DRAFT_SYSTEM.format(tz=tz, now=datetime.now(tz).isoformat()),
-                    messages=[{"role": "user", "content": text}],
-                    schema=AITaskDraft,
-                )
+                async with ChatActionSender.typing(
+                    bot=message.bot, chat_id=message.chat.id
+                ):
+                    ai = await get_ai_provider().chat_structured(
+                        system=DRAFT_SYSTEM.format(
+                            tz=tz, now=datetime.now(tz).isoformat()
+                        ),
+                        messages=[{"role": "user", "content": text}],
+                        schema=AITaskDraft,
+                    )
             except AIProviderError:
                 await _delete_thinking(thinking_status)
                 await message.answer(
@@ -178,7 +184,10 @@ async def on_text(
     else:
         thinking_status = await _send_thinking(message, lang)
         try:
-            result = await turns_service.run_turn(session, user, text)
+            async with ChatActionSender.typing(
+                bot=message.bot, chat_id=message.chat.id
+            ):
+                result = await turns_service.run_turn(session, user, text)
         except AIProviderError:
             # The engine persists nothing on provider failure: keep the
             # user message and explain the outage in the user's language.

@@ -48,6 +48,12 @@ class TestCallbacks:
             action="confirm"
         )
 
+    def test_data_roundtrip(self) -> None:
+        packed = callbacks.DataCallback(action="execute").pack()
+        assert callbacks.DataCallback.unpack(packed) == callbacks.DataCallback(
+            action="execute"
+        )
+
 
 class TestKeyboards:
     def test_main_menu_without_base_url(self) -> None:
@@ -65,6 +71,36 @@ class TestKeyboards:
         web = [b for b in flat if b.web_app is not None]
         assert len(web) == 1
         assert web[0].web_app.url == "https://example.test/miniapp"
+
+    def test_reply_keyboard_sections(self) -> None:
+        # V5.4 P6: the persistent reply keyboard mirrors the inline menu,
+        # minus the Mini App section (which needs a WebAppInfo URL).
+        from aiogram.types import KeyboardButton
+
+        from assistant.i18n import t
+
+        kb = keyboards.reply_kb("ru")
+        assert kb.resize_keyboard is True
+        flat = [b for row in kb.keyboard for b in row]
+        expected = [
+            t("ru", key) for section, key in keyboards.SECTIONS if section != "miniapp"
+        ]
+        assert [b.text for b in flat] == expected
+        assert all(isinstance(b, KeyboardButton) for b in flat)
+        assert all(len(row) <= 2 for row in kb.keyboard)
+
+    def test_data_keyboard_two_step(self) -> None:
+        kb = keyboards.data_kb("ru")
+        flat = [b for row in kb.inline_keyboard for b in row]
+        assert [callbacks.DataCallback.unpack(b.callback_data) for b in flat] == [
+            callbacks.DataCallback(action="confirm")
+        ]
+        kb = keyboards.data_kb("ru", confirm=True)
+        flat = [b for row in kb.inline_keyboard for b in row]
+        assert [callbacks.DataCallback.unpack(b.callback_data) for b in flat] == [
+            callbacks.DataCallback(action="execute"),
+            callbacks.DataCallback(action="cancelled"),
+        ]
 
     def test_settings_and_draft_keyboards(self) -> None:
         s = [b for row in keyboards.settings_kb("ru").inline_keyboard for b in row]
@@ -224,7 +260,13 @@ def _fake_tg_user(user_id: int = 1) -> SimpleNamespace:
 
 def _fake_message(text: str, user_id: int = 1) -> SimpleNamespace:
     return SimpleNamespace(
-        text=text, from_user=_fake_tg_user(user_id), answer=AsyncMock()
+        text=text,
+        from_user=_fake_tg_user(user_id),
+        chat=SimpleNamespace(id=100),
+        # V5.4 P6: the free-text handler wraps the model call in
+        # ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id).
+        bot=SimpleNamespace(id=777, send_chat_action=AsyncMock()),
+        answer=AsyncMock(),
     )
 
 
@@ -354,6 +396,142 @@ async def test_on_text_task_draft_flow_confirm_persists_item(session) -> None:
     finally:
         await session.execute(text("TRUNCATE calendar_items RESTART IDENTITY CASCADE"))
         await _truncate_users(session)
+
+
+class TestV54P6:
+    """V5.4 P6: /data counts + two-step delete, localized command menu."""
+
+    async def test_cmd_data_counts_then_delete_all(self, session) -> None:
+        from assistant.bot import callbacks as cb_mod
+        from assistant.bot.handlers import cmd_data, on_data
+        from assistant.i18n import t
+
+        await _truncate_users(session)
+        try:
+            await upsert_user(session, user_id=55, first_name="D")
+            await session.execute(text(
+                "INSERT INTO calendar_items (user_id, title, kind, status, priority, source)"
+                " VALUES (55, 'A', 'task', 'scheduled', 'normal', 'bot'),"
+                " (55, 'B', 'event', 'scheduled', 'normal', 'bot')"
+            ))
+            await session.execute(text(
+                "INSERT INTO reminders (user_id, fire_at, message, status)"
+                " VALUES (55, now(), 'call', 'pending')"
+            ))
+            await session.execute(text(
+                "INSERT INTO chat_messages (user_id, role, content, source)"
+                " VALUES (55, 'user', 'hi', 'telegram')"
+            ))
+            await session.commit()
+
+            message = _fake_message("/data", user_id=55)
+            await cmd_data(message, session)
+            summary = message.answer.await_args.args[0]
+            assert summary == t(
+                "ru", "data.summary",
+                items=2, reminders=1, facts=0, files=0, workouts=0, messages=1,
+            )
+            kb = message.answer.await_args.kwargs["reply_markup"]
+            flat = [b for row in kb.inline_keyboard for b in row]
+            assert cb_mod.DataCallback.unpack(flat[0].callback_data).action == "confirm"
+
+            def _cb() -> SimpleNamespace:
+                return SimpleNamespace(
+                    from_user=_fake_tg_user(55),
+                    message=SimpleNamespace(edit_text=AsyncMock()),
+                    answer=AsyncMock(),
+                )
+
+            # Step 1: explicit confirm prompt.
+            cb1 = _cb()
+            await on_data(cb1, cb_mod.DataCallback(action="confirm"), session, _fake_state())
+            assert cb1.message.edit_text.await_args.args[0] == t("ru", "data.confirm")
+
+            # Step 2: execute deletes every row keyed on the user.
+            cb2 = _cb()
+            await on_data(cb2, cb_mod.DataCallback(action="execute"), session, _fake_state())
+            await session.commit()
+            assert cb2.message.edit_text.await_args.args[0] == t("ru", "data.deleted")
+            for table in (
+                "calendar_items", "reminders", "chat_messages",
+                "user_facts", "user_files", "file_chunks", "workout_logs",
+            ):
+                count = (
+                    await session.execute(text(f"SELECT count(*) FROM {table}"))
+                ).scalar_one()
+                assert count == 0, table
+            cb2.answer.assert_awaited_once()
+
+            # The user row and their settings survive.
+            assert (
+                await session.execute(text("SELECT count(*) FROM users WHERE id = 55"))
+            ).scalar_one() == 1
+        finally:
+            await session.execute(
+                text("TRUNCATE calendar_items, reminders, chat_messages RESTART IDENTITY CASCADE")
+            )
+            await _truncate_users(session)
+
+    async def test_cmd_data_cancel_keeps_data(self, session) -> None:
+        from assistant.bot import callbacks as cb_mod
+        from assistant.bot.handlers import on_data
+        from assistant.i18n import t
+
+        await _truncate_users(session)
+        try:
+            await upsert_user(session, user_id=56, first_name="D")
+            await session.execute(text(
+                "INSERT INTO calendar_items (user_id, title, kind, status, priority, source)"
+                " VALUES (56, 'Keep', 'task', 'scheduled', 'normal', 'bot')"
+            ))
+            await session.commit()
+
+            cb = SimpleNamespace(
+                from_user=_fake_tg_user(56),
+                message=SimpleNamespace(edit_text=AsyncMock()),
+                answer=AsyncMock(),
+            )
+            await on_data(cb, cb_mod.DataCallback(action="cancelled"), session, _fake_state())
+            await session.commit()
+            assert cb.message.edit_text.await_args.args[0] == t("ru", "common.cancelled")
+            count = (
+                await session.execute(text("SELECT count(*) FROM calendar_items"))
+            ).scalar_one()
+            assert count == 1
+        finally:
+            await session.execute(text("TRUNCATE calendar_items RESTART IDENTITY CASCADE"))
+            await _truncate_users(session)
+
+    def test_bot_commands_localized_ru_and_en(self) -> None:
+        from assistant.bot.main import bot_commands
+        from assistant.i18n import t
+
+        ru = bot_commands("ru")
+        assert [c.command for c in ru] == [
+            "start", "help", "remember", "facts", "data", "language", "cancel",
+        ]
+        assert [c.description for c in ru] == [
+            t("ru", f"cmd.{name}.desc")
+            for name in ("start", "help", "remember", "facts", "data", "language", "cancel")
+        ]
+        en = bot_commands("en")
+        assert en[4].description != ru[4].description  # /data, at least
+
+    async def test_setup_bot_commands_publishes_menu(self) -> None:
+        from aiogram.types import MenuButtonCommands
+
+        from assistant.bot.main import setup_bot_commands
+
+        bot = SimpleNamespace(
+            set_my_commands=AsyncMock(), set_chat_menu_button=AsyncMock()
+        )
+        await setup_bot_commands(bot)
+        langs = [
+            call.kwargs["language_code"] for call in bot.set_my_commands.await_args_list
+        ]
+        assert langs == ["ru", "en"]
+        menu_button = bot.set_chat_menu_button.await_args.args[0]
+        assert isinstance(menu_button, MenuButtonCommands)
 
 
 class TestPrivateChatsOnly:

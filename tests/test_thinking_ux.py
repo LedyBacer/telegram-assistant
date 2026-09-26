@@ -262,6 +262,10 @@ def _make_message(text: str) -> tuple[SimpleNamespace, list[SimpleNamespace]]:
     message = SimpleNamespace(
         text=text,
         from_user=_fake_tg_user(),
+        # V5.4 P6: free-text path uses ChatActionSender.typing(bot, chat_id);
+        # the fake bot needs .id for the sender's debug logging.
+        chat=SimpleNamespace(id=100),
+        bot=SimpleNamespace(id=777, send_chat_action=AsyncMock()),
         answer=AsyncMock(side_effect=_answer),
     )
     return message, sent
@@ -283,6 +287,10 @@ def _make_message_with_failing_delete(
     message = SimpleNamespace(
         text=text,
         from_user=_fake_tg_user(),
+        # V5.4 P6: free-text path uses ChatActionSender.typing(bot, chat_id);
+        # the fake bot needs .id for the sender's debug logging.
+        chat=SimpleNamespace(id=100),
+        bot=SimpleNamespace(id=777, send_chat_action=AsyncMock()),
         answer=AsyncMock(side_effect=_answer),
     )
     return message, sent

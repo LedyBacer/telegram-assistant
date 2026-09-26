@@ -75,6 +75,8 @@ def _fake_message(
     return SimpleNamespace(
         text=text,
         from_user=_fake_tg_user(user_id, first_name),
+        chat=SimpleNamespace(id=100),
+        bot=SimpleNamespace(id=777, send_chat_action=AsyncMock()),
         answer=AsyncMock(),
     )
 
@@ -111,8 +113,11 @@ async def test_ru_new_user_welcome_is_russian(session) -> None:
     state = _fake_state()
     await cmd_start(message, session, state)
     await session.commit()
-    assert "Привет" in _last_text(message)
-    assert "Hi " not in _last_text(message)
+    # V5.4 P6: /start sends welcome + menu in two messages; the welcome is
+    # the first one.
+    welcome = message.answer.await_args_list[0].args[0]
+    assert "Привет" in welcome
+    assert "Hi " not in welcome
 
 
 async def test_ru_timezone_prompt_and_set_are_russian(session) -> None:
@@ -242,11 +247,12 @@ async def test_en_onboarding_strings_are_english(session) -> None:
     user.settings.language = "en"
     await session.commit()
 
-    # Welcome.
+    # Welcome (V5.4 P6: the first of /start's two messages).
     message = _fake_message("/start", first_name="Nadya")
     await cmd_start(message, session, _fake_state())
-    assert "Hi Nadya!" in _last_text(message)
-    assert "Привет" not in _last_text(message)
+    welcome = message.answer.await_args_list[0].args[0]
+    assert "Hi Nadya!" in welcome
+    assert "Привет" not in welcome
 
     # Timezone prompt + confirmation.
     cb = _fake_callback()

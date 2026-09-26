@@ -3,11 +3,13 @@
 import asyncio
 
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand, MenuButtonCommands
 
 from assistant.bot.handlers import private_guard, router
 from assistant.bot.middlewares import DBSessionMiddleware, LogContextMiddleware
 from assistant.config import get_settings
 from assistant.db.engine import dispose_engine
+from assistant.i18n import t
 from assistant.logging import setup_logging
 
 
@@ -21,6 +23,31 @@ def create_bot() -> Bot:
     """
     settings = get_settings()
     return Bot(token=settings.telegram_bot_token)
+
+
+def bot_commands(language: str) -> list[BotCommand]:
+    """The /commands menu, localized (V5.4 P6)."""
+    return [
+        BotCommand(command="start", description=t(language, "cmd.start.desc")),
+        BotCommand(command="help", description=t(language, "cmd.help.desc")),
+        BotCommand(
+            command="remember", description=t(language, "cmd.remember.desc")
+        ),
+        BotCommand(command="facts", description=t(language, "cmd.facts.desc")),
+        BotCommand(command="data", description=t(language, "cmd.data.desc")),
+        BotCommand(
+            command="language", description=t(language, "cmd.language.desc")
+        ),
+        BotCommand(command="cancel", description=t(language, "cmd.cancel.desc")),
+    ]
+
+
+async def setup_bot_commands(bot: Bot) -> None:
+    """Publish the localized command menu (RU + EN) and set the default
+    "commands" menu button for all private chats (V5.4 P6)."""
+    for language in ("ru", "en"):
+        await bot.set_my_commands(bot_commands(language), language_code=language)
+    await bot.set_chat_menu_button(MenuButtonCommands())
 
 
 async def _run() -> None:
@@ -39,6 +66,8 @@ async def _run() -> None:
     # (V3 P25): non-private updates get a localized explanation and stop.
     dp.include_router(private_guard)
     dp.include_router(router)
+
+    await setup_bot_commands(bot)
 
     try:
         await dp.start_polling(bot)

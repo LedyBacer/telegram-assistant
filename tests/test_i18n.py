@@ -215,7 +215,12 @@ def _tg_user(user_id: int) -> SimpleNamespace:
 
 
 def _message(user_id: int) -> SimpleNamespace:
-    return SimpleNamespace(from_user=_tg_user(user_id), answer=AsyncMock())
+    return SimpleNamespace(
+        from_user=_tg_user(user_id),
+        chat=SimpleNamespace(id=100),
+        bot=SimpleNamespace(id=777, send_chat_action=AsyncMock()),
+        answer=AsyncMock(),
+    )
 
 
 def _state() -> SimpleNamespace:
@@ -231,7 +236,9 @@ def _state() -> SimpleNamespace:
 def _callback(user_id: int) -> SimpleNamespace:
     return SimpleNamespace(
         from_user=_tg_user(user_id),
-        message=SimpleNamespace(edit_text=AsyncMock()),
+        # V5.4 P6: on_language also sends a fresh message carrying the
+        # persistent reply keyboard (edit_text cannot attach one).
+        message=SimpleNamespace(edit_text=AsyncMock(), answer=AsyncMock()),
         answer=AsyncMock(),
     )
 
@@ -245,11 +252,17 @@ async def test_cmd_start_renders_in_user_language(session: AsyncSession) -> None
 
     msg = _message(96)
     await cmd_start(msg, session, _state())
-    assert msg.answer.await_args.args[0] == t("en", "start.welcome", name="F")
+    calls = msg.answer.await_args_list
+    assert calls[0].args[0] == t("en", "start.welcome", name="F")
+    assert isinstance(calls[0].kwargs["reply_markup"], keyboards.ReplyKeyboardMarkup)
+    assert isinstance(calls[-1].kwargs["reply_markup"], keyboards.InlineKeyboardMarkup)
 
     msg = _message(97)
     await cmd_start(msg, session, _state())
-    assert msg.answer.await_args.args[0] == t("ru", "start.welcome", name="F")
+    calls = msg.answer.await_args_list
+    assert calls[0].args[0] == t("ru", "start.welcome", name="F")
+    assert isinstance(calls[0].kwargs["reply_markup"], keyboards.ReplyKeyboardMarkup)
+    assert isinstance(calls[-1].kwargs["reply_markup"], keyboards.InlineKeyboardMarkup)
 
 
 async def test_cmd_language_shows_keyboard(session: AsyncSession) -> None:
@@ -280,6 +293,11 @@ async def test_on_language_switches_to_en_immediately(session: AsyncSession) -> 
     kb = args.kwargs["reply_markup"]
     labels = [b.text for row in kb.inline_keyboard for b in row]
     assert "🗣 Language" in labels
+    # V5.4 P6: the persistent reply keyboard is re-sent in the new language.
+    answer_args = cb.message.answer.await_args
+    assert answer_args.args[0] == t("en", "settings.language_changed", label="English")
+    reply_kb = answer_args.kwargs["reply_markup"]
+    assert isinstance(reply_kb, keyboards.ReplyKeyboardMarkup)
     cb.answer.assert_awaited_once()
 
 
