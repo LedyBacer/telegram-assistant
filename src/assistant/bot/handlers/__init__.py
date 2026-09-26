@@ -26,6 +26,7 @@ from assistant.bot.handlers import (
     files,
     items,
     menu,
+    navigation,
     settings,
 )
 
@@ -43,6 +44,7 @@ router.include_router(draft.router)
 router.include_router(actions.router)
 router.include_router(items.router)
 router.include_router(files.router)
+router.include_router(navigation.router)
 router.include_router(chat.router)
 
 # Re-export the shared guard and the public/tested names so

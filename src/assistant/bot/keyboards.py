@@ -17,6 +17,7 @@ from aiogram.types import (
 from assistant.bot.callbacks import (
     ActionCallback,
     DataCallback,
+    DataItemCallback,
     DraftCallback,
     FactCallback,
     ItemCallback,
@@ -63,31 +64,59 @@ def main_menu_kb(language: str, base_url: str | None = None) -> InlineKeyboardMa
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def reply_kb(language: str) -> ReplyKeyboardMarkup:
-    """Persistent reply keyboard (bottom of the screen) with the main
-    sections as plain buttons. The Mini App section is excluded: it needs a
-    WebAppInfo URL and only exists as an inline button (V5.4 P6)."""
-    labels = [
-        t(language, key) for section, key in SECTIONS if section != "miniapp"
-    ]
-    rows = [
-        [KeyboardButton(text=label) for label in labels[i : i + 2]]
-        for i in range(0, len(labels), 2)
-    ]
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+REPLY_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("today", "menu.today"),
+    ("upcoming", "menu.upcoming"),
+    ("task", "menu.tasks"),
+    ("data", "menu.data"),
+    ("miniapp", "menu.miniapp"),
+    ("settings", "menu.settings"),
+)
+
+
+def reply_section_for_text(language: str, text: str) -> str | None:
+    """Resolve a localized reply-keyboard label to a deterministic section."""
+    normalized = (text or "").strip()
+    for section, key in REPLY_SECTIONS:
+        if normalized == t(language, key):
+            return section
+    return None
+
+
+def reply_kb(language: str, base_url: str | None = None) -> ReplyKeyboardMarkup:
+    """Primary global navigation shown next to Telegram's input field."""
+    rows: list[list[KeyboardButton]] = []
+    for i in range(0, len(REPLY_SECTIONS), 2):
+        row: list[KeyboardButton] = []
+        for section, key in REPLY_SECTIONS[i : i + 2]:
+            label = t(language, key)
+            if section == "miniapp" and base_url:
+                row.append(KeyboardButton(text=label, web_app=WebAppInfo(url=base_url)))
+            else:
+                row.append(KeyboardButton(text=label))
+        rows.append(row)
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder=t(language, "menu.input_placeholder"),
+    )
 
 
 def data_kb(language: str, *, confirm: bool = False) -> InlineKeyboardMarkup:
-    """/data action buttons (V5.4 P6): the delete-all button, or the
-    explicit two-step confirm/cancel before it is executed."""
-    if not confirm:
+    """Data-management hub. Delete-all is deliberately separated/destructive."""
+    if confirm:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=t(language, "data.delete_all"),
-                        callback_data=DataCallback(action="confirm").pack(),
-                    )
+                        text=t(language, "data.confirm_button"),
+                        callback_data=DataCallback(action="execute").pack(),
+                    ),
+                    InlineKeyboardButton(
+                        text=t(language, "data.cancel"),
+                        callback_data=DataCallback(action="cancelled").pack(),
+                    ),
                 ]
             ]
         )
@@ -95,16 +124,94 @@ def data_kb(language: str, *, confirm: bool = False) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=t(language, "data.confirm_button"),
-                    callback_data=DataCallback(action="execute").pack(),
+                    text=t(language, "data.facts"),
+                    callback_data=DataCallback(action="facts").pack(),
                 ),
                 InlineKeyboardButton(
-                    text=t(language, "data.cancel"),
-                    callback_data=DataCallback(action="cancelled").pack(),
+                    text=t(language, "data.files"),
+                    callback_data=DataCallback(action="files").pack(),
                 ),
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t(language, "data.reminders"),
+                    callback_data=DataCallback(action="reminders").pack(),
+                ),
+                InlineKeyboardButton(
+                    text=t(language, "data.actions"),
+                    callback_data=DataCallback(action="actions").pack(),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t(language, "data.delete_all"),
+                    callback_data=DataCallback(action="confirm").pack(),
+                )
+            ],
         ]
     )
+
+
+def data_entity_kb(
+    language: str,
+    kind: str,
+    rows: Sequence[tuple[int, str]],
+) -> InlineKeyboardMarkup:
+    """Per-entity controls. A click still creates a confirmable PendingAction."""
+    buttons: list[list[InlineKeyboardButton]] = []
+    for item_id, label in rows[:20]:
+        icon = "🚫" if kind == "reminder" else "🗑"
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{icon} {label[:48]}",
+                    callback_data=DataItemCallback(kind=kind, item_id=item_id).pack(),
+                )
+            ]
+        )
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text=t(language, "data.back"),
+                callback_data=DataCallback(action="overview").pack(),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def data_actions_kb(
+    language: str,
+    rows: Sequence[tuple[int, str]],
+) -> InlineKeyboardMarkup:
+    """Pending-action inbox controls."""
+    buttons: list[list[InlineKeyboardButton]] = []
+    for action_id, label in rows[:20]:
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"✅ {label[:35]}",
+                    callback_data=ActionCallback(
+                        action="confirm", action_id=action_id
+                    ).pack(),
+                ),
+                InlineKeyboardButton(
+                    text="❌",
+                    callback_data=ActionCallback(
+                        action="cancel", action_id=action_id
+                    ).pack(),
+                ),
+            ]
+        )
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text=t(language, "data.back"),
+                callback_data=DataCallback(action="overview").pack(),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def settings_kb(language: str) -> InlineKeyboardMarkup:

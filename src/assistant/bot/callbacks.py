@@ -30,6 +30,13 @@ class DataCallback(CallbackData, prefix="data"):
     action: str
 
 
+class DataItemCallback(CallbackData, prefix="dataitem"):
+    """Request management of one fact/file/reminder from the /data hub."""
+
+    kind: str
+    item_id: int
+
+
 class DraftCallback(CallbackData, prefix="draft"):
     """Confirm/cancel a structured draft before it is persisted (SPEC §6)."""
 

@@ -299,6 +299,45 @@ async def list_files(
     return list((await session.scalars(stmt)).all())
 
 
+_FILE_QUERY_STOPWORDS = {
+    "file", "files", "document", "documents", "the", "a", "my", "about",
+    "файл", "файлы", "документ", "документы", "мой", "мои", "тот", "этот",
+    "про", "о", "об", "из", "по",
+}
+
+
+def _file_query_terms(query: str) -> list[str]:
+    terms = [
+        token.casefold()
+        for token in re.findall(r"[\w.-]+", query or "", flags=re.UNICODE)
+        if len(token) >= 2
+    ]
+    useful = [term for term in terms if term not in _FILE_QUERY_STOPWORDS]
+    return useful or terms
+
+
+async def search_files_by_name(
+    session: AsyncSession,
+    user: User,
+    *,
+    query: str,
+    limit: int = 20,
+) -> list[UserFile]:
+    """User-scoped bounded filename lookup used by the LLM files tool."""
+    terms = _file_query_terms(query)
+    if not terms:
+        return await list_files(session, user, limit=limit)
+    stmt = select(UserFile).where(UserFile.user_id == user.id)
+    stmt = stmt.where(
+        *[
+            func.lower(UserFile.original_filename).contains(term, autoescape=True)
+            for term in terms
+        ]
+    )
+    stmt = stmt.order_by(UserFile.created_at.desc()).limit(limit)
+    return list((await session.scalars(stmt)).all())
+
+
 async def delete_file(session: AsyncSession, user: User, file_id: int) -> str | None:
     """Delete a file row, its chunks, and its pending job (flush only; the
     caller commits). Returns the ``storage_key`` of the deleted file, or

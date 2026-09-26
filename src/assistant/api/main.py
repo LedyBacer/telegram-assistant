@@ -11,6 +11,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 
 from assistant.api.readiness import check_readiness
 from assistant.api.routes import router as api_router
@@ -59,6 +60,9 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Smart Personal Assistant", version="0.1.0", lifespan=_lifespan
     )
+
+    # Minification reduces source bytes; gzip reduces transfer bytes.
+    app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 
     # Request/correlation id: reuse an incoming X-Request-Id (so a caller can
     # trace its request) or mint one; it is bound into the log context for the

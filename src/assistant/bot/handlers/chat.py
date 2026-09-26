@@ -17,7 +17,6 @@ from assistant.ai.prompts import DRAFT_SYSTEM
 from assistant.bot.handlers.common import (
     TaskDraft,
     _ai_draft_to_task_draft,
-    _delete_thinking,
     _draft_preview,
     _ensure_user,
     _parse_draft,
@@ -25,7 +24,6 @@ from assistant.bot.handlers.common import (
     _parse_workout_log,
     _parse_workout_schedule,
     _render_validation_error,
-    _send_thinking,
     _user_lang,
     _user_tz,
 )
@@ -70,10 +68,11 @@ async def on_text(
             # to release the DB transaction before the model's network I/O
             # (no open transaction spanning the provider call, V4 §19-20).
             await session.commit()
-            thinking_status = await _send_thinking(message, lang)
             try:
                 async with ChatActionSender.typing(
-                    bot=message.bot, chat_id=message.chat.id
+                    bot=message.bot,
+                    chat_id=message.chat.id,
+                    interval=4.0,
                 ):
                     ai = await get_ai_provider().chat_structured(
                         system=DRAFT_SYSTEM.format(
@@ -83,12 +82,10 @@ async def on_text(
                         schema=AITaskDraft,
                     )
             except AIProviderError:
-                await _delete_thinking(thinking_status)
                 await message.answer(
                     t(lang, "draft.failed", help=t(lang, "draft.help"))
                 )
                 return
-            await _delete_thinking(thinking_status)
             draft = _ai_draft_to_task_draft(ai, tz)
             ai_dump = ai.model_dump(mode="json")
         await state.update_data(draft_text=text, draft_ai=ai_dump)
@@ -182,16 +179,16 @@ async def on_text(
             reply_markup=main_menu_kb(lang),
         )
     else:
-        thinking_status = await _send_thinking(message, lang)
         try:
             async with ChatActionSender.typing(
-                bot=message.bot, chat_id=message.chat.id
-            ):
+                    bot=message.bot,
+                    chat_id=message.chat.id,
+                    interval=4.0,
+                ):
                 result = await turns_service.run_turn(session, user, text)
         except AIProviderError:
             # The engine persists nothing on provider failure: keep the
             # user message and explain the outage in the user's language.
-            await _delete_thinking(thinking_status)
             session.add(
                 ChatMessage(
                     user_id=user.id,
@@ -200,15 +197,11 @@ async def on_text(
                     source="telegram",
                 )
             )
-            await message.answer(
-                t(lang, "errors.ai_unavailable"),
-                reply_markup=main_menu_kb(lang),
-            )
+            await message.answer(t(lang, "errors.ai_unavailable"))
             return
         except LocalizableError as exc:
             # Malformed/empty model output fails safely (SPEC §2): the user
             # message is persisted and a localized fallback is shown.
-            await _delete_thinking(thinking_status)
             session.add(
                 ChatMessage(
                     user_id=user.id,
@@ -218,12 +211,8 @@ async def on_text(
                 )
             )
             await session.flush()
-            await message.answer(
-                t(lang, exc.key, **exc.params),
-                reply_markup=main_menu_kb(lang),
-            )
+            await message.answer(t(lang, exc.key, **exc.params))
             return
-        await _delete_thinking(thinking_status)
         if result.reply:
             text = result.reply
             if result.retrieved_chunks:
@@ -234,11 +223,7 @@ async def on_text(
                     text = f"{text}\n\n{citations}"
             # Long model replies are split at paragraph/line boundaries so
             # the 4096-char Telegram limit never fails the turn (V3 P24).
-            await answer_long_markdown(
-                message,
-                text,
-                reply_markup=main_menu_kb(lang),
-            )
+            await answer_long_markdown(message, text)
         for action in result.proposed_actions:
             await message.answer(
                 t(lang, "action.propose", summary=action.summary),

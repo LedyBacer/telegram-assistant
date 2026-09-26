@@ -11,6 +11,7 @@ from assistant.bot.callbacks import LanguageCallback, SettingsCallback
 from assistant.bot.handlers.common import _ensure_user, _user_lang
 from assistant.bot.keyboards import language_kb, reply_kb, settings_kb
 from assistant.bot.states import SettingsStates
+from assistant.config import get_settings
 from assistant.i18n import is_supported, t
 
 router = Router(name="settings")
@@ -70,6 +71,6 @@ async def on_language(
     # persistent panel in the new language (V5.4 P6).
     await callback.message.answer(
         t(code, "settings.language_changed", label=t(code, f"settings.language_{code}")),
-        reply_markup=reply_kb(code),
+        reply_markup=reply_kb(code, get_settings().public_base_url),
     )
     await callback.answer()

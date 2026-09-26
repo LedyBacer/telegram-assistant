@@ -5,9 +5,8 @@ Covers: the default/configured chat timeout reaching the chat client, the
 embedding provider staying on its own timeout, the explicit
 ``chat_template_kwargs.enable_thinking`` request option for both normal
 chat and structured completion, timeout failing cleanly without a second
-long inference, and the temporary localized "Думаю…" / "Thinking…" status
-message lifecycle (sent only when thinking is enabled, deleted on success,
-provider error, and timeout; deletion failures never breaking the flow).
+long inference, and the native Telegram typing-status lifecycle around AI inference. No
+standalone "Думаю…" / "Thinking…" message is sent.
 
 All Telegram and AI HTTP calls are faked; no network access is required.
 """
@@ -241,7 +240,7 @@ def test_aitimeout_error_is_an_ai_provider_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Bot UX: temporary localized "Thinking…" status message
+# Bot UX: native Telegram typing, no temporary "Thinking..." message
 # ---------------------------------------------------------------------------
 
 
@@ -255,51 +254,18 @@ def _make_message(text: str) -> tuple[SimpleNamespace, list[SimpleNamespace]]:
     sent: list[SimpleNamespace] = []
 
     def _answer(*args: Any, **kwargs: Any) -> SimpleNamespace:
-        message = SimpleNamespace(delete=AsyncMock(), text=args[0] if args else None)
-        sent.append(message)
-        return message
+        out = SimpleNamespace(text=args[0] if args else None)
+        sent.append(out)
+        return out
 
     message = SimpleNamespace(
         text=text,
         from_user=_fake_tg_user(),
-        # V5.4 P6: free-text path uses ChatActionSender.typing(bot, chat_id);
-        # the fake bot needs .id for the sender's debug logging.
         chat=SimpleNamespace(id=100),
         bot=SimpleNamespace(id=777, send_chat_action=AsyncMock()),
         answer=AsyncMock(side_effect=_answer),
     )
     return message, sent
-
-
-def _make_message_with_failing_delete(
-    text: str,
-) -> tuple[SimpleNamespace, list[SimpleNamespace]]:
-    sent: list[SimpleNamespace] = []
-
-    def _answer(*args: Any, **kwargs: Any) -> SimpleNamespace:
-        message = SimpleNamespace(
-            delete=AsyncMock(side_effect=RuntimeError("telegram gone")),
-            text=args[0] if args else None,
-        )
-        sent.append(message)
-        return message
-
-    message = SimpleNamespace(
-        text=text,
-        from_user=_fake_tg_user(),
-        # V5.4 P6: free-text path uses ChatActionSender.typing(bot, chat_id);
-        # the fake bot needs .id for the sender's debug logging.
-        chat=SimpleNamespace(id=100),
-        bot=SimpleNamespace(id=777, send_chat_action=AsyncMock()),
-        answer=AsyncMock(side_effect=_answer),
-    )
-    return message, sent
-
-
-def _fake_settings(thinking: bool) -> SimpleNamespace:
-    return SimpleNamespace(
-        chat_thinking_enabled=thinking, public_base_url="https://app.test"
-    )
 
 
 async def _user_with_lang(session: AsyncSession, lang: str) -> None:
@@ -316,12 +282,14 @@ class _DraftProvider:
     ) -> None:
         self.draft = draft
         self.error = error
-        self.calls = 0
 
     async def chat_structured(
         self, *, system: str, messages: list[dict[str, str]], schema: type[Any]
     ) -> Any:
-        self.calls += 1
+        # Real provider I/O yields to the event loop. Without this, an
+        # instant fake may leave ChatActionSender before its background
+        # task can send the first native typing action.
+        await asyncio.sleep(0.02)
         if self.error is not None:
             raise self.error
         assert self.draft is not None
@@ -334,12 +302,6 @@ class _ChatProvider:
         self.error = error
         self.calls = 0
 
-    async def chat(self, *, system: str, messages: list[dict[str, str]]) -> str:
-        self.calls += 1
-        if self.error is not None:
-            raise self.error
-        return self.reply
-
     async def chat_structured(
         self, *, system: str, messages: list[dict[str, str]], schema: type[Any]
     ) -> Any:
@@ -348,33 +310,11 @@ class _ChatProvider:
             raise self.error
         return AssistantTurn(mode="answer", reply=self.reply)
 
-    # Context assembly embeds the query even when the user has no files.
     async def embed_documents(self, *, texts: list[str]) -> list[list[float]]:
         return [[0.0] * 384 for _ in texts]
 
     async def embed_query(self, *, query: str) -> list[float]:
         return [0.0] * 384
-
-
-def test_ai_draft_duration_maps_to_ends_at_not_due_at() -> None:
-    """SPEC §4.1: a duration extends the item (start -> end) and must NOT be
-    stored as a due date."""
-    from zoneinfo import ZoneInfo
-
-    from assistant.bot.handlers import _ai_draft_to_task_draft
-
-    draft = _ai_draft_to_task_draft(
-        AITaskDraft(
-            title="Gym",
-            kind="event",
-            start=datetime(2026, 9, 25, 20, 0),
-            duration_minutes=60,
-        ),
-        ZoneInfo("Europe/Berlin"),
-    )
-    # Naive 20:00 Berlin (CEST) is 18:00 UTC; +60 min -> 19:00 UTC end.
-    assert draft.ends_at == datetime(2026, 9, 25, 19, 0, tzinfo=UTC)
-    assert draft.due_at is None
 
 
 def _draft_provider() -> _DraftProvider:
@@ -401,171 +341,89 @@ def _fake_state(state_value: str | None) -> SimpleNamespace:
 DRAFT_STATE = TaskDraftStates.waiting_for_text.state
 
 
-async def test_draft_russian_user_sees_thinking_status(
+def test_ai_draft_duration_maps_to_ends_at_not_due_at() -> None:
+    from zoneinfo import ZoneInfo
+
+    from assistant.bot.handlers import _ai_draft_to_task_draft
+
+    draft = _ai_draft_to_task_draft(
+        AITaskDraft(
+            title="Gym",
+            kind="event",
+            start=datetime(2026, 9, 25, 20, 0),
+            duration_minutes=60,
+        ),
+        ZoneInfo("Europe/Berlin"),
+    )
+    assert draft.ends_at == datetime(2026, 9, 25, 19, 0, tzinfo=UTC)
+    assert draft.due_at is None
+
+
+async def test_draft_uses_native_typing_without_status_message(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
     monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: _draft_provider())
     message, sent = _make_message("Сегодня напомни мне позвонить Сергею в 17:00")
-    state = _fake_state(DRAFT_STATE)
 
-    await on_text(message, session, state)
+    await on_text(message, session, _fake_state(DRAFT_STATE))
 
-    # First outgoing message is the localized status, second the preview.
-    assert sent[0].text == "Думаю…"
-    assert len(sent) == 2
-    # The status message was removed.
-    sent[0].delete.assert_awaited_once()
-    state.set_state.assert_awaited_once_with(TaskDraftStates.confirm)
-    assert "Позвонить Сергею" in sent[1].text
-
-
-async def test_draft_english_user_sees_thinking_status(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await _user_with_lang(session, "en")
-    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
-    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: _draft_provider())
-    message, sent = _make_message("Remind me to call Sergey today at 17:00")
-    state = _fake_state(DRAFT_STATE)
-
-    await on_text(message, session, state)
-
-    assert sent[0].text == "Thinking…"
-    sent[0].delete.assert_awaited_once()
-    state.set_state.assert_awaited_once_with(TaskDraftStates.confirm)
-
-
-async def test_draft_no_status_message_when_thinking_disabled(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(False))
-    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: _draft_provider())
-    message, sent = _make_message("Сегодня напомни мне позвонить Сергею в 17:00")
-    state = _fake_state(DRAFT_STATE)
-
-    await on_text(message, session, state)
-
-    # Only the draft preview; no temporary status at all.
     assert len(sent) == 1
-    assert "Думаю…" not in (sent[0].text or "")
-    state.set_state.assert_awaited_once_with(TaskDraftStates.confirm)
+    assert "Позвонить Сергею" in sent[0].text
+    assert all((m.text or "") not in {"Думаю…", "Thinking…"} for m in sent)
+    assert message.bot.send_chat_action.await_count >= 1
 
 
-async def test_draft_status_deleted_after_provider_error(
+async def test_draft_provider_error_has_no_status_message(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
     monkeypatch.setattr(
         handlers.chat,
         "get_ai_provider",
         lambda: _DraftProvider(error=AIProviderError("provider down")),
     )
     message, sent = _make_message("Сегодня напомни мне позвонить Сергею в 17:00")
-    state = _fake_state(DRAFT_STATE)
 
-    await on_text(message, session, state)
+    await on_text(message, session, _fake_state(DRAFT_STATE))
 
-    assert sent[0].text == "Думаю…"
-    sent[0].delete.assert_awaited_once()
-    # Localized failure, no raw provider text.
-    assert "Не удалось понять" in sent[1].text
-    state.update_data.assert_not_awaited()
+    assert len(sent) == 1
+    assert "Не удалось понять" in sent[0].text
+    assert message.bot.send_chat_action.await_count >= 1
 
 
-async def test_draft_status_deleted_after_timeout(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
-    monkeypatch.setattr(
-        handlers.chat,
-        "get_ai_provider",
-        lambda: _DraftProvider(error=AITimeoutError("timed out after 180 s")),
-    )
-    message, sent = _make_message("Сегодня напомни мне позвонить Сергею в 17:00")
-    state = _fake_state(DRAFT_STATE)
-
-    await on_text(message, session, state)
-
-    assert sent[0].text == "Думаю…"
-    sent[0].delete.assert_awaited_once()
-    assert "Не удалось понять" in sent[1].text
-
-
-async def test_draft_delete_failure_does_not_break_the_flow(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
-    monkeypatch.setattr(handlers.chat, "get_ai_provider", lambda: _draft_provider())
-    message, sent = _make_message_with_failing_delete(
-        "Сегодня напомни мне позвонить Сергею в 17:00"
-    )
-    state = _fake_state(DRAFT_STATE)
-
-    # The flow completes: preview is shown even though the status
-    # deletion failed.
-    await on_text(message, session, state)
-    assert len(sent) == 2
-    state.set_state.assert_awaited_once_with(TaskDraftStates.confirm)
-    assert "Позвонить Сергею" in sent[1].text
-
-
-async def test_chat_thinking_status_lifecycle(
+async def test_chat_uses_native_typing_without_status_message(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "en")
-    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
     provider = _ChatProvider(reply="hello back")
     monkeypatch.setattr(turns_service, "get_ai_provider", lambda: provider)
     message, sent = _make_message("what's on my plate today?")
-    state = _fake_state(None)
 
-    await on_text(message, session, state)
+    await on_text(message, session, _fake_state(None))
 
     assert provider.calls == 1
-    assert sent[0].text == "Thinking…"
-    sent[0].delete.assert_awaited_once()
-    assert sent[1].text == "hello back"
+    assert [m.text for m in sent] == ["hello back"]
+    assert message.bot.send_chat_action.await_count >= 1
 
 
-async def test_chat_no_status_when_thinking_disabled(
+async def test_chat_provider_error_has_no_status_message(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(False))
-    monkeypatch.setattr(turns_service, "get_ai_provider", lambda: _ChatProvider())
-    message, sent = _make_message("привет")
-    state = _fake_state(None)
-
-    await on_text(message, session, state)
-
-    assert len(sent) == 1
-    assert sent[0].text == "ok-reply"
-
-
-async def test_chat_status_deleted_on_provider_error(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await _user_with_lang(session, "ru")
-    monkeypatch.setattr(handlers.common, "get_settings", lambda: _fake_settings(True))
     monkeypatch.setattr(
         turns_service,
         "get_ai_provider",
         lambda: _ChatProvider(error=AITimeoutError("timed out after 180 s")),
     )
     message, sent = _make_message("привет")
-    state = _fake_state(None)
 
-    await on_text(message, session, state)
+    await on_text(message, session, _fake_state(None))
 
-    assert sent[0].text == "Думаю…"
-    sent[0].delete.assert_awaited_once()
-    assert "Сейчас не могу связаться" in sent[1].text
+    assert len(sent) == 1
+    assert "Сейчас не могу связаться" in sent[0].text
+    assert message.bot.send_chat_action.await_count >= 1
+
 
 def test_qwen35_structured_thinking_uses_precise_sampling_profile() -> None:
     provider, create = _chat_provider(thinking=True)

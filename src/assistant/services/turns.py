@@ -65,7 +65,6 @@ from typing import Annotated, Literal, Union, get_args, get_origin
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import ValidationError
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.actions import get_action_kind, registered_kinds
@@ -82,7 +81,6 @@ from assistant.i18n import DEFAULT_LANGUAGE, language_name
 from assistant.models.calendar_items import CalendarItem
 from assistant.models.chat_messages import ChatMessage, ChatRole
 from assistant.models.facts import UserFact
-from assistant.models.files import UserFile
 from assistant.models.pending_actions import PendingAction
 from assistant.models.reminders import ReminderStatus
 from assistant.models.users import User
@@ -106,7 +104,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "reminders": "pending reminders (with ids); "
     "query=<the reminder the user named> resolves it",
     "workouts": "recent workout logs",
-    "files": "stored files (id, name, state, size)",
+    "files": "stored files (id, name, state, size); query filters filenames",
     "documents": "search the text of stored documents for relevant excerpts",
     "facts": "confirmed user facts (with ids)",
 }
@@ -332,19 +330,12 @@ async def run_read_tool(
         return ("\n".join(lines) if lines else "(no data)", [])
     if tool == "files":
         files = (
-            (
-                await session.execute(
-                    select(UserFile)
-                    .where(UserFile.user_id == user.id)
-                    .order_by(UserFile.created_at.desc())
-                    .limit(limit)
-                )
+            await files_service.search_files_by_name(
+                session, user, query=query or "", limit=limit
             )
-            .scalars()
-            .all()
+            if query
+            else await files_service.list_files(session, user, limit=limit)
         )
-        # ``id=`` prefix so the model can target a file by id (e.g. for the
-        # ``delete_file`` action) without guessing.
         lines = [
             f"id={f.id} {f.original_filename} "
             f"(state={f.state.value}, {f.size_bytes} bytes)"
@@ -362,7 +353,7 @@ async def run_read_tool(
             top_k=min(limit, DOCUMENTS_TOOL_LIMIT),
             provider=provider,
         )
-        lines = [f"{c.file_name} (excerpt): {c.text[:400]}" for c in chunks]
+        lines = [f"file_id={c.file_id} {c.file_name} (excerpt): {c.text[:400]}" for c in chunks]
         return ("\n".join(lines) if lines else "(no data)", list(chunks))
     if tool == "facts":
         facts = await facts_service.confirmed_facts(session, user)

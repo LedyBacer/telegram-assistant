@@ -3294,3 +3294,12 @@ headings, bold/italic/strike/spoiler, inline/fenced code, safe links,
 blockquotes and bullets. The bot still has no global `parse_mode`; deterministic
 messages and ordinary user-sourced values remain plain text. A Telegram entity
 parse failure retries only the failed AI segment as its original plain text.
+
+
+- **Post-P8 product polish**: removed the temporary `Думаю…/Thinking…`
+  message in favor of native `typing`; made the persistent reply keyboard
+  deterministic primary navigation (including Mini App); `/data` is a
+  per-domain management hub and full erase follows DB ownership cascades plus
+  post-commit physical-file cleanup; the LLM `files` tool honors filename
+  queries and document excerpts expose real file ids; API/static responses
+  use gzip middleware.

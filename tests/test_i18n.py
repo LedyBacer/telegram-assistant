@@ -102,15 +102,13 @@ def test_key_missing_from_active_locale_falls_back_to_ru(
 
 
 def test_interpolation_and_safe_format() -> None:
-    assert t("en", "start.welcome", name="Ann") == (
-        "Hi Ann! I keep your tasks, events, workouts, and files.\n"
-        "Pick a section below."
-    )
+    rendered = t("en", "start.welcome", name="Ann")
+    assert "Ann" in rendered
+    assert "{name}" not in rendered
     # Missing kwargs: the raw template is returned, never an exception.
     assert "{name}" in t("en", "start.welcome")
     assert t("ru", "reminders.notification", message="Call") == "Напоминание: Call"
     assert t("en", "reminders.notification", message="Call") == "Reminder: Call"
-
 
 def test_locale_key_parity_ru_en() -> None:
     assert set(load_locale("ru")) == set(load_locale("en"))
@@ -253,16 +251,20 @@ async def test_cmd_start_renders_in_user_language(session: AsyncSession) -> None
     msg = _message(96)
     await cmd_start(msg, session, _state())
     calls = msg.answer.await_args_list
+    assert len(calls) == 1
     assert calls[0].args[0] == t("en", "start.welcome", name="F")
-    assert isinstance(calls[0].kwargs["reply_markup"], keyboards.ReplyKeyboardMarkup)
-    assert isinstance(calls[-1].kwargs["reply_markup"], keyboards.InlineKeyboardMarkup)
+    kb = calls[0].kwargs["reply_markup"]
+    assert isinstance(kb, keyboards.ReplyKeyboardMarkup)
+    assert kb.is_persistent is True
 
     msg = _message(97)
     await cmd_start(msg, session, _state())
     calls = msg.answer.await_args_list
+    assert len(calls) == 1
     assert calls[0].args[0] == t("ru", "start.welcome", name="F")
-    assert isinstance(calls[0].kwargs["reply_markup"], keyboards.ReplyKeyboardMarkup)
-    assert isinstance(calls[-1].kwargs["reply_markup"], keyboards.InlineKeyboardMarkup)
+    kb = calls[0].kwargs["reply_markup"]
+    assert isinstance(kb, keyboards.ReplyKeyboardMarkup)
+    assert kb.is_persistent is True
 
 
 async def test_cmd_language_shows_keyboard(session: AsyncSession) -> None:

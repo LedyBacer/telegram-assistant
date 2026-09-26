@@ -8,7 +8,6 @@ be exported alongside the composed router.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -20,16 +19,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from assistant.ai import AITaskDraft
-from assistant.config import get_settings
 from assistant.i18n import DEFAULT_LANGUAGE, LocalizableError, load_locale, t
 from assistant.models.calendar_items import CalendarItem, ItemKind, ItemPriority
 from assistant.models.files import UserFile
 from assistant.models.users import User
 from assistant.services import reminders as reminders_service
 from assistant.services.users import upsert_user
-
-logger = logging.getLogger("assistant.bot")
-
 
 # --- Private-chats-only guard (V3 P25) ------------------------------------
 # The data model uses the Telegram user ID as the background-delivery chat
@@ -91,32 +86,6 @@ def _user_tz(user: User) -> ZoneInfo:
 
 def _user_lang(user: User) -> str:
     return user.settings.language if user.settings is not None else DEFAULT_LANGUAGE
-
-
-async def _send_thinking(message: Message, lang: str) -> Message | None:
-    """Send the temporary localized "Thinking…" status message.
-
-    Only when ``CHAT_THINKING_ENABLED`` is true and an AI request is about to
-    run. The message is cosmetic: a failed send (e.g. Telegram flood limit)
-    must not break the request flow, so it is best-effort.
-    """
-    if not get_settings().chat_thinking_enabled:
-        return None
-    try:
-        return await message.answer(t(lang, "ai.thinking"))
-    except Exception:  # noqa: BLE001 — cosmetic message must never break the flow
-        logger.warning("failed to send the thinking status message", exc_info=True)
-        return None
-
-
-async def _delete_thinking(status: Message | None) -> None:
-    """Best-effort removal of the temporary status message."""
-    if status is None:
-        return
-    try:
-        await status.delete()
-    except Exception:  # noqa: BLE001 — deletion failure must not break the flow
-        logger.warning("failed to delete the thinking status message", exc_info=True)
 
 
 def _render_validation_error(exc: ValueError, lang: str, fallback_key: str) -> str:

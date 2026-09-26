@@ -73,28 +73,28 @@ class TestKeyboards:
         assert web[0].web_app.url == "https://example.test/miniapp"
 
     def test_reply_keyboard_sections(self) -> None:
-        # V5.4 P6: the persistent reply keyboard mirrors the inline menu,
-        # minus the Mini App section (which needs a WebAppInfo URL).
         from aiogram.types import KeyboardButton
 
         from assistant.i18n import t
 
-        kb = keyboards.reply_kb("ru")
+        kb = keyboards.reply_kb("ru", "https://example.test/miniapp")
         assert kb.resize_keyboard is True
+        assert kb.is_persistent is True
+        assert kb.input_field_placeholder == t("ru", "menu.input_placeholder")
         flat = [b for row in kb.keyboard for b in row]
-        expected = [
-            t("ru", key) for section, key in keyboards.SECTIONS if section != "miniapp"
-        ]
+        expected = [t("ru", key) for _section, key in keyboards.REPLY_SECTIONS]
         assert [b.text for b in flat] == expected
         assert all(isinstance(b, KeyboardButton) for b in flat)
+        mini = next(b for b in flat if b.text == t("ru", "menu.miniapp"))
+        assert mini.web_app.url == "https://example.test/miniapp"
         assert all(len(row) <= 2 for row in kb.keyboard)
 
-    def test_data_keyboard_two_step(self) -> None:
+    def test_data_keyboard_management_and_delete_all(self) -> None:
         kb = keyboards.data_kb("ru")
         flat = [b for row in kb.inline_keyboard for b in row]
-        assert [callbacks.DataCallback.unpack(b.callback_data) for b in flat] == [
-            callbacks.DataCallback(action="confirm")
-        ]
+        actions = [callbacks.DataCallback.unpack(b.callback_data).action for b in flat]
+        assert actions == ["facts", "files", "reminders", "actions", "confirm"]
+
         kb = keyboards.data_kb("ru", confirm=True)
         flat = [b for row in kb.inline_keyboard for b in row]
         assert [callbacks.DataCallback.unpack(b.callback_data) for b in flat] == [
@@ -318,16 +318,7 @@ async def test_on_text_stores_chat_message(
     from assistant.ai import AIProviderError
     from assistant.bot.handlers import on_text
     from assistant.services import turns as _turns
-
-    # This test asserts a single outgoing message; the thinking status UX
-    # is covered in tests/test_thinking_ux.py.
-    monkeypatch.setattr(
-        handlers.common,
-        "get_settings",
-        lambda: SimpleNamespace(
-            chat_thinking_enabled=False, public_base_url="https://app.test"
-        ),
-    )
+    # Native Telegram typing creates no temporary reply message.
     # Hermetic: force the provider-failure path so the test never depends on
     # ambient credentials. With a live-eval .env present, an unpatched
     # get_ai_provider() would let run_turn make a real model call and persist
@@ -429,11 +420,14 @@ class TestV54P6:
             summary = message.answer.await_args.args[0]
             assert summary == t(
                 "ru", "data.summary",
-                items=2, reminders=1, facts=0, files=0, workouts=0, messages=1,
+                items=2, reminders=1, facts=0, files=0, workouts=0, messages=1, actions=0,
             )
             kb = message.answer.await_args.kwargs["reply_markup"]
             flat = [b for row in kb.inline_keyboard for b in row]
-            assert cb_mod.DataCallback.unpack(flat[0].callback_data).action == "confirm"
+            assert any(
+                cb_mod.DataCallback.unpack(button.callback_data).action == "confirm"
+                for button in flat
+            )
 
             def _cb() -> SimpleNamespace:
                 return SimpleNamespace(
@@ -462,10 +456,13 @@ class TestV54P6:
                 assert count == 0, table
             cb2.answer.assert_awaited_once()
 
-            # The user row and their settings survive.
+            # Full erase includes the profile/settings; the next interaction recreates them.
             assert (
                 await session.execute(text("SELECT count(*) FROM users WHERE id = 55"))
-            ).scalar_one() == 1
+            ).scalar_one() == 0
+            assert (
+                await session.execute(text("SELECT count(*) FROM user_settings WHERE user_id = 55"))
+            ).scalar_one() == 0
         finally:
             await session.execute(
                 text("TRUNCATE calendar_items, reminders, chat_messages RESTART IDENTITY CASCADE")

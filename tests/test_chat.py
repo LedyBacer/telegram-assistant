@@ -353,15 +353,8 @@ def _fake_state() -> SimpleNamespace:
 
 
 def _no_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
-    # These tests assert a single outgoing message; the thinking UX
-    # (a temporary status message) is covered in tests/test_thinking_ux.py.
-    monkeypatch.setattr(
-        handlers.common,
-        "get_settings",
-        lambda: SimpleNamespace(
-            chat_thinking_enabled=False, public_base_url="https://app.test"
-        ),
-    )
+    # Compatibility no-op: native ChatActionSender creates no bot reply.
+    del monkeypatch
 
 
 async def test_on_text_uses_contextual_chat(session: AsyncSession, monkeypatch) -> None:
