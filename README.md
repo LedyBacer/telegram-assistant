@@ -174,8 +174,11 @@ shape, so llama.cpp's `/v1/embeddings` is fully supported.
   Embeddings are unaffected. The bot shows a temporary localized
   "Думаю…" / "Thinking…" status and removes it on success/error/timeout.
 - **`CHAT_THINKING_BUDGET_TOKENS`** (optional, unset = unrestricted) —
-  forwards llama.cpp's per-request `thinking_budget_tokens`. Start unrestricted;
-  if latency or overthinking is excessive, try a measured value such as `4096`.
+  forwards llama.cpp's per-request `thinking_budget_tokens`. This deployment
+  runs Ornith-1.5-9B at `4096`: the 2026-09-26 live study (V5.4 P5, see
+  `docs/RESEARCH.md`) measured 4096 as the best arm on the long multi-turn
+  `session_large` cluster (7/8, best p95 latency; 2048 = 5/8, 8192 = 8/8 at
+  the worst p95, unrestricted = 6/8).
 - **`CHAT_REASONING_EFFORT`** is retained for custom templates/models, but it
   is not the recommended quality knob for stock Qwen3.5; use the thinking
   switch and optional token budget instead.

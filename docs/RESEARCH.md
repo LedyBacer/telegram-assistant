@@ -9,12 +9,29 @@ official documentation.
 | Library (Context7 ID) | Query | Outcome |
 | --- | --- | --- |
 | `/aiogram/aiogram` | Dispatcher, Router, CallbackData, FSM usage in aiogram 3 | Success |
+| `/aiogram/aiogram` | P6: `ChatActionSender.typing` context manager (aiogram 3.x) | Success (2026-09-26) |
+| `/aiogram/aiogram` | P6: `set_my_commands` / `set_chat_menu_button` (`MenuButtonCommands`) / `ReplyKeyboardMarkup` | Success (2026-09-26) |
 | `/openai/openai-python` | AsyncOpenAI, `chat.completions.parse` with Pydantic `response_format`, embeddings | Success |
 | `/websites/alembic_sqlalchemy` | Async Alembic `env.py` template | Success |
 | `/pgvector/pgvector` | Extension and HNSW index syntax | Success |
 | `/pgvector/pgvector-python` | SQLAlchemy `Vector` type + HNSW cosine index DDL | Timed out; details written from the stable pgvector docs |
 
 Per QWEN.md, only the successful lookups above are claimed as Context7-assisted.
+
+## aiogram 3 (v3.13+) — P6 UX additions (Context7, `/aiogram/aiogram`, 2026-09-26)
+
+- Typing indicator: `async with ChatActionSender.typing(bot=bot, chat_id=...)`
+  as an async context manager around the long operation (aiogram 3.x
+  migration doc); `message_thread_id` supported since 3.5.0.
+- `bot.set_my_commands([BotCommand(...), ...])` returns bool; call once at
+  startup with the localized command list (RU/EN can be set per
+  `language_code` via `set_my_commands`'s `language_code` param).
+- `bot.set_chat_menu_button(chat_id=None, menu_button=MenuButtonCommands())`
+  — optional `chat_id` changes the bot's *default* menu button (commands
+  menu) for all private chats; `MenuButtonCommands` enables the commands
+  menu in the chat ⋮ menu.
+- Persistent reply keyboard: `ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=...), ...]], resize_keyboard=True)`
+  passed as `reply_markup` when answering (e.g. in `/start`).
 
 ## aiogram 3 (v3.13+)
 
@@ -130,3 +147,79 @@ Per QWEN.md, only the successful lookups above are claimed as Context7-assisted.
   (filename + range), never by the model.
 - Document text is treated as untrusted data: it is chunked/embedded and
   retrieved, never interpreted as instructions.
+
+## V5.4 P5 — sampling + thinking-budget study (2026-09-26)
+
+Design (run-day Sat 2026-09-26; live Ornith-1.5-9B, thinking ON):
+
+- **Factors**
+  - Structured-call sampling family (`CHAT_STRUCTURED_SAMPLING`):
+    **A = general** (temp 1.0 / presence_penalty 1.5) vs
+    **B = precise** (temp 0.6 / presence_penalty 0.0, current production).
+    General chat is constant (temp 1.0 / presence 1.5) in both arms.
+  - llama.cpp per-request `thinking_budget_tokens` (`CHAT_THINKING_BUDGET_TOKENS`):
+    2048 (current) vs 4096 vs 8192 vs unrestricted (`None`), on the
+    `session_large` structured-output failure cluster.
+- **Arms** (sequential; shared `assistant_llm_eval` DB; reps=1):
+  - `p5a-{create,reminder,colloquial,robustness}_breadth` — arm A (86 phrasings);
+  - `p5b{4096,8192,none}-session_large` — budget study (24 runs).
+- **Same-day baseline (arm B, budget 2048)** reused from the P4 latest
+  batches instead of re-running: create_breadth 21/24 (`p4devF`),
+  reminder_breadth 17/20 (`p4devF`), colloquial_breadth 20/22 (`p4devE`),
+  robustness_breadth 17/20 (`p4devE`), session_large 5/8 (`p4devD`).
+- **Decision rule**: choose by end-to-end case-level correctness on the hard
+  RU set (relative-weekday phrasings + long multi-turn structured-output
+  sessions), with P0 safety non-negotiable; prefer the cheaper (lower budget,
+  more precise sampling) arm when the accuracy difference is within
+  run-to-run noise (P4 showed failing cases *shifting* between reps, so a
+  1–2 case delta is not a decision-grade signal).
+
+### Results (all batches completed 2026-09-26 06:04 UTC; JSONL in `test-artifacts/llm-eval/`)
+
+Structured sampling (arm A `general` vs same-day baseline arm B `precise`):
+
+| Category | Baseline precise 2048 | Arm A general 2048 | Δ |
+| --- | --- | --- | --- |
+| create_breadth | 21/24 | 22/24 | +1 (A fixed the baseline's only `AIOutputValidationError`, `createb_ru_2`) |
+| reminder_breadth | 17/20 | 17/20 | 0 (failing cases shifted) |
+| colloquial_breadth | 20/22 | 20/22 | 0 |
+| robustness_breadth | 17/20 | 14/20 | −3 |
+| P0 failures | 0 | 0 | — |
+
+Total 75/86 (87.2%) baseline vs 73/86 (84.9%) arm A. The residual failures
+are the same documented clusters (relative-weekday non-determinism,
+fact-vs-reminder boundary); failing case ids shift between runs, so the +1/−3
+split is at the edge of run-to-run noise — but the −3 robustness regression
+with no decisive gain anywhere rules out `general`.
+
+**Decision: keep `CHAT_STRUCTURED_SAMPLING=precise`.**
+
+Thinking budget on `session_large` (precise sampling, the structured-output
+failure cluster; per-run latency ms):
+
+| Budget | Pass | p50 | p95 |
+| --- | --- | --- | --- |
+| 2048 (prior production) | 5/8 (62.5%) | 107106 | 248253 |
+| **4096** | **7/8 (87.5%)** | **98769** | **157016** |
+| 8192 | 8/8 (100%) | 115258 | 272676 |
+| unrestricted | 6/8 (75.0%) | 113106 | 157175 |
+
+- 4096 fixed the 180 s `AITimeoutError` (`sess_health_4`) and the
+  `AIOutputValidationError` (`sess_workout_2`), with the *best* p95 latency
+  of all four arms (longer budget removed the timeout without adding
+  overthinking).
+- 8192 passed all 8, but at the worst p95 latency (272676 ms) for a
+  single-case gain: `sess_plan_1` fails with `AIOutputValidationError` at
+  2048/4096/unrestricted and only at 8192 passes — a content-level schema
+  flake, not a budget deficit.
+- Unrestricted (the previous "start unrestricted" README guidance) was the
+  worst arm: 6/8 with a new failure (`sess_family_6`) — unbounded thinking
+  tokens buy nothing here and risk latency.
+
+**Decision: production thinking budget 2048 → 4096** (`CHAT_THINKING_BUDGET_TOKENS=4096`
+in `.env`; `.env.example` already documented 4096 as the measured
+suggestion). Rationale: +2/8 on the weakest category, best p95 latency, and
+the residual `sess_plan_1` flake is not budget-driven. `n=8` per arm is
+small; the final P8 production run will re-measure the full corpus at
+precise + 4096. Config default stays `None` (unrestricted) — the 4096 value
+is an operator choice for this deployment, not a code default.

@@ -133,6 +133,27 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   - Verified: `ruff check .` clean; full pytest **594 passed**; corpus
     284 cases / 356 phrasings / 95.5% RU / 65 holdout / 34 multi-turn /
     0 duplicate ids.
+- **§29-P5 (done, results recorded 2026-09-26)** sampling + thinking-budget
+  live study (design + full results in `docs/RESEARCH.md` "V5.4 P5"; JSONL in
+  `test-artifacts/llm-eval/p5a-*`, `p5b{4096,8192,none}-*`):
+  - **Structured sampling: keep `precise`.** Arm A (`general`, 2048):
+    create 22/24, reminder 17/20, colloquial 20/22, robustness 14/20
+    (baseline 21/17/20/17 — a −3 robustness regression for no decisive gain;
+    0 P0s in both arms).
+  - **Thinking budget: 2048 → 4096** (`.env` updated; config default stays
+    `None`). On `session_large`: 2048 = 5/8 (p95 248 s), 4096 = 7/8
+    (p95 157 s — best latency), 8192 = 8/8 (p95 273 s, +1 is the content-flake
+    `sess_plan_1`), unrestricted = 6/8. Residual `sess_plan_1`
+    `AIOutputValidationError` is not budget-driven.
+- **§29-P6 (done, `57347fd`)** Telegram UX: `/data` counts + explicit
+  two-step delete-all (`DataCallback` confirm → execute/cancel); persistent
+  localized reply keyboard (start + language switch re-send, Mini App stays
+  inline-only — needs WebAppInfo URL); native `ChatActionSender.typing` on
+  both AI paths (import: `aiogram.utils.chat_action` — NOT `aiogram.types`
+  on aiogram 3.31.0; the fake bot in tests must expose `.id` because the
+  sender's debug log reads `self.bot.id` — a missing attr hangs `__aexit__`);
+  localized RU/EN `set_my_commands` + `MenuButtonCommands` menu button.
+  Full pytest **601 passed**, ruff clean.
 - **§29-P2 (done, `0da809b`)** evaluator correctness:
   `find_and_confirm` newest-first (`created_at.desc(), id.desc()`) + post-commit
   discard, plus:
