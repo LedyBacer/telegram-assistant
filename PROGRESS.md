@@ -229,10 +229,22 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   `CHAT_THINKING_BUDGET_TOKENS=4096 uv run python scripts/llm_eval.py --full
   --tag final-20260926-r3` (running, log `.qwen/tmp/p8-final-full.log`;
   watch for the `=== Summary ===` block; if a Goal-turn budget kill cancels
-  it again, mv the partial aside and relaunch under ANOTHER fresh tag),
-  then the matched `--ab` thinking ON/OFF run (separate tag, never merged
-  into the production table); P9 rewrite `docs/LLM_EVAL_REPORT.md` per
-  SPEC §24 + final `REPORT.md` (SPEC §34 20-item checklist).
+  it again, mv the partial aside and relaunch under ANOTHER fresh tag).
+  When r3 completes, the matched `--ab` thinking ON/OFF run (separate tag,
+  never merged into the production table) — exact command (7 high-value
+  categories, 294 matched runs ≈ 1.5–2.5 h; same cases/reps/state/sampling,
+  only the thinking toggle differs):
+  `--category` takes ONE value (runner line ~370), so use a loop appending
+  to one fresh JSONL (runner opens it in append mode — rm it first):
+  `rm -f test-artifacts/llm-eval/final-20260926-ab.jsonl && for c in
+  ambiguity deep_memory reminder_vs_task entity_resolution reschedule
+  data_management russian_robustness; do CHAT_THINKING_BUDGET_TOKENS=4096
+  uv run python scripts/llm_eval.py --ab --category $c --json-out
+  test-artifacts/llm-eval/final-20260926-ab.jsonl --tag final-20260926-ab;
+  done > .qwen/tmp/p8-ab.log 2>&1`
+  Then P9: `uv run python .qwen/tmp/p9-analyze.py <r3.jsonl> <ab.jsonl>`,
+  rewrite `docs/LLM_EVAL_REPORT.md` per SPEC §24 + final `REPORT.md`
+  (SPEC §34 20-item checklist), re-run offline gates, commit.
 
 ## V5.3 — Real-LLM behavioral evaluation + autonomous hardening (in progress)
 
