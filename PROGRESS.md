@@ -248,12 +248,15 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   - 9 new tests in `tests/test_ai.py` (each normalization path counted,
     fold schema name, retry+final-failure, first-attempt success counts
     nothing, unknown-name rejection, log content never leaks).
-  - Additive: the running r3 process was started before this change, so
-    r3's JSONL carries no counters — r3's first-attempt vs repair split is
-    recoverable from its log lines (`structured ok ... attempt=N/2` /
-    `structured output rejected ... attempt=N/2`); the A/B run (started
-    after this commit) is counted directly. The P9 report states both
-    sources honestly.
+  - Additive: the running r3 process predates this change AND the runner
+    had no logging configured, so r3 has NO per-attempt visibility —
+    r3's report states final schema validity (evaluated/total) +
+    case_error counts only, no first-attempt/repair split. `llm_eval.py`
+    `_summary` now prints `structured events: {...}` (process-wide §22
+    counters) under `=== Summary ===`, so every run from the A/B loop on
+    (fresh process per category) reports exact retry / final-failure /
+    normalization counts; sum the per-category lines across the loop.
+    The P9 report states this sourcing honestly.
 - **Next:** P8 (in progress) — one complete production run
   `CHAT_THINKING_BUDGET_TOKENS=4096 uv run python scripts/llm_eval.py --full
   --tag final-20260926-r3` (running, log `.qwen/tmp/p8-final-full.log`;

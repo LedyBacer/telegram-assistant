@@ -497,7 +497,10 @@ async def main_async(args) -> int:
 
 
 def _summary(results: list[dict], jsonl: Path, tag: str) -> None:
+    import json as _json
     from collections import defaultdict
+
+    from assistant.ai.structured_events import structured_event_counts
 
     def rate(rs, key="passed"):
         if not rs:
@@ -506,6 +509,15 @@ def _summary(results: list[dict], jsonl: Path, tag: str) -> None:
 
     print("\n=== Summary ===", flush=True)
     print(f"total runs: {len(results)}  overall pass: {rate(results):.1%}", flush=True)
+    # V5.4 §22: process-wide safe counters for this run (normalizations +
+    # validation retries / final failures). Each invocation is a fresh
+    # process, so per-run totals are exact; aggregate across the A/B loop
+    # by summing the per-category lines.
+    print(
+        "structured events: "
+        + _json.dumps(structured_event_counts(), sort_keys=True),
+        flush=True,
+    )
 
     by_cat: dict = defaultdict(list)
     for r in results:
