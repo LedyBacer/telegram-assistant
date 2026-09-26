@@ -16,6 +16,26 @@ const run = Date.now().toString(36);
 const OLD_TITLE = `P30-${run}`;
 const NEW_TITLE = `P30-${run}-edited`;
 
+// The upcoming view is server-clock driven (anchor >= now), so the seeded item
+// must live inside the 7-day window from the SERVER's real clock — a hard-coded
+// date rots the moment "now" passes it (V5.4 time-bomb fix). Anchor it to real
+// now + 1 day (UTC = the test user's tz) and derive every expected display
+// string with the same Intl ru-RU/UTC format the app's fmtDT/fmtWall use.
+const SEED = new Date(Date.now() + 24 * 3600 * 1000);
+const SEED_DATE = SEED.toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+const SEED_START = new Date(`${SEED_DATE}T10:00:00Z`);
+const SEED_END = new Date(`${SEED_DATE}T12:00:00Z`);
+const SEED_DUE = new Date(`${SEED_DATE}T18:00:00Z`);
+const SEED_FIRE30 = new Date(SEED_START.getTime() - 30 * 60 * 1000);
+const fmt = (d: Date) =>
+  new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "UTC",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+
 // Clean up the seeded item (its reminder cascades) so later specs see a
 // calendar without this test's 26th-day event.
 let itemId: number | null = null;
@@ -43,16 +63,16 @@ test("edit view: change + clear via tri-state PATCH, reminder cancel, ends_at on
 }) => {
   await page.clock.install({ time: new Date(FROZEN_NOW) });
 
-  // Seed: a scheduled task on 2026-09-26 with start/end/due and one reminder
-  // 30 minutes before the start (fires 09:30 UTC).
+  // Seed: a scheduled task on SEED_DATE (real now + 1 day, UTC) with
+  // start/end/due and one reminder 30 minutes before the start.
   const createRes = await page.request.post(`${base}/api/v1/items`, {
     data: {
       title: OLD_TITLE,
       kind: "task",
       description: "seed description",
-      starts_at: "2026-09-26T10:00:00",
-      ends_at: "2026-09-26T12:00:00",
-      due_at: "2026-09-26T18:00:00",
+      starts_at: `${SEED_DATE}T10:00:00`,
+      ends_at: `${SEED_DATE}T12:00:00`,
+      due_at: `${SEED_DATE}T18:00:00`,
       priority: "normal",
       remind_offsets_minutes: [30],
     },
@@ -68,8 +88,8 @@ test("edit view: change + clear via tri-state PATCH, reminder cancel, ends_at on
   await card.waitFor({ timeout: 15_000 });
 
   // The card meta now shows the end time.
-  await expect(card.locator(".item-meta")).toContainText("Конец 26 сент., 12:00");
-  await expect(card.locator(".item-meta")).toContainText("Начало 26 сент., 10:00");
+  await expect(card.locator(".item-meta")).toContainText(`Конец ${fmt(SEED_END)}`);
+  await expect(card.locator(".item-meta")).toContainText(`Начало ${fmt(SEED_START)}`);
 
   // Open the edit view from the card.
   await card.locator(".item-actions .btn", { hasText: "Изменить" }).click();
@@ -84,7 +104,7 @@ test("edit view: change + clear via tri-state PATCH, reminder cancel, ends_at on
 
   // The pending item reminder is listed with its fire time and offset.
   const reminderRow = view.locator(".reminder-row").first();
-  await expect(reminderRow).toContainText("26 сент., 09:30");
+  await expect(reminderRow).toContainText(fmt(SEED_FIRE30));
   await expect(reminderRow).toContainText("за 30 мин до начала");
 
   // Change the title and the priority.
@@ -103,14 +123,14 @@ test("edit view: change + clear via tri-state PATCH, reminder cancel, ends_at on
 
   // The untouched "Срок" row is pre-filled with its original wall time.
   const dueRow = view.locator(".when-field", { hasText: "Срок" });
-  await expect(dueRow.locator(".picker-field")).toContainText("26 сент., 18:00");
+  await expect(dueRow.locator(".picker-field")).toContainText(fmt(SEED_DUE));
 
   // Save: the card returns with the new title, priority badge, no end time.
   await view.locator(".btn-primary", { hasText: "Сохранить" }).click();
   await expect(page.locator("#toast")).toContainText("Сохранено.");
   const newCard = page.locator("#view .card", { hasText: NEW_TITLE }).first();
   await expect(newCard).toBeVisible();
-  await expect(newCard.locator(".item-meta")).toContainText("Начало 26 сент., 10:00");
+  await expect(newCard.locator(".item-meta")).toContainText(`Начало ${fmt(SEED_START)}`);
   await expect(newCard.locator(".item-meta")).not.toContainText("Конец");
   await expect(newCard.locator(".item-head .badge")).toHaveText("Высокий");
 
@@ -121,8 +141,8 @@ test("edit view: change + clear via tri-state PATCH, reminder cancel, ends_at on
   expect(after.title).toBe(NEW_TITLE);
   expect(after.priority).toBe("high");
   expect(after.ends_at).toBeNull();
-  expect(after.starts_at).toBe("2026-09-26T10:00:00Z");
-  expect(after.due_at).toBe("2026-09-26T18:00:00Z");
+  expect(after.starts_at).toBe(`${SEED_DATE}T10:00:00Z`);
+  expect(after.due_at).toBe(`${SEED_DATE}T18:00:00Z`);
   expect(after.description).toBe("seed description");
   expect(after.kind).toBe("task");
 
