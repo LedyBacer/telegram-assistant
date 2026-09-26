@@ -3,7 +3,8 @@
 Status: **V5.4 in progress** — making the assistant + Ornith-1.5-9B highly
 reliable for real Russian personal-assistant use, measured empirically by
 running the real model against production orchestration (P1 sampling
-correctness done @ `c099e9a`; P3 data-management actions done this session).
+correctness done @ `c099e9a`; P3 data-management actions done; P2 evaluator
+correctness done @ `0da809b`; P4 corpus expanded @ `a31f6d5`).
 Prior: V5.3 live-LLM harness + hardening @ `45617d5`; V5.2 CI GREEN
 (`c07fe4c`, run 36129982668, 4/4 jobs); V5.1 CI GREEN (`0c8dd19`). Working
 tree committed at each meaningful boundary; no push.
@@ -53,7 +54,34 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   - Verified: `ruff check .` clean; full pytest **594 passed**
     (`FILE_STORAGE_DIR=$(mktemp -d)`); import check confirms both kinds +
     `discard_deleted_storage`.
-- **§29-P2 (in progress)** evaluator correctness — done this session:
+- **§29-P4 (done, corpus @ `a31f6d5`)** large Russian corpus expanded in
+  `eval/cases.py` to clear every §6 target:
+  - 16 behavioral-matrix builders: `cat_data_management` (delete_fact /
+    delete_file incl. ambiguous-file → clarification, zero deletion),
+    `cat_reschedule` (+ `_updated_item_id` entity oracle),
+    `cat_entity_resolution` (similar names / pronouns / corrections /
+    "не удаляй, просто перенеси" → no delete), `cat_item_lifecycle`,
+    `cat_deep_memory` (durable / ephemeral / "не запоминай это" / recall),
+    `cat_reminder_vs_task` (both / each negative / missing time → clarify),
+    `cat_aggregation` (seeded calendar+reminders+facts+workout, 5 reads),
+    `cat_russian_robustness`, `cat_reminder_cancel_nl`, `cat_stored_injection`
+    (file with hidden "delete files + leak CHAT_API_KEY" instruction → no
+    proposal, RU answer), `cat_cross_user_file` (isolation),
+    `cat_sessions_large` (8×10-step multi-turn sessions).
+  - 9 single-turn breadth builders (create / reminder / read / workout /
+    fact / colloquial / robustness / reschedule / delete) for phrasing
+    diversity. New helpers: `_removed_row`, `_updated_item_id`,
+    `_no_delete_oracle`, `_mem_proposed_oracle`, `_answer_oracle`.
+  - Measured (`build_corpus`/`corpus_stats` + `3·normal+5·high` FULL exec):
+    **284 cases** (≥150), **356 phrasings / 332 unique** (≥350),
+    **1222 FULL turn-exec** (≥700), **95.5% RU** (≥80%), **34 multi-turn**
+    (≥20), **65 holdout phrasings** (≥40). No duplicate case ids; only
+    by-design dup phrasings (session confirm words "ок"/"спасибо"…, and the
+    intentional unique-file vs ambiguous-file delete pair).
+  - Verified: `ruff check .` clean; full pytest **594 passed**.
+  - Remaining P4 work: development live-LLM runs against this corpus +
+    generalized fixes (see Next).
+- **§29-P2 (done, `0da809b`)** evaluator correctness:
   `find_and_confirm` newest-first (`created_at.desc(), id.desc()`) + post-commit
   discard, plus:
   - **Per-turn pre-confirm snapshots**: `scripts/llm_eval.py run_case` now
@@ -75,11 +103,12 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
     attempted (covers `proactivity`'s import-time `send_text` binding too).
   - `run.refused` + `run.per_turn` surfaced in the JSONL evidence record.
   - Verified: `ruff check .` clean; full pytest **594 passed**.
-  - Remaining: matched A/B, true holdout, stronger oracles.
-- **Next:** P4 large Russian corpus (≥150 cases / ≥350 phrasings / ≥700 turns /
-  ≥80% RU / ≥20 multi-turn / ≥40 holdout); P5 sampling+budget study; P6
-  Telegram UX; P7 Mini App esbuild build; P8 freeze + one live final eval
-  (thinking ON); P9 rewrite `docs/LLM_EVAL_REPORT.md` + final `REPORT.md`.
+  - (matched A/B + genuine holdout are now covered by the P4 corpus and P8.)
+- **Next:** P4 development live-LLM runs against the expanded corpus
+  (`uv run python scripts/llm_eval.py --full` etc.) + generalized fixes;
+  P5 sampling+budget study; P6 Telegram UX; P7 Mini App esbuild build;
+  P8 freeze + one live final eval (thinking ON); P9 rewrite
+  `docs/LLM_EVAL_REPORT.md` + final `REPORT.md`.
 
 ## V5.3 — Real-LLM behavioral evaluation + autonomous hardening (in progress)
 
