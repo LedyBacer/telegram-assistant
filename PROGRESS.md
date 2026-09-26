@@ -168,6 +168,21 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   on the build (dist must keep the pinned flatpickr CDN URLs). The
   `normalizeUiLanguage` matrix spec now imports the bundle
   (`/miniapp/app.js` re-exports it; module cache, no re-boot).
+- **§29-P8 (in progress)** freeze at `2e4f6ed` (clean tree) + final live eval.
+  Pre-final smoke at the frozen config (thinking ON / **precise** / budget
+  **4096**) green: 39 runs, 84.6% pass, 0 true P0 violations
+  (`.qwen/tmp/p8-smoke2.log`; failures = known flake clusters). The first
+  smoke silently ran at budget 2048 because the agent's ambient shell env
+  carries a stale session-start snapshot of `.env` (pydantic real-env >
+  env_file) — fixed by prefixing live commands with
+  `CHAT_THINKING_BUDGET_TOKENS=4096` and verifying the printed config header.
+  The first `--full` launch (tag `final-20260926-4096`) was cancelled at
+  35/988 when a Goal turn's token budget ran dry (bg shells are killed on a
+  budget-exhausted turn end) — partial JSONL kept as
+  `final-20260926-4096.partial-canceled.jsonl`, relaunch under fresh tag
+  `final-20260926-r2` (header verified 4096). The ONE production run is that
+  relaunch (988 executions; ~4–5 h); then the matched `--ab` ON/OFF run and
+  P9 docs.
 - **§29-P2 (done, `0da809b`)** evaluator correctness:
   `find_and_confirm` newest-first (`created_at.desc(), id.desc()`) + post-commit
   discard, plus:
@@ -191,13 +206,12 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   - `run.refused` + `run.per_turn` surfaced in the JSONL evidence record.
   - Verified: `ruff check .` clean; full pytest **594 passed**.
   - (matched A/B + genuine holdout are now covered by the P4 corpus and P8.)
-- **Next:** P5 sampling+budget study (A temp 1.0/presence 1.5 vs B 0.6/0.0;
-  thinking budget 2048/4096/8192/unrestricted on the hard RU relative-weekday +
-  structured-output cases; choose by end-to-end correctness — the P4
-  relative-weekday non-determinism + 4 structured-output failures are the
-  primary inputs); P6 Telegram UX; P7 Mini App esbuild build; P8 freeze + one
-  live final eval (thinking ON); P9 rewrite `docs/LLM_EVAL_REPORT.md` + final
-  `REPORT.md`.
+- **Next:** P8 (in progress) — one complete production run
+  `CHAT_THINKING_BUDGET_TOKENS=4096 uv run python scripts/llm_eval.py --full
+  --tag final-20260926-r2` (running), then the matched `--ab` thinking
+  ON/OFF run (separate tag, never merged into the production table);
+  P9 rewrite `docs/LLM_EVAL_REPORT.md` per SPEC §24 + final `REPORT.md`
+  (SPEC §34 20-item checklist).
 
 ## V5.3 — Real-LLM behavioral evaluation + autonomous hardening (in progress)
 
