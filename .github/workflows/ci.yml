@@ -127,6 +127,10 @@ jobs:
         run: uv sync --frozen
       - name: Install dev dependencies
         run: npm ci
+      # V5.4 P7: production Mini App bundle gate — the same script the
+      # Docker image and the E2E webServer use.
+      - name: Build Mini App (bundle + minify, size report)
+        run: npm run build:miniapp
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
       - name: Playwright E2E

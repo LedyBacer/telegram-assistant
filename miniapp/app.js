@@ -6,6 +6,11 @@
  * safe el() builder; user content is always appended as text.
  */
 
+// Re-exported so the E2E matrix spec can exercise normalizeUiLanguage on
+// the production bundle (importing the already-loaded entry URL returns the
+// module cache — no re-run of the app boot).
+export { normalizeUiLanguage } from "./js/state.js";
+
 import { api, apiUpload } from "./js/api.js";
 import {
   applyTheme,

@@ -308,6 +308,20 @@ fi
 node -e 'const p=require("./package.json"); if(p.devDependencies.flatpickr!=="4.6.13"){console.error("FAIL: flatpickr devDependency must be pinned to exactly 4.6.13, got "+p.devDependencies.flatpickr);process.exit(1);}'
 echo "OK: shell loads pinned flatpickr@4.6.13 from jsDelivr, vendor removed, devDependency pinned"
 
+step "21c. Mini App production build (bundle + minify, size report)"
+# V5.4 P7: the production artifact is the bundled/minified miniapp-dist/,
+# built by the same script the Docker image and E2E use. The built HTML must
+# keep the pinned CDN URLs intact (the Playwright harness intercepts them).
+npm ci
+npm run build:miniapp
+for url in "$FP_CSS" "$FP_JS" "$FP_RU"; do
+    grep -qF "$url" miniapp-dist/index.html
+done
+test -s miniapp-dist/app.js
+test -s miniapp-dist/styles.css
+test -s test-artifacts/miniapp-size-report.json
+echo "OK: miniapp-dist built (esbuild bundle + html minify), CDN URLs intact, size report written"
+
 step "22. Mini App Playwright E2E (Playwright acceptance stage)"
 # Run the E2E against the SAME throwaway PostgreSQL as steps 4-21 (NOT the
 # dev database) so the whole acceptance is self-contained on an empty
@@ -316,8 +330,8 @@ step "22. Mini App Playwright E2E (Playwright acceptance stage)"
 # the superuser connection it uses to CREATE DATABASE. Both flow into
 # global-setup (create + migrate + truncate), the webServer (DATABASE_URL),
 # and the seed scripts via process.env. The real telegram.org script is
-# blocked and initData is a deterministic stub.
-npm ci
+# blocked and initData is a deterministic stub. (npm ci already ran in 21c;
+# webServer rebuilds miniapp-dist before starting the API.)
 E2E_DATABASE_URL="postgresql://assistant:assistant@127.0.0.1:${PG_PORT}/assistant_e2e" \
 E2E_DATABASE_ADMIN_URL="postgresql://assistant:assistant@127.0.0.1:${PG_PORT}/postgres" \
 npm run test:e2e

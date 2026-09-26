@@ -5,9 +5,12 @@ import { createConsoleGuard } from "../helpers/console-guard";
 
 // V5.2 §9: normalizeUiLanguage maps the client-reported language tag to the
 // UI language — primary subtag `en` → "en", anything else → "ru". Asserted
-// (a) directly against the module for the full matrix, and (b) end-to-end:
-// a client reporting "en-US" paints the app in English before /me resolves,
-// then /me's stored preference takes over.
+// (a) against the PRODUCTION BUNDLE for the full matrix (V5.4 P7: the app
+// entry re-exports normalizeUiLanguage, so the test exercises the exact
+// minified bundle; importing the already-loaded URL returns the module
+// cache, no re-run), and (b) end-to-end: a client reporting "en-US" paints
+// the app in English before /me resolves, then /me's stored preference
+// takes over.
 
 const base = "http://127.0.0.1:" + (process.env.E2E_PORT ?? 8123);
 
@@ -20,7 +23,7 @@ test("normalizeUiLanguage: en, en-US, en-GB → en; ru, ru-RU, unknown → ru", 
   const guard = await openApp(page, base);
   try {
     const results = await page.evaluate(async () => {
-      const { normalizeUiLanguage } = await import("/miniapp/js/state.js");
+      const { normalizeUiLanguage } = await import("/miniapp/app.js");
       return [
         normalizeUiLanguage("en"),
         normalizeUiLanguage("en-US"),

@@ -2,6 +2,16 @@
 # avoids a network fetch and makes the build reproducible.
 FROM ghcr.io/astral-sh/uv:0.12.17 AS uv
 
+# Mini App production build (V5.4 P7): bundle + minify miniapp/ into
+# miniapp-dist/ (scripts/build-miniapp.mjs). Node never reaches the runtime
+# image — only the built static assets do.
+FROM node:22.23.2-slim AS miniapp
+WORKDIR /build
+COPY package.json package-lock.json ./
+COPY miniapp ./miniapp
+COPY scripts/build-miniapp.mjs ./scripts/build-miniapp.mjs
+RUN npm ci --no-audit --no-fund && npm run build:miniapp
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -29,14 +39,17 @@ RUN uv sync --frozen --no-dev
 
 COPY alembic.ini ./
 COPY alembic ./alembic
-COPY miniapp ./miniapp
+# Served by the api process via MINIAPP_DIR; the raw miniapp/ sources are
+# NOT in the image (only the built, minified bundle).
+COPY --from=miniapp /build/miniapp-dist ./miniapp-dist
 
 RUN useradd --create-home appuser \
     && mkdir -p /data/storage/files \
     && chown -R appuser:appuser /app /data
 USER appuser
 ENV HOME=/home/appuser \
-    FILE_STORAGE_DIR=/data/storage/files
+    FILE_STORAGE_DIR=/data/storage/files \
+    MINIAPP_DIR=/app/miniapp-dist
 
 EXPOSE 8000
 

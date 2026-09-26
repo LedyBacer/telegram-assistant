@@ -17,6 +17,9 @@ build/
 
 node_modules/
 
+# Mini App production build output (V5.4 P7); rebuilt by npm run build:miniapp.
+miniapp-dist/
+
 # Playwright E2E artifacts (reference screenshots, traces, reports).
 test-artifacts/
 test-results/

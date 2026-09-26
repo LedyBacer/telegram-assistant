@@ -154,6 +154,20 @@ entity-resolution / calendar CRUD / NL deletion each ≥95%); structured output
   sender's debug log reads `self.bot.id` — a missing attr hangs `__aexit__`);
   localized RU/EN `set_my_commands` + `MenuButtonCommands` menu button.
   Full pytest **601 passed**, ruff clean.
+- **§29-P7 (done, this session)** Mini App production build:
+  `npm run build:miniapp` (esbuild 0.28.2 exact-pin: bundle `app.js`+`js/*.js`
+  → minified ESM es2020 `miniapp-dist/app.js`; CSS minify;
+  html-minifier-terser 7.2.0 conservative HTML minify, comments kept so the
+  pinned-CDN URLs survive; raw+gzip report → `test-artifacts/miniapp-size-report.json`).
+  Sources 164 012 B raw / 42 781 B gzip → built 95 876 B / 22 897 B (−41.6% /
+  −46.5%). Production path: Docker multi-stage `node:22.23.2-slim` build stage
+  (Node never reaches runtime image; image has no `node`, no `miniapp/`
+  sources), api serves `MINIAPP_DIR=/app/miniapp-dist`; E2E `webServer`
+  rebuilds + serves `miniapp-dist` so the suite exercises the exact
+  production bundle (41/41 passed); CI `e2e` job + acceptance step 21c gate
+  on the build (dist must keep the pinned flatpickr CDN URLs). The
+  `normalizeUiLanguage` matrix spec now imports the bundle
+  (`/miniapp/app.js` re-exports it; module cache, no re-boot).
 - **§29-P2 (done, `0da809b`)** evaluator correctness:
   `find_and_confirm` newest-first (`created_at.desc(), id.desc()`) + post-commit
   discard, plus:

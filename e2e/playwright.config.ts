@@ -49,7 +49,9 @@ export default defineConfig({
     // production image) wraps the production app and installs a
     // deterministic test user (no initData). The production
     // `assistant.api.main` has no such bypass — see tests/test_minapp_shell.py.
-    command: "uv run python e2e/support/test_app.py",
+    // The Mini App is built first so E2E exercises the SAME minified
+    // bundle production serves (V5.4 P7) — MINIAPP_DIR points at dist.
+    command: "npm run build:miniapp && uv run python e2e/support/test_app.py",
     cwd: "..",
     url: `${BASE}/healthz`,
     reuseExistingServer: !process.env.CI,
@@ -59,6 +61,7 @@ export default defineConfig({
       ASSISTANT_API_PORT: String(E2E_PORT),
       DATABASE_URL: E2E_DB_URL,
       PUBLIC_BASE_URL: BASE,
+      MINIAPP_DIR: "miniapp-dist",
       TELEGRAM_BOT_TOKEN: "e2e-test-token",
       OPENAI_API_KEY: "e2e-key",
       OPENAI_BASE_URL: "http://127.0.0.1:9/v1",

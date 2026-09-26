@@ -259,13 +259,29 @@ concurrent-execution protection, bounded conversational flow with the fake
 provider, chat with embeddings unavailable), bot dispatcher wiring with
 Telegram mocked, RU/EN onboarding and NL task-draft tests, the full pytest
 suite against the fresh database, Ruff, `uv lock --check` (lockfile
-integrity), the production-auth no-test-bypass test, and the Mini App
-Playwright E2E stage.
+integrity), the production-auth no-test-bypass test, the Mini App production
+build gate (`npm run build:miniapp`), and the Mini App Playwright E2E stage.
 
 ## Mini App development
 
-The Mini App is a **vanilla JS static app** — no framework, no build pipeline.
-Layout:
+The Mini App is a **vanilla JS static app** — no framework. `miniapp/` holds
+the human-readable ES-module sources; **production serves the built, bundled,
+minified output** in `miniapp-dist/`:
+
+```bash
+npm run build:miniapp   # esbuild bundle (app.js + js/*.js) + minified CSS
+                        # + minified index.html → miniapp-dist/, prints a
+                        # raw/gzip size report (test-artifacts/miniapp-size-report.json)
+```
+
+The build is part of every gate: CI runs it, the Docker image builds it in a
+Node stage (Node never reaches the runtime image; the api serves
+`miniapp-dist/` via `MINIAPP_DIR`), and the Playwright `webServer` rebuilds it
+before every E2E run so the suite exercises the exact production bundle.
+Measured 2026-09-26: sources 164 012 B raw / 42 781 B gzip → built
+95 876 B raw / 22 897 B gzip (−41.6% raw, −46.5% gzip).
+
+Layout (sources):
 
 ```text
 miniapp/

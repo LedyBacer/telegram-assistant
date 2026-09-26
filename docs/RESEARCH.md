@@ -223,3 +223,19 @@ the residual `sess_plan_1` flake is not budget-driven. `n=8` per arm is
 small; the final P8 production run will re-measure the full corpus at
 precise + 4096. Config default stays `None` (unrestricted) — the 4096 value
 is an operator choice for this deployment, not a code default.
+
+## V5.4 P7 — Mini App production build (2026-09-26)
+
+- **esbuild 0.28.2** (exact pin) JS/CSS JS-API:
+  `bundle: true, minify: true, format: "esm", target: ["es2020"]`.
+  ES2020 is the lowest target the Telegram in-app browsers (iOS WKWebView,
+  Android) reliably support. Minification preserves named export names —
+  the `normalizeUiLanguage` matrix spec imports the built bundle
+  (`/miniapp/app.js`) directly.
+- **html-minifier-terser 7.2.0** (exact pin), conservative options
+  (`collapseWhitespace`, `minifyCSS/JS`, `removeComments: false`,
+  `keepClosingSlash`): the V5 §10 pinned flatpickr CDN URLs stay
+  byte-identical in the built HTML, so the acceptance shell check and the
+  Playwright CDN interception keep matching.
+- Sizes (this deployment): sources 164 012 B raw / 42 781 B gzip → built
+  95 876 B raw / 22 897 B gzip.
