@@ -149,26 +149,6 @@ def _updated_item_id(expected_item_id: int):
     return _mk
 
 
-def _no_delete_oracle():
-    """Assert no delete_* action was ever proposed OR executed (the 'не удаляй,
-    просто перенеси' negation guard)."""
-
-    async def oracle(run: CaseRun, ctx: dict) -> list[Check]:
-        proposed = {
-            a.kind for r in run.results for a in r.proposed_actions
-            if a.kind in {"delete_item", "delete_file", "delete_fact"}
-        }
-        executed = {k for k, _ in run.executed
-                    if k in {"delete_item", "delete_file", "delete_fact"}}
-        ok = not proposed and not executed
-        return [
-            Check("no_delete", SEMANTIC, ok,
-                  f"proposed={sorted(proposed)} executed={sorted(executed)}")
-        ]
-
-    return oracle
-
-
 # ---------------------------------------------------------------------------
 # 1. Conversational
 # ---------------------------------------------------------------------------
@@ -955,7 +935,7 @@ def cat_reschedule() -> list[Case]:
         ("Перенеси созвон с командой на завтра в 11", 1, 11),
         ("Сдвинь созвон с командой на 15:00", 0, 15),
         ("Перенеси созвон с командой на послезавтра в девять утра", 2, 9),
-        ("Сделай созвон с командой на завтра в полдень", 1, 12),
+        ("Передвинь созвон с командой на завтра в полдень", 1, 12),
     ]
     out = []
     for i, (text, dd, hr) in enumerate(specs, 1):
@@ -998,6 +978,18 @@ def cat_entity_resolution() -> list[Case]:
             return out
         return oracle
 
+    async def negate_oracle(run: CaseRun, ctx: dict) -> list[Check]:
+        out = [check_proposed_kind(run, "update_item"),
+               _updated_item_id(ctx["meet_id"])(run)]
+        proposed = {a.kind for r in run.results for a in r.proposed_actions
+                    if a.kind in {"delete_item", "delete_file", "delete_fact"}}
+        executed = {k for k, _ in run.executed
+                    if k in {"delete_item", "delete_file", "delete_fact"}}
+        ok = not proposed and not executed
+        out.append(Check("no_delete", SEMANTIC, ok,
+                         f"proposed={sorted(proposed)} executed={sorted(executed)}"))
+        return out
+
     return [
         Case(id="ent_exact", category="entity_resolution",
              turns=["Перенеси встречу с Сергеем на завтра в 14",
@@ -1022,8 +1014,7 @@ def cat_entity_resolution() -> list[Case]:
              turns=["Не удаляй встречу с Сергеем, просто перенеси её на завтра в 14",
                     {"confirm": ["update_item"]}],
              language="ru", setup=_ent_setup, high_risk=True,
-             expect_mutation=True,
-             oracle=update_oracle("meet_id", _no_delete_oracle())),
+             expect_mutation=True, oracle=negate_oracle),
     ]
 
 
@@ -1251,10 +1242,10 @@ def cat_russian_robustness() -> list[Case]:
         # short fragment
         ("созвон, завтра, 10", item_oracle),
         # correction mid-sentence
-        ("создай встречу с юристом на завтра, нет, лучше на послезавтра",
+        ("создай встречу с юристом на завтра, нет, лучше на послезавтра в 15:00",
          item_oracle),
         # mixed RU/EN title
-        ("забронируй meeting с командой по sprint review на завтра в 12",
+        ("забронируй meeting с командой по sprint review на завтра в 12, на час",
          item_oracle),
     ]
     out = []
@@ -1749,13 +1740,13 @@ def cat_reschedule_breadth() -> list[Case]:
         "Перенеси созвон с командой на послезавтра в девять",
         "Сдвинь созвон с командой на полдень",
         "Перенеси созвон с командой на пятницу в десять",
-        "Сделай созвон с командой на завтра в четырнадцать",
+        "Передвинь созвон с командой на завтра в четырнадцать",
         "Перенеси созвон с командой на сегодня в шесть вечера",
         "Сдвинь созвон с командой на понедельник в девять утра",
         "Перенеси созвон с командой на четверг в полдень",
         "Сдвинь созвон с командой на три часа раньше",
         "Перенеси созвон с командой на следующий вторник",
-        "Сделай созвон с командой на завтра в восемь утра",
+        "Передвинь созвон с командой на завтра в восемь утра",
     ]
     out = []
     for i, t in enumerate(ru, 1):
